@@ -2,7 +2,7 @@ const express = require("express");
 const userRoutes = require("./userRoutes");
 const authRoutes = require("./authRoutes");
 const diagnosticRoutes = require("./diagnosticRoutes");
-const kajabiRoutes = require("./kajabiRoutes");
+const kajabiRoutes = require("./kajabi");
 
 const router = express.Router();
 

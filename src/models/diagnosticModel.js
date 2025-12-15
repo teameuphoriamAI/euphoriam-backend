@@ -42,3 +42,4 @@ const Diagnostic = sequelize.define(
 module.exports = { Diagnostic };
 
 
+

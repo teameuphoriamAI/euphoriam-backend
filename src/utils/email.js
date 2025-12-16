@@ -15,14 +15,14 @@ const transporter = nodemailer.createTransport({
     pass: sender_password,
   },
 });
-
 /**
  * Send Email
  * @param {string} email - recipient
  * @param {string} subject - subject line
- * @param {string} content - HTML content (use `cid:logo` where you want the logo)
+ * @param {string} content - HTML content
+ * @param {string} pdfPath - local path to diagnostic PDF
  */
-const sendEmail = async (email, subject, content) => {
+const sendEmail = async (email, subject, content, pdfPath) => {
   try {
     const mailOptions = {
       from: `${sender_name} <${sender_email}>`,
@@ -30,19 +30,26 @@ const sendEmail = async (email, subject, content) => {
       subject,
       html: content,
       attachments: [
+        // Logo (inline)
         {
           filename: "EuphoriumAi-logo.png",
           path: logoImage,
           cid: "logo",
         },
+
+        // Diagnostic Report PDF
+        {
+          filename: "Diagnostic-Report.pdf",
+          path: pdfPath, // e.g. "./reports/user-123.pdf"
+          contentType: "application/pdf",
+        },
       ],
     };
 
     await transporter.sendMail(mailOptions);
-    console.log(" Email sent!");
+    console.log("✅ Email sent with PDF!");
   } catch (error) {
-    console.error(" Failed to send email:", error);
+    console.error("❌ Failed to send email:", error);
   }
 };
-
 module.exports = { sendEmail };

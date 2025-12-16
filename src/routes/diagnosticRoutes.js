@@ -16,9 +16,8 @@ router.get("/", auth, asyncHandler(diagnosticController.listMine));
 router.get("/:id", auth, asyncHandler(diagnosticController.getById));
 router.post(
   "/run-diagnostic",
-  auth,
+  // auth,
   asyncHandler(diagnosticController.createDiagnostic)
 );
 
 module.exports = router;
-

@@ -21,13 +21,16 @@ const {
   extractCourseIdFromProduct,
 } = require("./kajabi");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
-
+const { sendEmail } = require("../utils/email");
+const {
+  diagnosticReportEmail,
+} = require("../utils/emailTemplate/initialDignosticReport");
 const createDiagnostic = async (req, res) => {
   console.log("Creating diagnostic with data:", req.body);
-  const userId = req.user?.sub;
-  if (!userId) {
-    return errorResponse(res, "Unauthorized: missing user context", 401);
-  }
+  const userId = "1";
+  // if (!userId) {
+  //   return errorResponse(res, "Unauthorized: missing user context", 401);
+  // }
 
   const { Email } = req.body.payload;
   const assessmentIds = req.body.assessmentIds || [];
@@ -201,7 +204,12 @@ const createDiagnostic = async (req, res) => {
   });
 
   const pdfPath = await generateDiagnosticPdf(diagnostic);
-
+  await sendEmail(
+    attributes.email,
+    "Your Diagnostic Report – Euphoraum-AI",
+    diagnosticReportEmail(attributes.name),
+    pdfPath
+  );
   // Return response
   return successResponse(res, "Diagnostic generated & saved", {
     diagnosticId: diagnostic,

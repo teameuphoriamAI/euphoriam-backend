@@ -25,6 +25,162 @@ const { sendEmail } = require("../utils/email");
 const {
   diagnosticReportEmail,
 } = require("../utils/emailTemplate/initialDignosticReport");
+
+const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+
+const summarizeCourseAssessments = (courseAssessments) => {
+  const courses = Array.isArray(courseAssessments) ? courseAssessments : [];
+
+  const totals = courses.reduce(
+    (acc, c) => {
+      acc.totalAssessments += Number(c.total || 0);
+      acc.completed += Array.isArray(c.completed) ? c.completed.length : 0;
+      acc.passed += Array.isArray(c.passed) ? c.passed.length : 0;
+      acc.failed += Array.isArray(c.failed) ? c.failed.length : 0;
+      acc.pending += Array.isArray(c.pending) ? c.pending.length : 0;
+      return acc;
+    },
+    { totalAssessments: 0, completed: 0, passed: 0, failed: 0, pending: 0 }
+  );
+
+  const completionPercentage = totals.totalAssessments
+    ? Math.round((totals.completed / totals.totalAssessments) * 100)
+    : 0;
+
+  const passRate = totals.completed
+    ? Math.round((totals.passed / totals.completed) * 100)
+    : 0;
+
+  return { ...totals, completionPercentage, passRate, coursesCount: courses.length };
+};
+
+const computeDiagnosticMetrics = ({
+  signInCount = 0,
+  netRevenue = 0,
+  products = [],
+  offers = [],
+  courseAssessments = [],
+}) => {
+  const safeSignIns = Number(signInCount || 0);
+  const safeRevenue = Number(netRevenue || 0);
+
+  const productTypeCounts = (Array.isArray(products) ? products : []).reduce(
+    (acc, p) => {
+      const type = p?.type || "Unknown";
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    },
+    {}
+  );
+
+  const assessmentSummary = summarizeCourseAssessments(courseAssessments);
+
+  const engagementScore = clamp(Math.round(safeSignIns * 6.25), 0, 100); // 16 sign-ins ~= 100
+  const learningScore = clamp(assessmentSummary.completionPercentage, 0, 100);
+  const commitmentScore = clamp(
+    Math.round(Math.min(100, safeRevenue / 10) + (Array.isArray(products) ? products.length : 0) * 8),
+    0,
+    100
+  );
+
+  const signalOutput = clamp(
+    Math.round(0.5 * engagementScore + 0.3 * learningScore + 0.2 * commitmentScore),
+    0,
+    100
+  );
+
+  const signalCoherence = clamp(
+    Math.round(100 - Math.abs(engagementScore - learningScore) * 0.75),
+    0,
+    100
+  );
+
+  const gravity = clamp(100 - signalOutput, 0, 100);
+
+  const consciousnessLevel = Number(
+    (1 + 4 * (0.6 * learningScore + 0.4 * signalCoherence) / 100).toFixed(1)
+  ); // 1.0 - 5.0 proxy index
+
+  const qgcActivation = clamp(
+    Math.round(0.4 * commitmentScore + 0.35 * signalCoherence + 0.25 * learningScore),
+    0,
+    100
+  );
+
+  return {
+    engagementScore,
+    learningScore,
+    commitmentScore,
+    gravity,
+    signalOutput,
+    signalCoherence,
+    consciousnessLevel,
+    qgcActivation,
+    counts: {
+      signInCount: safeSignIns,
+      netRevenue: safeRevenue,
+      productCount: Array.isArray(products) ? products.length : 0,
+      offerCount: Array.isArray(offers) ? offers.length : 0,
+      productTypeCounts,
+    },
+    assessments: assessmentSummary,
+  };
+};
+
+const pick = (obj, keys) =>
+  keys.reduce((acc, k) => {
+    if (obj && obj[k] !== undefined) acc[k] = obj[k];
+    return acc;
+  }, {});
+
+const normalizeKajabiOffer = (o) => {
+  const data = o?.data;
+  const attributes = data?.attributes || {};
+  return {
+    id: data?.id,
+    title: attributes.title,
+    price: attributes.price,
+    createdAt: attributes.created_at,
+  };
+};
+
+const normalizeKajabiProduct = (p) => {
+  const data = p?.data;
+  const attributes = data?.attributes || {};
+  const links = p?.links || {};
+  return {
+    id: data?.id,
+    title: attributes.title,
+    type: attributes.product_type_name,
+    status: attributes.status,
+    publishStatus: attributes.publish_status,
+    createdAt: attributes.created_at,
+    url: attributes.url,
+    thumbnailUrl: attributes.thumbnail_url,
+    membersCount: attributes.members_aggregate_count,
+    apiSelf: links.self,
+  };
+};
+
+const normalizeKajabiSite = (s) => {
+  const data = s?.data;
+  const attributes = data?.attributes || {};
+  return {
+    id: data?.id,
+    name: attributes.name,
+    subdomain: attributes.subdomain,
+  };
+};
+
+const normalizeKajabiContact = (c) => {
+  const data = c?.data;
+  const attributes = data?.attributes || {};
+  return {
+    id: data?.id,
+    ...pick(attributes, ["first_name", "last_name", "email", "phone_number"]),
+  };
+};
+
 const createDiagnostic = async (req, res) => {
   console.log("Creating diagnostic with data:", req.body);
   const userId = "1";
@@ -111,6 +267,16 @@ const createDiagnostic = async (req, res) => {
   }
 
   // Build AI input context
+  const normalizedProducts = products.map(normalizeKajabiProduct);
+  const normalizedOffers = offers.map(normalizeKajabiOffer);
+  const metrics = computeDiagnosticMetrics({
+    signInCount: attributes.sign_in_count,
+    netRevenue: attributes.net_revenue,
+    products: normalizedProducts,
+    offers: normalizedOffers,
+    courseAssessments,
+  });
+
   const diagnosticContext = {
     customer: {
       id: customerData.id,
@@ -120,24 +286,30 @@ const createDiagnostic = async (req, res) => {
       netRevenue: attributes.net_revenue,
       memberSince: attributes.created_at,
     },
-    products: products.map((p) => ({
-      id: p.data.id,
-      title: p.data.attributes.title,
-      type: p.data.attributes.product_type_name,
-    })),
-    offers: offers.map((o) => o.data.attributes.title),
+    site: normalizeKajabiSite(site),
+    contact: normalizeKajabiContact(contact),
+    offers: normalizedOffers,
+    products: normalizedProducts,
+    courseAssessments,
+    metrics,
   };
 
   // Call Euphoriam AI
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-4.1",
-    messages: [
-      { role: "system", content: DIAGNOSTIC_SYSTEM_PROMPT },
-      { role: "user", content: buildDiagnosticPrompt(diagnosticContext) },
-    ],
-    temperature: 0.4,
-    max_tokens: 700,
-  });
+  const callOpenAi = async (compact) =>
+    openai.chat.completions.create({
+      model: "gpt-4.1",
+      messages: [
+        { role: "system", content: DIAGNOSTIC_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: buildDiagnosticPrompt(diagnosticContext, { compact }),
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 2200,
+    });
+
+  const aiResponse = await callOpenAi(true);
 
   // const aiResponse = {
   //   id: "chatcmpl-Cn62rORJFphottKJZdRGiDUe3jxHr",
@@ -177,7 +349,14 @@ const createDiagnostic = async (req, res) => {
   //   system_fingerprint: "fp_503841a4dc",
   // };
 
-  const diagnosticResult = JSON.parse(aiResponse.choices[0].message.content);
+  const diagnosticText =
+    (aiResponse?.choices?.[0]?.message?.content || "").trim();
+
+  if (!diagnosticText) {
+    return errorResponse(res, "AI returned empty output. Please retry.", 502);
+  }
+
+  // Store as a plain string. Do not rewrite bullets or unicode divider lines.
 
   // Save diagnostic to DB
   const diagnostic = await Diagnostic.create({
@@ -192,9 +371,16 @@ const createDiagnostic = async (req, res) => {
         name: attributes.name,
         email: attributes.email,
         signInCount: attributes.sign_in_count,
+        netRevenue: attributes.net_revenue,
+        memberSince: attributes.created_at,
       },
+      site: diagnosticContext.site,
+      contact: diagnosticContext.contact,
       products: diagnosticContext.products,
-      aiReport: diagnosticResult,
+      offers: diagnosticContext.offers,
+      courseAssessments,
+      metrics,
+      aiReport: diagnosticText,
 
       rawSource: {
         kajabiCustomerId: customerData.id,

@@ -1,18 +1,19 @@
 require("dotenv").config();
 const nodemailer = require("nodemailer");
 
-const sender_email = process.env.SENDER_EMAIL;
-const sender_password = process.env.SENDER_PASSWORD;
+const brevoLogin = process.env.BREVO_LOGIN; // Your Brevo account login email
+const brevoSmtpKey = process.env.BREVO_SMTP_KEY; // SMTP key from Brevo
+const sender_email = process.env.SENDER_EMAIL; // Verified sender email
 const sender_name = process.env.SENDER_NAME;
 const logoImage = process.env.LOGO_URL;
 
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465, // usually 587 for STARTTLS
-  secure: true, // true for port 465
+  host: "smtp-relay.brevo.com",
+  port: 587,
+  secure: false,
   auth: {
-    user: sender_email,
-    pass: sender_password,
+    user: brevoLogin,
+    pass: brevoSmtpKey,
   },
 });
 /**

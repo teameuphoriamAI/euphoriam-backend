@@ -3,6 +3,7 @@ const userRoutes = require("./userRoutes");
 const authRoutes = require("./authRoutes");
 const diagnosticRoutes = require("./diagnosticRoutes");
 const kajabiRoutes = require("./kajabi");
+const voiceRoutes = require("./voiceRoutes");
 
 const router = express.Router();
 
@@ -14,5 +15,6 @@ router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
 router.use("/diagnostics", diagnosticRoutes);
 router.use("/kajabi", kajabiRoutes);
+router.use("/voice-notes", voiceRoutes);
 
 module.exports = router;

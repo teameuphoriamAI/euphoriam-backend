@@ -1,33 +1,38 @@
 const { DataTypes } = require("sequelize");
 const { sequelize } = require("../config/sequelize");
 
-const Diagnostic = sequelize.define(
-  "Diagnostic",
+const VoiceNote = sequelize.define(
+  "VoiceNote",
   {
     id: {
       type: DataTypes.INTEGER,
       autoIncrement: true,
       primaryKey: true,
     },
-    userId: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-    },
-    email: {
+    diagnosticEmail: {
       type: DataTypes.STRING,
-      allowNull: true,
-      validate: {
-        isEmail: true,
-      },
-      unique: true,
-    },
-    title: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    data: {
-      type: DataTypes.JSONB,
       allowNull: false,
+    },
+    content: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+    },
+    sourceType: {
+      type: DataTypes.ENUM("text", "voice"),
+      allowNull: false,
+      defaultValue: "text",
+    },
+    transcriptMeta: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+    },
+    audioPath: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    audioUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
     createdAt: {
       type: DataTypes.DATE,
@@ -41,14 +46,12 @@ const Diagnostic = sequelize.define(
     },
   },
   {
-    tableName: "diagnostics",
+    tableName: "voice_notes",
     freezeTableName: true,
     timestamps: true,
   }
 );
 
-module.exports = { Diagnostic };
-
-
+module.exports = { VoiceNote };
 
 

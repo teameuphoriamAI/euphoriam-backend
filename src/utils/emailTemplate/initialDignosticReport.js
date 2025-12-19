@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const supportEmail = process.env.SUPPORT_EMAIL;
+const logoUrl = process.env.LOGO_URL;
 
 const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
   return `
@@ -25,10 +26,9 @@ const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
             <tr>
               <td align="center" style="padding-bottom: 30px;">
                 <img
-                  src="cid:logo"
+                  src="${logoUrl}"
                   alt="Euphoraum-AI Logo"
                   width="110"
-                  height="110"
                   style="display: block; max-width: 100%; border: 0;"
                 />
               </td>

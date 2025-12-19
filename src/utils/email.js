@@ -32,12 +32,7 @@ const sendEmail = async (email, subject, content, pdfPath) => {
         },
       ],
       subject,
-      htmlContent: `
-        <div style="font-family: Arial, sans-serif;">
-          <img src="${logoImage}" alt="Logo" style="max-width:180px;margin-bottom:20px;" />
-          ${content}
-        </div>
-      `,
+      htmlContent: content,
       attachment: [
         {
           content: pdfBase64,

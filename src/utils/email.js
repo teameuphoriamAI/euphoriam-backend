@@ -1,23 +1,14 @@
 require("dotenv").config();
-const nodemailer = require("nodemailer");
+const axios = require("axios");
+const fs = require("fs");
 
-const brevoLogin = process.env.BREVO_LOGIN; // Your Brevo account login email
-const brevoSmtpKey = process.env.BREVO_SMTP_KEY; // SMTP key from Brevo
-const sender_email = process.env.SENDER_EMAIL; // Verified sender email
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const sender_email = process.env.SENDER_EMAIL;
 const sender_name = process.env.SENDER_NAME;
 const logoImage = process.env.LOGO_URL;
 
-const transporter = nodemailer.createTransport({
-  host: "smtp-relay.brevo.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: brevoLogin,
-    pass: brevoSmtpKey,
-  },
-});
 /**
- * Send Email
+ * Send Email using Brevo API
  * @param {string} email - recipient
  * @param {string} subject - subject line
  * @param {string} content - HTML content
@@ -25,32 +16,51 @@ const transporter = nodemailer.createTransport({
  */
 const sendEmail = async (email, subject, content, pdfPath) => {
   try {
-    const mailOptions = {
-      from: `${sender_name} <${sender_email}>`,
-      to: email,
-      subject,
-      html: content,
-      attachments: [
-        // Logo (inline)
-        {
-          filename: "EuphoriumAi-logo.png",
-          path: logoImage,
-          cid: "logo",
-        },
+    // Read PDF and convert to base64
+    const pdfBase64 = fs.readFileSync(pdfPath, {
+      encoding: "base64",
+    });
 
-        // Diagnostic Report PDF
+    const payload = {
+      sender: {
+        email: sender_email,
+        name: sender_name,
+      },
+      to: [
         {
-          filename: "Diagnostic-Report.pdf",
-          path: pdfPath, // e.g. "./reports/user-123.pdf"
-          contentType: "application/pdf",
+          email,
+        },
+      ],
+      subject,
+      htmlContent: `
+        <div style="font-family: Arial, sans-serif;">
+          <img src="${logoImage}" alt="Logo" style="max-width:180px;margin-bottom:20px;" />
+          ${content}
+        </div>
+      `,
+      attachment: [
+        {
+          content: pdfBase64,
+          name: "Diagnostic-Report.pdf",
         },
       ],
     };
 
-    await transporter.sendMail(mailOptions);
-    console.log("✅ Email sent with PDF!");
+    await axios.post("https://api.brevo.com/v3/smtp/email", payload, {
+      headers: {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    });
+
+    console.log("✅ Email sent via Brevo API!");
   } catch (error) {
-    console.error("❌ Failed to send email:", error);
+    console.error(
+      "❌ Failed to send email:",
+      error.response?.data || error.message
+    );
   }
 };
+
 module.exports = { sendEmail };

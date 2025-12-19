@@ -5,6 +5,7 @@ const { Diagnostic } = require("./diagnosticModel");
 const { Discovery } = require("./discoveryModel");
 const { CoachingSession } = require("./coachingSessionModel");
 const { IntegrationEvent } = require("./integrationEventModel");
+const { VoiceNote } = require("./voiceNoteModel");
 
 const applyAssociations = () => {
   User.hasMany(Purchase, { foreignKey: "userId" });
@@ -24,6 +25,17 @@ const applyAssociations = () => {
 
   User.hasMany(CoachingSession, { foreignKey: "coachId", as: "CoachingAssignments" });
   CoachingSession.belongsTo(User, { foreignKey: "coachId", as: "Coach" });
+
+  Diagnostic.hasMany(VoiceNote, {
+    foreignKey: "diagnosticEmail",
+    sourceKey: "email",
+    onDelete: "CASCADE",
+  });
+  VoiceNote.belongsTo(Diagnostic, {
+    foreignKey: "diagnosticEmail",
+    targetKey: "email",
+    onDelete: "CASCADE",
+  });
 };
 
 module.exports = {
@@ -34,7 +46,9 @@ module.exports = {
   Discovery,
   CoachingSession,
   IntegrationEvent,
+  VoiceNote,
   applyAssociations,
 };
+
 
 

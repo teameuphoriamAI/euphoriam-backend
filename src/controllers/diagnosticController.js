@@ -51,7 +51,12 @@ const summarizeCourseAssessments = (courseAssessments) => {
     ? Math.round((totals.passed / totals.completed) * 100)
     : 0;
 
-  return { ...totals, completionPercentage, passRate, coursesCount: courses.length };
+  return {
+    ...totals,
+    completionPercentage,
+    passRate,
+    coursesCount: courses.length,
+  };
 };
 
 const computeDiagnosticMetrics = ({
@@ -78,13 +83,18 @@ const computeDiagnosticMetrics = ({
   const engagementScore = clamp(Math.round(safeSignIns * 6.25), 0, 100); // 16 sign-ins ~= 100
   const learningScore = clamp(assessmentSummary.completionPercentage, 0, 100);
   const commitmentScore = clamp(
-    Math.round(Math.min(100, safeRevenue / 10) + (Array.isArray(products) ? products.length : 0) * 8),
+    Math.round(
+      Math.min(100, safeRevenue / 10) +
+        (Array.isArray(products) ? products.length : 0) * 8
+    ),
     0,
     100
   );
 
   const signalOutput = clamp(
-    Math.round(0.5 * engagementScore + 0.3 * learningScore + 0.2 * commitmentScore),
+    Math.round(
+      0.5 * engagementScore + 0.3 * learningScore + 0.2 * commitmentScore
+    ),
     0,
     100
   );
@@ -98,11 +108,13 @@ const computeDiagnosticMetrics = ({
   const gravity = clamp(100 - signalOutput, 0, 100);
 
   const consciousnessLevel = Number(
-    (1 + 4 * (0.6 * learningScore + 0.4 * signalCoherence) / 100).toFixed(1)
+    (1 + (4 * (0.6 * learningScore + 0.4 * signalCoherence)) / 100).toFixed(1)
   ); // 1.0 - 5.0 proxy index
 
   const qgcActivation = clamp(
-    Math.round(0.4 * commitmentScore + 0.35 * signalCoherence + 0.25 * learningScore),
+    Math.round(
+      0.4 * commitmentScore + 0.35 * signalCoherence + 0.25 * learningScore
+    ),
     0,
     100
   );
@@ -183,10 +195,7 @@ const normalizeKajabiContact = (c) => {
 
 const createDiagnostic = async (req, res) => {
   console.log("Creating diagnostic with data:", req.body);
-  const userId = "1";
-  // if (!userId) {
-  //   return errorResponse(res, "Unauthorized: missing user context", 401);
-  // }
+  const userId = req.user?.sub || null;
 
   const { Email } = req.body.payload;
   const assessmentIds = req.body.assessmentIds || [];
@@ -349,8 +358,9 @@ const createDiagnostic = async (req, res) => {
   //   system_fingerprint: "fp_503841a4dc",
   // };
 
-  const diagnosticText =
-    (aiResponse?.choices?.[0]?.message?.content || "").trim();
+  const diagnosticText = (
+    aiResponse?.choices?.[0]?.message?.content || ""
+  ).trim();
 
   if (!diagnosticText) {
     return errorResponse(res, "AI returned empty output. Please retry.", 502);

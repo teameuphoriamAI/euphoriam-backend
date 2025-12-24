@@ -40,6 +40,12 @@ const isAnswerLike = (text = "") => {
   return alpha && alpha.length >= 10 && words.length >= 2;
 };
 
+// Extracts "Q<number>" from an assistant message to track distinct intake topics.
+const extractQuestionNumber = (text = "") => {
+  const match = (text || "").match(/Q\s*(\d{1,2})/i);
+  return match ? Number(match[1]) : null;
+};
+
 const isCreatorClubMember = (context = {}) => {
   const hasProduct = (context.products || []).some((p) =>
     (p.title || "").toLowerCase().includes("creator club")
@@ -440,7 +446,19 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           })
         : false;
 
+    // Track distinct question numbers asked so far to avoid skipping numbers on rephrases.
+    const assistantQuestionNumbers = transcript
+      .filter((m) => m?.role === "assistant")
+      .map((m) => extractQuestionNumber(m.content))
+      .filter((n) => typeof n === "number");
+    const maxQuestionNumber =
+      assistantQuestionNumbers.length > 0
+        ? Math.max(...assistantQuestionNumbers)
+        : 0;
+
     // Determine if the last user turn actually answered the last assistant question.
+    const pendingQuestion = hasAssistantTurn && !aiAnswered;
+
     const userPrompt = !hasAssistantTurn
       ? buildFreeformIntakePrompt({
           transcript,
@@ -484,11 +502,10 @@ Do NOT emit a new question number; stay on the same question.`;
     });
     const nextMessage = aiResponse?.choices?.[0]?.message;
 
-    // Compute answered/asked with AI check; do not auto-count when no assistant turn yet.
-    const answeredCount = hasAssistantTurn
-      ? answered + (aiAnswered ? 1 : 0)
+    // Compute distinct questions answered: count completed question numbers only, excluding the pending one.
+    const answeredCount = maxQuestionNumber
+      ? maxQuestionNumber - (pendingQuestion ? 1 : 0)
       : 0;
-    const askedCount = aiAnswered ? asked + 1 : asked;
 
     // If we've gathered all answers, auto-generate the diagnostic/PDF.
     if (answeredCount >= targetCount) {

@@ -18,8 +18,8 @@ const isAnswerLike = (text = "") => {
   if (!t) return false;
   if (isQuestion(t)) return false;
   const alpha = t.match(/[A-Za-z]/g);
-  const words = t.split(/\s+/).filter(Boolean);
-  return alpha && alpha.length >= 10 && words.length >= 2;
+  // Relaxed: Allow short answers like "yes", "A", or "d,d,d"
+  return alpha && alpha.length >= 1 && t.length >= 1;
 };
 
 // In-memory session store; for production swap to Redis.

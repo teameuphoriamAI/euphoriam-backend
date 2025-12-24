@@ -6,6 +6,7 @@ const { Discovery } = require("./discoveryModel");
 const { CoachingSession } = require("./coachingSessionModel");
 const { IntegrationEvent } = require("./integrationEventModel");
 const { VoiceNote } = require("./voiceNoteModel");
+const { Document } = require("./documentModel");
 
 const applyAssociations = () => {
   User.hasMany(Purchase, { foreignKey: "userId" });
@@ -47,6 +48,7 @@ module.exports = {
   CoachingSession,
   IntegrationEvent,
   VoiceNote,
+  Document,
   applyAssociations,
 };
 

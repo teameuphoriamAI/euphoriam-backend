@@ -46,6 +46,16 @@ const isAnswerLike = (text = "") => {
   return alpha && alpha.length >= 10 && words.length >= 2;
 };
 
+const isCreatorClubMember = (context = {}) => {
+  const hasProduct = (context.products || []).some((p) =>
+    (p.title || "").toLowerCase().includes("creator club")
+  );
+  const hasOffer = (context.offers || []).some((o) =>
+    (o.title || "").toLowerCase().includes("creator club")
+  );
+  return hasProduct || hasOffer;
+};
+
 // Lightweight AI check to decide if a user reply is an answer to the last question.
 const isAiLikelyAnswer = async ({ question, reply }) => {
   const t = (reply || "").trim().toLowerCase();
@@ -671,6 +681,15 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       assessmentIds,
     });
 
+    // Membership gate: require Creator Club
+    if (!isCreatorClubMember(diagnosticContext)) {
+      return errorResponse(
+        res,
+        "You are not a Creator Club member. Please subscribe or purchase to use the chatbot.",
+        403
+      );
+    }
+
     const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
     const retrieved = lastUser?.content
       ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
@@ -847,6 +866,14 @@ Do NOT emit a new question number; stay on the same question.`;
     contactId,
     siteId,
   } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+  if (!isCreatorClubMember(diagnosticContext)) {
+    return errorResponse(
+      res,
+      "You are not a Creator Club member. Please subscribe or purchase to use the chatbot.",
+      403
+    );
+  }
 
   const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
   const retrieved = lastUser?.content

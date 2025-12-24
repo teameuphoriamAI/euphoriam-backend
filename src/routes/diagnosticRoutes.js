@@ -19,5 +19,15 @@ router.post(
   // auth,
   asyncHandler(diagnosticController.createDiagnostic)
 );
+router.post(
+  "/chatbot",
+  // auth optional for now
+  asyncHandler(diagnosticController.chatbotDiagnostic)
+);
+router.post(
+  "/chatbot-freeform",
+  // auth optional for now
+  asyncHandler(diagnosticController.chatbotDiagnosticFreeform)
+);
 
 module.exports = router;

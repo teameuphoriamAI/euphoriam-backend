@@ -151,11 +151,28 @@ const generateDiagnosticPdf = (diagnostic) =>
         console.log("[diagnosticPdf] aiReport typeof:", typeof aiReport);
         console.log("[diagnosticPdf] aiReport head:", aiReport.slice(0, 200));
 
-        // Exact template validation gate
-        if (!aiReport.startsWith("----------------------------------------")) {
+        // Allow: legacy divider-led reports, intro-led reports, or title pages
+        // that contain the intro within the first chunk.
+        const trimmed = aiReport.trimStart();
+        const startsWithDivider = trimmed.startsWith("----------------------------------------");
+        const startsWithIntro = trimmed.startsWith(
+          "✨ BEFORE YOU READ THIS DIAGNOSTIC"
+        );
+        const containsIntroEarly =
+          !startsWithIntro &&
+          trimmed.slice(0, 500).includes("BEFORE YOU READ THIS DIAGNOSTIC");
+        const startsWithTitle =
+          trimmed.toUpperCase().startsWith("EUPHORIAM DIAGNOSTIC REPORT");
+
+        if (
+          !startsWithDivider &&
+          !startsWithIntro &&
+          !containsIntroEarly &&
+          !startsWithTitle
+        ) {
           const head = aiReport.slice(0, 300);
           const err = new Error(
-            `aiReport does not start with divider line. First 300 chars:\n${head}`
+            `aiReport does not start with a recognized header. First 300 chars:\n${head}`
           );
           err.code = "AI_REPORT_TEMPLATE_MISMATCH";
           throw err;

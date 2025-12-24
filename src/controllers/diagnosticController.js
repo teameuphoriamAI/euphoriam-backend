@@ -6,6 +6,16 @@ const {
   DIAGNOSTIC_SYSTEM_PROMPT,
   buildDiagnosticPrompt,
 } = require("../helpers/aiCommand");
+const {
+  EUPHORIAM_V3_SYSTEM_PROMPT,
+  buildIntakeQuestionResponse,
+  buildFinalReportPrompt,
+  DEFAULT_INTRO_PAGE_TEXT,
+  EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
+  buildFreeformIntakePrompt,
+  sanitizeReportText,
+} = require("../helpers/euphoriamChatbot");
+const { retrieveSimilarChunks } = require("../helpers/rag");
 const { successResponse, errorResponse } = require("../utils/response");
 const {
   getCustomerByEmail,
@@ -25,6 +35,63 @@ const { sendEmail } = require("../utils/email");
 const {
   diagnosticReportEmail,
 } = require("../utils/emailTemplate/initialDignosticReport");
+
+const isQuestion = (text = "") => text.trim().endsWith("?");
+const isAnswerLike = (text = "") => {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (isQuestion(t)) return false;
+  const alpha = t.match(/[A-Za-z]/g);
+  const words = t.split(/\s+/).filter(Boolean);
+  return alpha && alpha.length >= 10 && words.length >= 2;
+};
+
+// Lightweight AI check to decide if a user reply is an answer to the last question.
+const isAiLikelyAnswer = async ({ question, reply }) => {
+  const t = (reply || "").trim().toLowerCase();
+  if (!t) return false;
+  if (isQuestion(t)) return false;
+  // Hard fail on clarify/intents
+  const clarifyPhrases = [
+    "elaborate",
+    "clarify",
+    "explain",
+    "repeat",
+    "don't understand",
+    "do not understand",
+    "not sure",
+    "what do you mean",
+    "?", // ends with question mark
+  ];
+  if (clarifyPhrases.some((p) => t.includes(p))) return false;
+  const alpha = t.match(/[A-Za-z]/g);
+  const words = t.split(/\s+/).filter(Boolean);
+  if (!alpha || alpha.length < 10 || words.length < 2) return false;
+
+  const prompt = `
+You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
+
+Question: "${question || "N/A"}"
+Reply: "${reply}"
+
+Rules:
+- Reply only "yes" or "no".
+- "yes" if the reply attempts to answer; "no" if it is just a question, "I don't know", or unrelated.
+`;
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_tokens: 3,
+    });
+    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
+    return txt.includes("yes");
+  } catch (err) {
+    console.error("[isAiLikelyAnswer] fallback to heuristic", err);
+    return false;
+  }
+};
 
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
@@ -193,15 +260,12 @@ const normalizeKajabiContact = (c) => {
   };
 };
 
-const createDiagnostic = async (req, res) => {
-  console.log("Creating diagnostic with data:", req.body);
-  const userId = req.user?.sub || null;
-
-  const { Email } = req.body.payload;
-  const assessmentIds = req.body.assessmentIds || [];
-
-  // Fetch customer
-  const customerInfo = await getCustomerByEmail(Email);
+/**
+ * Fetch Kajabi data, compute metrics, and assemble the diagnostic context used by
+ * both the one-shot diagnostic and the conversational chatbot flow.
+ */
+const buildKajabiDiagnosticContext = async ({ email, assessmentIds = [] }) => {
+  const customerInfo = await getCustomerByEmail(email);
   const customerDetails = await getCustomerFullDetails(customerInfo.id);
 
   const customerData = customerDetails.data;
@@ -228,7 +292,7 @@ const createDiagnostic = async (req, res) => {
     const productData = product?.data;
     const productType = productData?.attributes?.product_type_name;
 
-    // 1️⃣ Only process COURSE products
+    // Only process COURSE products
     if (productType !== "Course") {
       console.log(
         `⏭ Skipping non-course product: ${productData?.attributes?.title}`
@@ -236,7 +300,7 @@ const createDiagnostic = async (req, res) => {
       continue;
     }
 
-    // 2️⃣ Extract linked course ID (CRITICAL FIX)
+    // Extract linked course ID
     const courseId = extractCourseIdFromProduct(product);
 
     if (!courseId) {
@@ -250,10 +314,10 @@ const createDiagnostic = async (req, res) => {
       `📘 Fetching course ${courseId} for product ${productData.attributes.title}`
     );
 
-    // 3️⃣ Fetch course with posts
+    // Fetch course with posts
     const courseData = await getCourseWithPosts(courseId);
 
-    // 4️⃣ Extract assessments from posts
+    // Extract assessments from posts
     const assessments = extractAssessmentsFromCourse(courseData);
 
     if (!assessments.length) {
@@ -261,7 +325,7 @@ const createDiagnostic = async (req, res) => {
       continue;
     }
 
-    // 5️⃣ Get customer progress (completed / passed / failed)
+    // Get customer progress (completed / passed / failed)
     const progress = await getAssessmentProgressForCustomer(
       customerData.id,
       assessments
@@ -275,7 +339,6 @@ const createDiagnostic = async (req, res) => {
     });
   }
 
-  // Build AI input context
   const normalizedProducts = products.map(normalizeKajabiProduct);
   const normalizedOffers = offers.map(normalizeKajabiOffer);
   const metrics = computeDiagnosticMetrics({
@@ -303,10 +366,46 @@ const createDiagnostic = async (req, res) => {
     metrics,
   };
 
+  return {
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    site,
+    contact,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
+  };
+};
+
+const createDiagnostic = async (req, res) => {
+  console.log("Creating diagnostic with data:", req.body);
+  const userId = req.user?.sub || null;
+
+  const { Email } = req.body.payload;
+  const assessmentIds = req.body.assessmentIds || [];
+
+  const {
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    site,
+    contact,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
+  } = await buildKajabiDiagnosticContext({ email: Email, assessmentIds });
+
   // Call Euphoriam AI
   const callOpenAi = async (compact) =>
     openai.chat.completions.create({
-      model: "gpt-4.1",
+      model: "gpt-5.2",
       messages: [
         { role: "system", content: DIAGNOSTIC_SYSTEM_PROMPT },
         {
@@ -315,7 +414,7 @@ const createDiagnostic = async (req, res) => {
         },
       ],
       temperature: 0.2,
-      max_tokens: 2200,
+      max_completion_tokens: 2200,
     });
 
   const aiResponse = await callOpenAi(true);
@@ -358,9 +457,10 @@ const createDiagnostic = async (req, res) => {
   //   system_fingerprint: "fp_503841a4dc",
   // };
 
-  const diagnosticText = (
+  let diagnosticText = (
     aiResponse?.choices?.[0]?.message?.content || ""
   ).trim();
+  diagnosticText = sanitizeReportText(diagnosticText, metrics);
 
   if (!diagnosticText) {
     return errorResponse(res, "AI returned empty output. Please retry.", 502);
@@ -411,8 +511,413 @@ const createDiagnostic = async (req, res) => {
     diagnosticId: diagnostic,
     diagnostic: diagnostic.data,
     pdfPath,
-    products,
+    products: normalizedProducts,
     courseAssessments,
+  });
+};
+
+const chatbotDiagnostic = async (req, res) => {
+  const {
+    email,
+    assessmentIds = [],
+    intakeAnswers = [],
+    finalize = false,
+    introPageText,
+  } = req.body || {};
+
+  if (!email) {
+    return errorResponse(res, "Email is required", 400);
+  }
+
+  const recentDiagnostics = await Diagnostic.findAll({
+    order: [["createdAt", "DESC"]],
+    limit: 10,
+  });
+  const isReturningUser = recentDiagnostics.some(
+    (d) => d?.data?.profile?.email === email
+  );
+
+  if (!finalize) {
+    const intake = buildIntakeQuestionResponse({
+      answers: intakeAnswers,
+      isReturningUser,
+    });
+
+    return successResponse(res, "Next chatbot prompt", {
+      ...intake,
+      customer: {
+        name: null,
+        email,
+      },
+      introPageText: introPageText || DEFAULT_INTRO_PAGE_TEXT,
+    });
+  }
+
+  // Pull Kajabi context and metrics only when finalizing
+  const {
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
+  } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+  const messages = [
+    { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: buildFinalReportPrompt({
+        customerContext: diagnosticContext,
+        intakeAnswers,
+        introPageText,
+      }),
+    },
+  ];
+
+  const aiResponse = await openai.chat.completions.create({
+    model: "gpt-5.2",
+    messages,
+    temperature: 0.15,
+    max_completion_tokens: 4500,
+  });
+
+  let reportText = (aiResponse?.choices?.[0]?.message?.content || "").trim();
+  reportText = sanitizeReportText(reportText, metrics);
+
+  if (!reportText) {
+    return errorResponse(
+      res,
+      "AI returned empty diagnostic report. Please retry.",
+      502
+    );
+  }
+
+  const diagnostic = await Diagnostic.create({
+    userId: req.user?.sub || null,
+    title: `Euphoriam Diagnostic v3 – ${attributes.name}`,
+    data: {
+      customerId: customerData.id,
+      siteId,
+      diagnosticVersion: 3,
+      generatedAt: new Date(),
+      profile: {
+        name: attributes.name,
+        email: attributes.email,
+        signInCount: attributes.sign_in_count,
+        netRevenue: attributes.net_revenue,
+        memberSince: attributes.created_at,
+      },
+      site: diagnosticContext.site,
+      contact: diagnosticContext.contact,
+      products: normalizedProducts,
+      offers: normalizedOffers,
+      courseAssessments,
+      metrics,
+      intakeAnswers,
+      aiReport: reportText,
+      rawSource: {
+        kajabiCustomerId: customerData.id,
+        kajabiContactId: contactId,
+      },
+    },
+  });
+  console.log("email", attributes.email);
+
+  const pdfPath = await generateDiagnosticPdf(diagnostic);
+  await sendEmail(
+    attributes.email,
+    "Your Diagnostic Report – Euphoraum-AI",
+    diagnosticReportEmail(attributes.name),
+    pdfPath
+  );
+  return successResponse(res, "Chatbot diagnostic generated", {
+    diagnosticId: diagnostic.id,
+    diagnostic: diagnostic.data,
+    pdfPath,
+    reportText,
+    isReturningUser,
+  });
+};
+
+const chatbotDiagnosticFreeform = async (req, res) => {
+  const {
+    email,
+    messages = [],
+    assessmentIds = [],
+    finalize = false,
+    introPageText,
+    targetCount = 12,
+  } = req.body || {};
+
+  if (!email) {
+    return errorResponse(res, "Email is required", 400);
+  }
+
+  const transcript = Array.isArray(messages) ? messages : [];
+  const answered = transcript.filter(
+    (m) => m?.role === "user" && isAnswerLike(m.content || "")
+  ).length;
+  const asked = transcript.filter((m) => m?.role === "assistant").length;
+  const introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
+
+  if (!finalize) {
+    // Pull Kajabi context even during intake to keep questions on-topic.
+    const { diagnosticContext, metrics } = await buildKajabiDiagnosticContext({
+      email,
+      assessmentIds,
+    });
+
+    const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
+    const retrieved = lastUser?.content
+      ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+      : [];
+
+    const lastAssistant = [...transcript]
+      .reverse()
+      .find((m) => m?.role === "assistant");
+
+    const hasAssistantTurn = Boolean(lastAssistant);
+    const aiAnswered =
+      hasAssistantTurn && lastUser
+        ? await isAiLikelyAnswer({
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          })
+        : false;
+
+    // Determine if the last user turn actually answered the last assistant question.
+    const userPrompt = !hasAssistantTurn
+      ? buildFreeformIntakePrompt({
+          transcript,
+          targetCount,
+          introPageText: introText,
+          factsContext: diagnosticContext,
+          retrieved,
+        })
+      : aiAnswered
+      ? buildFreeformIntakePrompt({
+          transcript,
+          targetCount,
+          introPageText: introText,
+          factsContext: diagnosticContext,
+          retrieved,
+        })
+      : `The user has NOT answered the last question. Do NOT move to the next question. 
+Rephrase and clarify the SAME question only, briefly acknowledge their confusion, and invite them to answer that question now.
+
+Last question: "${lastAssistant?.content || ""}"
+User reply: "${lastUser?.content || ""}"
+
+Return only the clarified form of that same question (plus a short acknowledgment), nothing else. 
+Do NOT emit a new question number; stay on the same question.`;
+
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-5.2",
+      messages: [
+        { role: "system", content: EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT },
+        ...transcript.map((m) => ({
+          role: m.role === "assistant" ? "assistant" : "user",
+          content: m.content,
+        })),
+        {
+          role: "user",
+          content: userPrompt,
+        },
+      ],
+      temperature: 0.3,
+      max_completion_tokens: 400,
+    });
+    const nextMessage = aiResponse?.choices?.[0]?.message;
+
+    // Compute answered/asked with AI check; do not auto-count when no assistant turn yet.
+    const answeredCount = hasAssistantTurn
+      ? answered + (aiAnswered ? 1 : 0)
+      : 0;
+    const askedCount = aiAnswered ? asked + 1 : asked;
+
+    // If we've gathered all answers, auto-generate the diagnostic/PDF.
+    if (answeredCount >= targetCount) {
+      const {
+        courseAssessments,
+        normalizedProducts,
+        normalizedOffers,
+        metrics,
+        customerData,
+        attributes,
+        contactId,
+        siteId,
+      } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+      const finalizeRetrieved = lastUser?.content
+        ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+        : [];
+
+      const finalizeResponse = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        messages: [
+          { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: buildFinalReportPrompt({
+              customerContext: diagnosticContext,
+              intakeAnswers: transcript,
+              introPageText: introText,
+              retrieved: finalizeRetrieved,
+            }),
+          },
+        ],
+        temperature: 0.15,
+        max_completion_tokens: 4500,
+      });
+
+      let reportText =
+        (finalizeResponse?.choices?.[0]?.message?.content || "").trim();
+      reportText = sanitizeReportText(reportText, metrics);
+
+      const diagnostic = await Diagnostic.create({
+        userId: req.user?.sub || null,
+        title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
+        data: {
+          customerId: customerData.id,
+          siteId,
+          diagnosticVersion: 3,
+          generatedAt: new Date(),
+          profile: {
+            name: attributes.name,
+            email: attributes.email,
+            signInCount: attributes.sign_in_count,
+            netRevenue: attributes.net_revenue,
+            memberSince: attributes.created_at,
+          },
+          site: diagnosticContext.site,
+          contact: diagnosticContext.contact,
+          products: normalizedProducts,
+          offers: normalizedOffers,
+          courseAssessments,
+          metrics,
+          intakeTranscript: transcript,
+          aiReport: reportText,
+          rawSource: {
+            kajabiCustomerId: customerData.id,
+            kajabiContactId: contactId,
+          },
+        },
+      });
+
+      const pdfPath = await generateDiagnosticPdf(diagnostic);
+
+      // Email the user their report
+      await sendEmail(
+        attributes.email,
+        "Your Diagnostic Report – Euphoraum-AI",
+        diagnosticReportEmail(attributes.name),
+        pdfPath
+      );
+
+      return successResponse(res, "Chatbot diagnostic (auto-finalized)", {
+        diagnosticId: diagnostic.id,
+        diagnostic: diagnostic.data,
+        pdfPath,
+        reportText,
+        autoFinalized: true,
+      });
+    }
+
+    return successResponse(res, "Next chatbot message", {
+      nextMessage,
+      introPageText: introText,
+      transcript,
+      retrieved,
+    });
+  }
+
+  // Finalize: fetch Kajabi context, then generate the full report using the transcript.
+  const {
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
+  } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+  const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
+  const retrieved = lastUser?.content
+    ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+    : [];
+
+  const aiResponse = await openai.chat.completions.create({
+    model: "gpt-5.2",
+    messages: [
+      { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: buildFinalReportPrompt({
+          customerContext: diagnosticContext,
+          intakeAnswers: transcript,
+          introPageText: introText,
+          retrieved,
+        }),
+      },
+    ],
+    temperature: 0.15,
+    max_completion_tokens: 4500,
+  });
+
+  const reportText = (aiResponse?.choices?.[0]?.message?.content || "").trim();
+
+  if (!reportText) {
+    return errorResponse(
+      res,
+      "AI returned empty diagnostic report. Please retry.",
+      502
+    );
+  }
+
+  const diagnostic = await Diagnostic.create({
+    userId: req.user?.sub || null,
+    title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
+    data: {
+      customerId: customerData.id,
+      siteId,
+      diagnosticVersion: 3,
+      generatedAt: new Date(),
+      profile: {
+        name: attributes.name,
+        email: attributes.email,
+        signInCount: attributes.sign_in_count,
+        netRevenue: attributes.net_revenue,
+        memberSince: attributes.created_at,
+      },
+      site: diagnosticContext.site,
+      contact: diagnosticContext.contact,
+      products: normalizedProducts,
+      offers: normalizedOffers,
+      courseAssessments,
+      metrics,
+      intakeTranscript: transcript,
+      aiReport: reportText,
+      rawSource: {
+        kajabiCustomerId: customerData.id,
+        kajabiContactId: contactId,
+      },
+    },
+  });
+
+  const pdfPath = await generateDiagnosticPdf(diagnostic);
+
+  return successResponse(res, "Chatbot diagnostic (freeform) generated", {
+    diagnosticId: diagnostic.id,
+    diagnostic: diagnostic.data,
+    pdfPath,
+    reportText,
   });
 };
 
@@ -448,4 +953,12 @@ const getById = async (req, res) => {
   return successResponse(res, "Diagnostic fetched", diagnostic);
 };
 
-module.exports = { createDiagnostic, listMine, listAll, getById };
+module.exports = {
+  createDiagnostic,
+  listMine,
+  listAll,
+  getById,
+  chatbotDiagnostic,
+  chatbotDiagnosticFreeform,
+  buildKajabiDiagnosticContext,
+};

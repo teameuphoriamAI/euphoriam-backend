@@ -1,14 +1,9 @@
 const { Diagnostic } = require("../models/diagnosticModel");
 const validate = require("../helpers/validate");
-const diagnosticSchema = require("../schemas/diagnosticSchema");
 const openai = require("../config/openai");
-const {
-  DIAGNOSTIC_SYSTEM_PROMPT,
-  buildDiagnosticPrompt,
-} = require("../helpers/aiCommand");
+
 const {
   EUPHORIAM_V3_SYSTEM_PROMPT,
-  buildIntakeQuestionResponse,
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
@@ -23,7 +18,6 @@ const {
   getSiteById,
   getContactById,
   getOfferById,
-  getProductById,
   getAssessmentProgressForCustomer,
   getCourseWithPosts,
   extractAssessmentsFromCourse,
@@ -269,11 +263,7 @@ const normalizeKajabiContact = (c) => {
     ...pick(attributes, ["first_name", "last_name", "email", "phone_number"]),
   };
 };
-
-/**
- * Fetch Kajabi data, compute metrics, and assemble the diagnostic context used by
- * both the one-shot diagnostic and the conversational chatbot flow.
- */
+// this function gives the full kajabi context for a given customer email
 const buildKajabiDiagnosticContext = async ({ email, assessmentIds = [] }) => {
   const customerInfo = await getCustomerByEmail(email);
   const customerDetails = await getCustomerFullDetails(customerInfo.id);
@@ -391,271 +381,10 @@ const buildKajabiDiagnosticContext = async ({ email, assessmentIds = [] }) => {
   };
 };
 
-const createDiagnostic = async (req, res) => {
-  console.log("Creating diagnostic with data:", req.body);
-  const userId = req.user?.sub || null;
-
-  const { Email } = req.body.payload;
-  const assessmentIds = req.body.assessmentIds || [];
-
-  const {
-    diagnosticContext,
-    courseAssessments,
-    normalizedProducts,
-    normalizedOffers,
-    metrics,
-    site,
-    contact,
-    customerData,
-    attributes,
-    contactId,
-    siteId,
-  } = await buildKajabiDiagnosticContext({ email: Email, assessmentIds });
-
-  // Call Euphoriam AI
-  const callOpenAi = async (compact) =>
-    openai.chat.completions.create({
-      model: "gpt-5.2",
-      messages: [
-        { role: "system", content: DIAGNOSTIC_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: buildDiagnosticPrompt(diagnosticContext, { compact }),
-        },
-      ],
-      temperature: 0.2,
-      max_completion_tokens: 2200,
-    });
-
-  const aiResponse = await callOpenAi(true);
-
-  // const aiResponse = {
-  //   id: "chatcmpl-Cn62rORJFphottKJZdRGiDUe3jxHr",
-  //   object: "chat.completion",
-  //   created: 1765817345,
-  //   model: "gpt-4.1-2025-04-14",
-  //   choices: [
-  //     {
-  //       index: 0,
-  //       message: {
-  //         role: "assistant",
-  //         content:
-  //           '{\n  "readinessStage": "Stage 1",\n  "summary": "Aishah has actively engaged with Euphoriam offerings, including \'The Unlimited Creator\' course and community access. At this foundational stage, she is positioned to build strong habits and deepen her transformation journey.",\n  "strengths": [\n    "Consistent platform engagement",\n    "Investment in core learning and community resources",\n    "Openness to new experiences and growth opportunities"\n  ],\n  "currentChallenges": [\n    "Establishing a regular practice with course materials",\n    "Building connections within the community",\n    "Clarifying immediate personal goals for transformation"\n  ],\n  "recommendedFocus": [\n    "Set a weekly schedule for progressing through \'The Unlimited Creator\' modules",\n    "Participate in introductory threads and live calls to foster community ties",\n    "Reflect on key intentions and outcomes desired from this journey"\n  ],\n  "nextSteps": [\n    "Complete the orientation and first module of \'The Unlimited Creator\'",\n    "Introduce yourself in the Euphoriam Community and engage with at least one group discussion",\n    "Join the next available live call or explore the library for foundational content"\n  ],\n  "productGuidance": "Leverage \'The Unlimited Creator\' course as your structured pathway—progress at your own pace, but aim for regular engagement. Use the Euphoriam Community for support, accountability, and shared insights. Access the Live Calls/Library to deepen understanding and connect with others; these resources are especially valuable for early-stage momentum."\n}',
-  //         refusal: null,
-  //         annotations: [],
-  //       },
-  //       logprobs: null,
-  //       finish_reason: "stop",
-  //     },
-  //   ],
-  //   usage: {
-  //     prompt_tokens: 373,
-  //     completion_tokens: 313,
-  //     total_tokens: 686,
-  //     prompt_tokens_details: {
-  //       cached_tokens: 0,
-  //       audio_tokens: 0,
-  //     },
-  //     completion_tokens_details: {
-  //       reasoning_tokens: 0,
-  //       audio_tokens: 0,
-  //       accepted_prediction_tokens: 0,
-  //       rejected_prediction_tokens: 0,
-  //     },
-  //   },
-  //   service_tier: "default",
-  //   system_fingerprint: "fp_503841a4dc",
-  // };
-
-  let diagnosticText = (
-    aiResponse?.choices?.[0]?.message?.content || ""
-  ).trim();
-  diagnosticText = sanitizeReportText(diagnosticText, metrics);
-
-  if (!diagnosticText) {
-    return errorResponse(res, "AI returned empty output. Please retry.", 502);
-  }
-
-  // Store as a plain string. Do not rewrite bullets or unicode divider lines.
-
-  // Save diagnostic to DB
-  const diagnostic = await Diagnostic.create({
-    userId,
-    title: `Stage 1 Diagnostic – ${attributes.name}`,
-    data: {
-      customerId: customerData.id,
-      siteId,
-      diagnosticVersion: 1,
-      generatedAt: new Date(),
-      profile: {
-        name: attributes.name,
-        email: attributes.email,
-        signInCount: attributes.sign_in_count,
-        netRevenue: attributes.net_revenue,
-        memberSince: attributes.created_at,
-      },
-      site: diagnosticContext.site,
-      contact: diagnosticContext.contact,
-      products: diagnosticContext.products,
-      offers: diagnosticContext.offers,
-      courseAssessments,
-      metrics,
-      aiReport: diagnosticText,
-
-      rawSource: {
-        kajabiCustomerId: customerData.id,
-        kajabiContactId: contactId,
-      },
-    },
-  });
-
-  const pdfPath = await generateDiagnosticPdf(diagnostic);
-  await sendEmail(
-    attributes.email,
-    "Your Diagnostic Report – Euphoraum-AI",
-    diagnosticReportEmail(attributes.name),
-    pdfPath
-  );
-  // Return response
-  return successResponse(res, "Diagnostic generated & saved", {
-    diagnosticId: diagnostic,
-    diagnostic: diagnostic.data,
-    pdfPath,
-    products: normalizedProducts,
-    courseAssessments,
-  });
-};
-
-const chatbotDiagnostic = async (req, res) => {
-  const {
-    email,
-    assessmentIds = [],
-    intakeAnswers = [],
-    finalize = false,
-    introPageText,
-  } = req.body || {};
-
-  if (!email) {
-    return errorResponse(res, "Email is required", 400);
-  }
-
-  const recentDiagnostics = await Diagnostic.findAll({
-    order: [["createdAt", "DESC"]],
-    limit: 10,
-  });
-  const isReturningUser = recentDiagnostics.some(
-    (d) => d?.data?.profile?.email === email
-  );
-
-  if (!finalize) {
-    const intake = buildIntakeQuestionResponse({
-      answers: intakeAnswers,
-      isReturningUser,
-    });
-
-    return successResponse(res, "Next chatbot prompt", {
-      ...intake,
-      customer: {
-        name: null,
-        email,
-      },
-      introPageText: introPageText || DEFAULT_INTRO_PAGE_TEXT,
-    });
-  }
-
-  // Pull Kajabi context and metrics only when finalizing
-  const {
-    diagnosticContext,
-    courseAssessments,
-    normalizedProducts,
-    normalizedOffers,
-    metrics,
-    customerData,
-    attributes,
-    contactId,
-    siteId,
-  } = await buildKajabiDiagnosticContext({ email, assessmentIds });
-
-  const messages = [
-    { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: buildFinalReportPrompt({
-        customerContext: diagnosticContext,
-        intakeAnswers,
-        introPageText,
-      }),
-    },
-  ];
-
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-5.2",
-    messages,
-    temperature: 0.15,
-    max_completion_tokens: 4500,
-  });
-
-  let reportText = (aiResponse?.choices?.[0]?.message?.content || "").trim();
-  reportText = sanitizeReportText(reportText, metrics);
-
-  if (!reportText) {
-    return errorResponse(
-      res,
-      "AI returned empty diagnostic report. Please retry.",
-      502
-    );
-  }
-
-  const diagnostic = await Diagnostic.create({
-    userId: req.user?.sub || null,
-    title: `Euphoriam Diagnostic v3 – ${attributes.name}`,
-    data: {
-      customerId: customerData.id,
-      siteId,
-      diagnosticVersion: 3,
-      generatedAt: new Date(),
-      profile: {
-        name: attributes.name,
-        email: attributes.email,
-        signInCount: attributes.sign_in_count,
-        netRevenue: attributes.net_revenue,
-        memberSince: attributes.created_at,
-      },
-      site: diagnosticContext.site,
-      contact: diagnosticContext.contact,
-      products: normalizedProducts,
-      offers: normalizedOffers,
-      courseAssessments,
-      metrics,
-      intakeAnswers,
-      aiReport: reportText,
-      rawSource: {
-        kajabiCustomerId: customerData.id,
-        kajabiContactId: contactId,
-      },
-    },
-  });
-  console.log("email", attributes.email);
-
-  const pdfPath = await generateDiagnosticPdf(diagnostic);
-  await sendEmail(
-    attributes.email,
-    "Your Diagnostic Report – Euphoraum-AI",
-    diagnosticReportEmail(attributes.name),
-    pdfPath
-  );
-  return successResponse(res, "Chatbot diagnostic generated", {
-    diagnosticId: diagnostic.id,
-    diagnostic: diagnostic.data,
-    pdfPath,
-    reportText,
-    isReturningUser,
-  });
-};
-
 const chatbotDiagnosticFreeform = async (req, res) => {
   const {
     email,
+    name,
     messages = [],
     assessmentIds = [],
     finalize = false,
@@ -665,6 +394,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
   if (!email) {
     return errorResponse(res, "Email is required", 400);
+  }
+  if (!name) {
+    return errorResponse(res, "Name is required", 400);
   }
 
   const transcript = Array.isArray(messages) ? messages : [];
@@ -793,8 +525,9 @@ Do NOT emit a new question number; stay on the same question.`;
         max_completion_tokens: 4500,
       });
 
-      let reportText =
-        (finalizeResponse?.choices?.[0]?.message?.content || "").trim();
+      let reportText = (
+        finalizeResponse?.choices?.[0]?.message?.content || ""
+      ).trim();
       reportText = sanitizeReportText(reportText, metrics);
 
       const diagnostic = await Diagnostic.create({
@@ -981,11 +714,9 @@ const getById = async (req, res) => {
 };
 
 module.exports = {
-  createDiagnostic,
   listMine,
   listAll,
   getById,
-  chatbotDiagnostic,
   chatbotDiagnosticFreeform,
   buildKajabiDiagnosticContext,
 };

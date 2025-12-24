@@ -14,19 +14,9 @@ router.get(
 );
 router.get("/", auth, asyncHandler(diagnosticController.listMine));
 router.get("/:id", auth, asyncHandler(diagnosticController.getById));
-router.post(
-  "/run-diagnostic",
-  // auth,
-  asyncHandler(diagnosticController.createDiagnostic)
-);
-router.post(
-  "/chatbot",
-  // auth optional for now
-  asyncHandler(diagnosticController.chatbotDiagnostic)
-);
+
 router.post(
   "/chatbot-freeform",
-  // auth optional for now
   asyncHandler(diagnosticController.chatbotDiagnosticFreeform)
 );
 

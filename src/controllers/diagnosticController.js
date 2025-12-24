@@ -36,8 +36,8 @@ const isAnswerLike = (text = "") => {
   if (!t) return false;
   if (isQuestion(t)) return false;
   const alpha = t.match(/[A-Za-z]/g);
-  const words = t.split(/\s+/).filter(Boolean);
-  return alpha && alpha.length >= 10 && words.length >= 2;
+  // Relaxed: Allow short answers like "yes", "A", or "d,d,d"
+  return alpha && alpha.length >= 1 && t.length >= 1;
 };
 
 // Extracts "Q<number>" from an assistant message to track distinct intake topics.
@@ -75,8 +75,8 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
   ];
   if (clarifyPhrases.some((p) => t.includes(p))) return false;
   const alpha = t.match(/[A-Za-z]/g);
-  const words = t.split(/\s+/).filter(Boolean);
-  if (!alpha || alpha.length < 10 || words.length < 2) return false;
+  // Relaxed: Allow short answers to pass to the AI classifier
+  if (!alpha || alpha.length < 1) return false;
 
   const prompt = `
 You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
@@ -162,7 +162,7 @@ const computeDiagnosticMetrics = ({
   const commitmentScore = clamp(
     Math.round(
       Math.min(100, safeRevenue / 10) +
-        (Array.isArray(products) ? products.length : 0) * 8
+      (Array.isArray(products) ? products.length : 0) * 8
     ),
     0,
     100
@@ -441,9 +441,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     const aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-            question: lastAssistant.content,
-            reply: lastUser.content,
-          })
+          question: lastAssistant.content,
+          reply: lastUser.content,
+        })
         : false;
 
     // Track distinct question numbers asked so far to avoid skipping numbers on rephrases.
@@ -461,21 +461,21 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     const userPrompt = !hasAssistantTurn
       ? buildFreeformIntakePrompt({
-          transcript,
-          targetCount,
-          introPageText: introText,
-          factsContext: diagnosticContext,
-          retrieved,
-        })
+        transcript,
+        targetCount,
+        introPageText: introText,
+        factsContext: diagnosticContext,
+        retrieved,
+      })
       : aiAnswered
-      ? buildFreeformIntakePrompt({
+        ? buildFreeformIntakePrompt({
           transcript,
           targetCount,
           introPageText: introText,
           factsContext: diagnosticContext,
           retrieved,
         })
-      : `The user has NOT answered the last question. Do NOT move to the next question. 
+        : `The user has NOT answered the last question. Do NOT move to the next question. 
 Rephrase and clarify the SAME question only, briefly acknowledge their confusion, and invite them to answer that question now.
 
 Last question: "${lastAssistant?.content || ""}"

@@ -8,14 +8,14 @@ const { initSockets } = require("./src/socket");
 /* 🔓 CORS CONFIG */
 app.use(
   cors({
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    origin: `${process.env.FRONTEND_URL}`,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 const server = http.createServer(app);
 let io;
 

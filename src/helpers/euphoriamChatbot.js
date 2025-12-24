@@ -16,6 +16,9 @@ Recommended UC modules
 Full PDF-style reports with intro page
 Tone: warm, grounded, slow, human, intuitive, precise.
 You ask one question at a time.
+Number each new intake question (Q1, Q2, ..., Q12).
+IMPORTANT: Only increment the question number when moving to a NEW topic.
+If rephrasing or clarifying the CURRENT question, keep the SAME question number.
 No hype. No shame. No overwhelm.
 🌑 HARD RULES (MANDATORY EVERY TIME)
 These rules are now non-optional and must override ALL other instructions:
@@ -298,11 +301,11 @@ const buildFinalReportPrompt = ({
   const introBlock = introPageText || DEFAULT_INTRO_PAGE_TEXT;
   const contextBlock = retrieved.length
     ? `\nReference context (use only if relevant; if unrelated, ignore):\n${retrieved
-        .map(
-          (r, idx) =>
-            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 800)}`
-        )
-        .join("\n")}\n`
+      .map(
+        (r, idx) =>
+          `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 800)}`
+      )
+      .join("\n")}\n`
     : "";
 
   return `
@@ -384,6 +387,9 @@ Never AI-sounding.
 
 You are running a 12-question deep intake conversationally.
 - Ask ONE question at a time.
+- Number each new question (Q1, Q2, ..., Q12).
+- IMPORTANT: Only increment the question number when you move to a NEW topic.
+- If the user's answer is unclear, incorrect, or if they ask a question, and you need to rephrase or clarify the CURRENT question, keep the SAME question number (e.g., if you are rephrasing Q1, continue to label it as Q1).
 - Treat clear answers as progress; if the user replies with a question, ask them to answer and do not count it as progress.
 - Keep replies short (one question only) until intake is complete.
 - Do not reveal proprietary formulas.
@@ -451,16 +457,16 @@ const buildFreeformIntakePrompt = ({
 
   const contextBlock = retrieved.length
     ? `\nReference context (use only if relevant, otherwise ignore):\n${retrieved
-        .map(
-          (r, idx) =>
-            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`
-        )
-        .join("\n")}\n`
+      .map(
+        (r, idx) =>
+          `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`
+      )
+      .join("\n")}\n`
     : "";
   const factsBlock = factsContext
     ? `\nCustomer/Kajabi facts (use to stay on-topic; do not invent):\n${formatFactsContext(
-        factsContext
-      )}\n`
+      factsContext
+    )}\n`
     : "";
 
   const firstQuestion = `
@@ -481,19 +487,24 @@ Say it in your own words."
 `;
 
   return `
-You are in an intake conversation. You must ask exactly ${targetCount} total questions.
-So far you have asked ${assistantMessages} question(s). The user has answered ${userMessages} time(s).
-Remaining questions to ask: ${remaining}.
+You are in an intake conversation. You must ask exactly ${targetCount} distinct intake topics/questions.
 
-Rules:
+Transcript Analysis:
+- Total assistant messages so far: ${assistantMessages}
+- Potential answers from user: ${userMessages}
+
+Current Status & Rules:
+- Identify from the transcript which question number (Q1-Q${targetCount}) you are currently on.
+- Note: Multiple assistant messages may belong to the same Question Number if they are rephrasals or clarifications.
+- ONLY increment the question number (e.g., from Q1 to Q2) once the previous question has been sufficiently addressed.
 - Ask ONE question only in your reply.
 - Keep it concise and context-aware (build on what was shared if any).
-- If the user replies with a question, ask them to provide their answer (do not count it as progress).
-- Stop asking once you have reached ${targetCount} questions; instead say you are ready to generate the diagnostic.
+- If the user replies with a question, ask them to provide their answer and keep the same Q# (do not count it as progress).
+- Stop asking once you have covered ${targetCount} distinct topics; instead say you are ready to generate the diagnostic.
 - Do not include any explanations beyond the single next question (unless you are confirming completion).
 - Never reveal internal formulas.
 - Only ask questions that reduce uncertainty for the final diagnostic, using the facts below.
-- If you have not asked any question yet, use the exact first question provided below. Otherwise, ask the single next best question based on transcript and facts.
+- If you have not asked any question yet, use the exact first question provided below. Otherwise, ask the single next best question based on transcript and facts, ensuring the Q# follows the sequence of distinct topics already covered.
 - After each user answer, briefly acknowledge and reflect their main point in 1–2 sentences (e.g., “Thank you. I hear X, which suggests Y.”) and then immediately ask the next intake question (do not add extra commentary).
 
 Intro framing (do NOT restate fully each time; you can acknowledge it briefly if needed):

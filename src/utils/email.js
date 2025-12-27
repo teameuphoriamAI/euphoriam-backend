@@ -8,7 +8,7 @@ const sender_name = process.env.SENDER_NAME;
 const logoImage = process.env.LOGO_URL;
 
 /**
- * Send Email using Brevo API
+ * Send Email using Brevo API with PDF attachment
  * @param {string} email - recipient
  * @param {string} subject - subject line
  * @param {string} content - HTML content
@@ -58,4 +58,39 @@ const sendEmail = async (email, subject, content, pdfPath) => {
   }
 };
 
-module.exports = { sendEmail };
+/**
+ * Send Email using Brevo API without attachment
+ * @param {string} email - recipient
+ * @param {string} subject - subject line
+ * @param {string} content - HTML content
+ */
+const sendEmailBasic = async (email, subject, content) => {
+  try {
+    const payload = {
+      sender: {
+        email: sender_email,
+        name: sender_name,
+      },
+      to: [{ email }],
+      subject,
+      htmlContent: content,
+    };
+
+    await axios.post("https://api.brevo.com/v3/smtp/email", payload, {
+      headers: {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    });
+
+    console.log("✅ Email sent (no attachment) via Brevo API!");
+  } catch (error) {
+    console.error(
+      "❌ Failed to send email (no attachment):",
+      error.response?.data || error.message
+    );
+  }
+};
+
+module.exports = { sendEmail, sendEmailBasic };

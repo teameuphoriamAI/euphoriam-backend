@@ -305,15 +305,19 @@ const buildFinalReportPrompt = ({
   intakeAnswers = [],
   introPageText,
   retrieved = [],
+  previousReport,
 }) => {
   const introBlock = introPageText || DEFAULT_INTRO_PAGE_TEXT;
   const contextBlock = retrieved.length
     ? `\nReference context (use only if relevant; if unrelated, ignore):\n${retrieved
-      .map(
-        (r, idx) =>
-          `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 800)}`
-      )
-      .join("\n")}\n`
+        .map(
+          (r, idx) =>
+            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 800)}`
+        )
+        .join("\n")}\n`
+    : "";
+  const previousReportBlock = previousReport
+    ? `\nPrevious diagnostic report (reference; keep continuity and update with any new answers):\n${previousReport}\n`
     : "";
 
   return `
@@ -337,6 +341,7 @@ ${introBlock}
 - Keep the tone warm, grounded, slow, human, intuitive, precise. One question at a time does not apply here because you are generating the full report.
 - Do not invent data that is not present; if missing, state "Unknown".
 ${contextBlock}
+${previousReportBlock}
 
 Return the full PDF-ready content block as plain text (no JSON, no markdown fences).`;
 };
@@ -455,6 +460,10 @@ const buildFreeformIntakePrompt = ({
   introPageText,
   retrieved = [],
   factsContext,
+  userName,
+  resumeNotice,
+  lastMessageFromAssistant = false,
+  priorReport,
 }) => {
   const isQuestion = (text = "") => text.trim().endsWith("?");
   const userMessages = transcript.filter(
@@ -464,25 +473,39 @@ const buildFreeformIntakePrompt = ({
     (m) => m?.role === "assistant"
   ).length;
   const remaining = Math.max(targetCount - assistantMessages, 0);
+  const displayName =
+    typeof userName === "string" && userName.trim().length
+      ? userName.trim()
+      : "there";
 
   const contextBlock = retrieved.length
     ? `\nReference context (use only if relevant, otherwise ignore):\n${retrieved
-      .map(
-        (r, idx) =>
-          `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`
-      )
-      .join("\n")}\n`
+        .map(
+          (r, idx) =>
+            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`
+        )
+        .join("\n")}\n`
     : "";
   const factsBlock = factsContext
     ? `\nCustomer/Kajabi facts (use to stay on-topic; do not invent):\n${formatFactsContext(
-      factsContext
-    )}\n`
+        factsContext
+      )}\n`
+    : "";
+  const priorReportBlock = priorReport
+    ? `\nExisting diagnostic report (reference only; stay consistent and do not regenerate the full report here):\n${priorReport}\n`
     : "";
 
-  const firstQuestion = `
+  const firstQuestion = priorReport
+    ? `
 If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
 
-"I don’t have your intake on record yet, so we’ll start with the 12-Question Deep Intake Engine™.
+"Hi ${displayName}, I’ve loaded your last diagnostic report so we can build on it.
+What has shifted since that report? What feels most different right now?"
+`
+    : `
+If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
+
+"Hi ${displayName}, I don’t have your intake on record yet, so we’ll start with the 12-Question Deep Intake Engine™.
 One question at a time. No rushing. No fixing. Just mapping.
 
 Q1 — Desired Reality
@@ -502,11 +525,18 @@ You are in an intake conversation. You must ask exactly ${targetCount} distinct 
 Transcript Analysis:
 - Total assistant messages so far: ${assistantMessages}
 - Potential answers from user: ${userMessages}
+${
+  resumeNotice
+    ? `- Resume cue: "${resumeNotice}" (include this before your next question).`
+    : ""
+}
 
 Current Status & Rules:
 - Identify from the transcript which question number (Q1-Q${targetCount}) you are currently on.
 - Note: Multiple assistant messages may belong to the same Question Number if they are rephrasals or clarifications.
 - ONLY increment the question number (e.g., from Q1 to Q2) once the previous question has been sufficiently addressed.
+- If a Resume cue is provided, you MUST output it verbatim as the first line of your reply, then proceed with the single next question. Do NOT paraphrase or alter it.
+- If the last message in the transcript was from the assistant (${lastMessageFromAssistant}), do NOT add any acknowledgments or summaries; jump directly to the next intake question after the resume cue.
 - ⚖️ PROGRESS RULE: Trust the user's answers. If they say "yes", "D", or similar, treat it as a valid answer and move to the next topic.
 - 🛑 AVOID REPETITION: Do not keep confirming the same answer multiple times. If the user's intent is clear, progress immediately.
 - Ask ONE question only in your reply.
@@ -522,9 +552,132 @@ Current Status & Rules:
 Intro framing (do NOT restate fully each time; you can acknowledge it briefly if needed):
 ${introPageText || DEFAULT_INTRO_PAGE_TEXT}
 ${factsBlock}
+${priorReportBlock}
 ${assistantMessages === 0 ? firstQuestion : ""}
 ${contextBlock}
 `;
+};
+
+const buildDiscoveryChatPrompt = ({
+  transcript = [],
+  retrieved = [],
+  factsContext,
+  userName,
+  priorReport,
+}) => {
+  const displayName =
+    typeof userName === "string" && userName.trim().length
+      ? userName.trim()
+      : "there";
+
+  const lastUserMessage =
+    transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
+
+  const lowerMessage = lastUserMessage.toLowerCase();
+
+  const isAskingAboutReport =
+    priorReport &&
+    /diagnostic|report|reveal|revealed|findings|insight|pattern|results|summary|what did/i.test(
+      lowerMessage
+    );
+
+  const isRequestingDepth =
+    priorReport &&
+    /go deeper|deep|in depth|full report|entire report|everything|where can i improve|improve|details|explain more/i.test(
+      lowerMessage
+    );
+
+  const contextBlock = retrieved.length
+    ? `Reference context (use only if relevant):\n${retrieved
+        .map(
+          (r, idx) =>
+            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`
+        )
+        .join("\n")}`
+    : "";
+
+  const factsBlock = factsContext
+    ? `Customer facts (do not invent):\n${formatFactsContext(factsContext)}`
+    : "";
+
+  const priorReportBlock = priorReport
+    ? `USER'S PREVIOUS DIAGNOSTIC REPORT (AUTHORITATIVE SOURCE):\n${priorReport}`
+    : "";
+
+  // First message
+  if (transcript.length === 0) {
+    return `You are a warm, insightful assistant.
+
+Start the conversation naturally with:
+"Hi ${displayName}, I’ve pulled up your last diagnostic report so we can build from it. What would you like to explore today?"`;
+  }
+
+  // If user is requesting full report or improvements, give brief but comprehensive summary
+  if (isRequestingDepth && priorReport) {
+    // Truncate report to avoid token limits while keeping key content
+    const reportPreview = priorReport.length > 10000 
+      ? priorReport.substring(0, 10000) + "\n...[report continues]"
+      : priorReport;
+    
+    return `Summarize the diagnostic report below. Write a brief summary (300-500 words).
+
+Start with: "**What Your Diagnostic Report Revealed:**"
+
+Then include:
+- Brief overview (2-3 sentences)
+- Core patterns (identity, avoidance, vortex)
+- Your metrics with numbers (Gravity, Signal Output, QGC, Consciousness Level, Signal Coherence)
+- How patterns show up daily
+- What's working
+- Friction points
+- Growth path
+
+Then add: "**Where You Can Improve:**"
+
+List 3-5 specific areas:
+- Habit changes
+- Mindset shifts
+- Behavioral patterns
+- Priority areas
+
+DIAGNOSTIC REPORT:
+${reportPreview}
+
+${factsBlock ? `\nCustomer Context:\n${factsBlock}` : ""}
+
+Write the summary now. Be concise but cover all key points.`;
+  }
+
+  // Regular conversational flow
+  // Check if user is sharing progress/updates related to diagnostic report
+  const isSharingProgress = /decrease|increase|improve|better|worse|change|did|doing|trying|started|stopped|working on/i.test(lowerMessage);
+  
+  return `
+You are an insight-driven diagnostic assistant having a natural conversation with ${displayName}.
+You have access to their previous diagnostic report and should reference it when relevant.
+
+CRITICAL RULES:
+- DO NOT ask numbered questions (Q1, Q2, etc.) - this is a conversation, not an interview
+- DO NOT structure responses as "Q1: ..." or count questions
+- Respond naturally to what the user just said: "${lastUserMessage}"
+- Have a conversational back-and-forth, like texting a friend
+- If they share progress/updates (like "I decreased phone usage"), acknowledge it in context of their diagnostic report
+- Reference specific areas from their report when they mention changes or improvements
+- If they ask you something, answer it directly and helpfully
+- Keep it warm, human, and flowing
+- ALWAYS provide a response - never return empty content
+
+${priorReportBlock ? `
+DIAGNOSTIC REPORT CONTEXT:
+${priorReportBlock}
+
+${isAskingAboutReport ? `The user is asking about their diagnostic report. Use the report above to answer: "${lastUserMessage}". Provide specific insights from the report.` : isSharingProgress ? `The user is sharing progress/updates: "${lastUserMessage}". Reference their diagnostic report to acknowledge what they're working on and how it relates to the patterns/areas mentioned in their report. Be encouraging and specific.` : "Reference the diagnostic report when the user asks about it, shares updates, or when it naturally fits the conversation."}
+` : ""}
+${factsBlock ? `\nCustomer Context:\n${factsBlock}` : ""}
+${contextBlock ? `\n${contextBlock}` : ""}
+
+Respond naturally to: "${lastUserMessage}"
+${isSharingProgress && priorReportBlock ? "Acknowledge their progress in context of their diagnostic report. Be specific about how this relates to areas mentioned in their report." : "Keep it conversational and helpful."}`;
 };
 
 const sanitizeReportText = (reportText, metrics = {}) => {
@@ -563,5 +716,6 @@ module.exports = {
   DEFAULT_INTRO_PAGE_TEXT,
   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   buildFreeformIntakePrompt,
+  buildDiscoveryChatPrompt,
   sanitizeReportText,
 };

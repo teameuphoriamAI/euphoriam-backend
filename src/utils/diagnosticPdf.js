@@ -26,9 +26,13 @@ const addList = (doc, title, items) => {
 
 const renderGauge = (value) => {
   const v = Math.max(0, Math.min(100, Number(value || 0)));
-  const filled = Math.round((v / 100) * 12);
-  const empty = 12 - filled;
-  return `${"#".repeat(filled)}${".".repeat(empty)} ${v}%`;
+  const totalBlocks = 12;
+  const filled = Math.round((v / 100) * totalBlocks);
+  const empty = totalBlocks - filled;
+
+  const filledBlock = "█".repeat(filled);
+  const emptyBlock = "░".repeat(empty); // lighter block
+  return `${filledBlock}${emptyBlock} ${v}%`;
 };
 
 const drawDivider = (doc) => {
@@ -43,10 +47,36 @@ const drawDivider = (doc) => {
     .stroke();
   doc.moveDown(1);
 };
+const drawMetricsTable = (doc, metrics) => {
+  const startX = doc.x;
+  let y = doc.y;
+  const rowHeight = 20;
+  const colWidths = [150, 150]; // Adjust as needed
+
+  const tableData = [
+    ["Metric", "Value"],
+    ["QGC Activation", `${metrics.qgcActivation ?? "N/A"}%`],
+    ["Consciousness Level", `${metrics.consciousnessLevel ?? "N/A"}%`],
+    ["Gravity", `${metrics.gravity ?? "N/A"}%`],
+    ["Signal Coherence", `${metrics.signalCoherence ?? "N/A"}%`],
+    ["Signal Output", `${metrics.signalOutput ?? "N/A"}%`],
+  ];
+
+  tableData.forEach((row, i) => {
+    let x = startX;
+    row.forEach((cell, j) => {
+      doc.rect(x, y, colWidths[j], rowHeight).stroke(); // Draw border
+      doc.text(cell, x + 5, y + 5, { width: colWidths[j] - 10, align: "left" });
+      x += colWidths[j];
+    });
+    y += rowHeight;
+  });
+
+  doc.moveDown(2);
+};
 
 const isAllCapsHeader = (line) =>
-  /^[A-Z0-9][A-Z0-9\s/&()'".:-]{6,}$/.test(line) &&
-  line === line.toUpperCase();
+  /^[A-Z0-9][A-Z0-9\s/&()'".:-]{6,}$/.test(line) && line === line.toUpperCase();
 
 const renderStyledReport = (doc, text) => {
   const lines = String(text || "").split(/\r?\n/);
@@ -126,7 +156,13 @@ const renderStyledReport = (doc, text) => {
 const generateDiagnosticPdf = (diagnostic) =>
   new Promise((resolve, reject) => {
     try {
-      const outputDir = path.join(__dirname, "..", "..", "reports", "diagnostics");
+      const outputDir = path.join(
+        __dirname,
+        "..",
+        "..",
+        "reports",
+        "diagnostics"
+      );
       ensureDir(outputDir);
 
       const filePath = path.join(
@@ -154,21 +190,28 @@ const generateDiagnosticPdf = (diagnostic) =>
         // Allow: legacy divider-led reports, intro-led reports, or title pages
         // that contain the intro within the first chunk.
         const trimmed = aiReport.trimStart();
-        const startsWithDivider = trimmed.startsWith("----------------------------------------");
+        const startsWithDivider = trimmed.startsWith(
+          "----------------------------------------"
+        );
         const startsWithIntro = trimmed.startsWith(
           "✨ BEFORE YOU READ THIS DIAGNOSTIC"
         );
         const containsIntroEarly =
           !startsWithIntro &&
           trimmed.slice(0, 500).includes("BEFORE YOU READ THIS DIAGNOSTIC");
-        const startsWithTitle =
-          trimmed.toUpperCase().startsWith("EUPHORIAM DIAGNOSTIC REPORT");
+        const startsWithTitle = trimmed
+          .toUpperCase()
+          .startsWith("EUPHORIAM DIAGNOSTIC REPORT");
+        const startsWithFullTitle = /^EUPHORIAM.*DIAGNOSTIC REPORT/i.test(
+          trimmed
+        );
 
         if (
           !startsWithDivider &&
           !startsWithIntro &&
           !containsIntroEarly &&
-          !startsWithTitle
+          !startsWithTitle &&
+          !startsWithFullTitle
         ) {
           const head = aiReport.slice(0, 300);
           const err = new Error(
@@ -187,20 +230,28 @@ const generateDiagnosticPdf = (diagnostic) =>
         doc.font("Helvetica").fontSize(11);
         doc.text(`Title: ${diagnostic.title || "Diagnostic"}`);
         doc.text(`Generated At: ${new Date().toLocaleString()}`);
-        doc.text(`Client: ${profile.name || "N/A"} (${profile.email || "N/A"})`);
+        doc.text(
+          `Client: ${profile.name || "N/A"} (${profile.email || "N/A"})`
+        );
         doc.text(`User ID: ${diagnostic.userId || "N/A"}`);
         doc.moveDown(0.6);
         doc.text(`Customer ID: ${data.customerId || "N/A"}`);
         doc.text(`Site ID: ${data.siteId || "N/A"}`);
-        doc.text(`Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`);
-        doc.text(`Kajabi Customer ID: ${data.rawSource?.kajabiCustomerId ?? "N/A"}`);
+        doc.text(
+          `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`
+        );
+        doc.text(
+          `Kajabi Customer ID: ${data.rawSource?.kajabiCustomerId ?? "N/A"}`
+        );
 
         doc.end();
         return;
       }
 
       const reportTitle =
-        aiReport?.headline?.title || aiReport?.headline || "Euphoriam Diagnostic Report";
+        aiReport?.headline?.title ||
+        aiReport?.headline ||
+        "Euphoriam Diagnostic Report";
       doc.fontSize(20).text(reportTitle, { align: "center" });
       doc.moveDown();
       doc.fontSize(12).text(`Title: ${diagnostic.title || "Diagnostic"}`);
@@ -211,11 +262,19 @@ const generateDiagnosticPdf = (diagnostic) =>
       const isV2 = aiReport?.meta?.version === 2;
 
       if (!isV2) {
-        addSection(doc, "Summary", [aiReport.summary || "No summary provided."]);
-        addSection(doc, "Readiness Stage", [
-          aiReport.readinessStage || "Not specified",
-          aiReport.productGuidance ? `Guidance: ${aiReport.productGuidance}` : null,
-        ].filter(Boolean));
+        addSection(doc, "Summary", [
+          aiReport.summary || "No summary provided.",
+        ]);
+        addSection(
+          doc,
+          "Readiness Stage",
+          [
+            aiReport.readinessStage || "Not specified",
+            aiReport.productGuidance
+              ? `Guidance: ${aiReport.productGuidance}`
+              : null,
+          ].filter(Boolean)
+        );
 
         addList(doc, "Strengths", aiReport.strengths);
         addList(doc, "Current Challenges", aiReport.currentChallenges);
@@ -226,11 +285,15 @@ const generateDiagnosticPdf = (diagnostic) =>
         addSection(doc, before.title || "Before You Read", before.lines || []);
 
         const facts = aiReport.facts || {};
-        addSection(doc, "Facts (from your account)", [
-          facts.memberSince ? `Member since: ${facts.memberSince}` : null,
-          `Sign-ins: ${facts.signInCount ?? profile.signInCount ?? 0}`,
-          `Net revenue: ${facts.netRevenue ?? profile.netRevenue ?? 0}`,
-        ].filter(Boolean));
+        addSection(
+          doc,
+          "Facts (from your account)",
+          [
+            facts.memberSince ? `Member since: ${facts.memberSince}` : null,
+            `Sign-ins: ${facts.signInCount ?? profile.signInCount ?? 0}`,
+            `Net revenue: ${facts.netRevenue ?? profile.netRevenue ?? 0}`,
+          ].filter(Boolean)
+        );
 
         const products = facts.products || data.products || [];
         addSection(
@@ -249,7 +312,8 @@ const generateDiagnosticPdf = (diagnostic) =>
           "Offers",
           (offers || []).map((o) => {
             const title = o.title || "Offer";
-            const price = o.price !== undefined && o.price !== null ? ` — ${o.price}` : "";
+            const price =
+              o.price !== undefined && o.price !== null ? ` — ${o.price}` : "";
             return `${title}${price}`;
           })
         );
@@ -257,7 +321,9 @@ const generateDiagnosticPdf = (diagnostic) =>
         const courses = facts.courses || metrics.assessments || {};
         addSection(doc, "Course Assessments", [
           `Courses: ${courses.coursesCount ?? 0}`,
-          `Assessments: total=${courses.totalAssessments ?? 0}, completed=${courses.completed ?? 0}, pending=${courses.pending ?? 0}`,
+          `Assessments: total=${courses.totalAssessments ?? 0}, completed=${
+            courses.completed ?? 0
+          }, pending=${courses.pending ?? 0}`,
           `Completion: ${courses.completionPercentage ?? 0}%`,
           `Pass rate: ${courses.passRate ?? 0}%`,
         ]);
@@ -270,15 +336,11 @@ const generateDiagnosticPdf = (diagnostic) =>
           signalOutput: metrics.signalOutput,
         };
 
-        addSection(doc, "Metrics Gauge", [
-          `QGC Activation: ${renderGauge(gauge.qgcActivation)}`,
-          `Consciousness Level: ${gauge.consciousnessLevel ?? "N/A"}`,
-          `Gravity: ${renderGauge(gauge.gravity)}`,
-          `Signal Coherence: ${renderGauge(gauge.signalCoherence)}`,
-          `Signal Output: ${renderGauge(gauge.signalOutput)}`,
-        ]);
+        drawMetricsTable(doc, gauge);
 
-        const sections = Array.isArray(aiReport.sections) ? aiReport.sections : [];
+        const sections = Array.isArray(aiReport.sections)
+          ? aiReport.sections
+          : [];
         for (const s of sections) {
           addSection(doc, s.title || "Section", s.body || []);
           addSection(
@@ -295,14 +357,22 @@ const generateDiagnosticPdf = (diagnostic) =>
         }
 
         const finalSummary = aiReport.finalSummary || {};
-        addList(doc, finalSummary.title || "Final Summary", finalSummary.bullets || []);
+        addList(
+          doc,
+          finalSummary.title || "Final Summary",
+          finalSummary.bullets || []
+        );
       }
 
-      addSection(doc, "Products", (data.products || []).map((p) => {
-        const title = p.title || p.id || "Product";
-        const type = p.type ? ` (${p.type})` : "";
-        return `${title}${type}`;
-      }));
+      addSection(
+        doc,
+        "Products",
+        (data.products || []).map((p) => {
+          const title = p.title || p.id || "Product";
+          const type = p.type ? ` (${p.type})` : "";
+          return `${title}${type}`;
+        })
+      );
 
       // Back-compat only: older data shape (not used in v2)
       const assessmentProgress = data.assessments?.progress || [];
@@ -319,9 +389,7 @@ const generateDiagnosticPdf = (diagnostic) =>
 
       addSection(doc, "Raw Source", [
         `Customer ID: ${data.customerId || "N/A"}`,
-        `Kajabi Contact ID: ${
-          data.rawSource?.kajabiContactId ?? "N/A"
-        }`,
+        `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`,
         `Site ID: ${data.siteId || "N/A"}`,
       ]);
 
@@ -332,5 +400,3 @@ const generateDiagnosticPdf = (diagnostic) =>
   });
 
 module.exports = { generateDiagnosticPdf };
-
-

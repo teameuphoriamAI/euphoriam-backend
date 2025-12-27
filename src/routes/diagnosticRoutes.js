@@ -12,12 +12,22 @@ router.get(
   requireRole(["admin"]),
   asyncHandler(diagnosticController.listAll)
 );
-router.get("/", auth, asyncHandler(diagnosticController.listMine));
+router.post("/", asyncHandler(diagnosticController.listMine));
 router.get("/:id", auth, asyncHandler(diagnosticController.getById));
 
 router.post(
   "/chatbot-freeform",
   asyncHandler(diagnosticController.chatbotDiagnosticFreeform)
+);
+
+router.get(
+  "/pdf-urls",
+  asyncHandler(diagnosticController.getAllPdfUrls)
+);
+
+router.post(
+  "/pdf-urls",
+  asyncHandler(diagnosticController.getAllPdfUrls)
 );
 
 module.exports = router;

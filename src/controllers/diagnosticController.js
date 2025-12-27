@@ -1,4 +1,6 @@
+const fs = require("fs");
 const { Diagnostic } = require("../models/diagnosticModel");
+const { Discovery } = require("../models/discoveryModel");
 const validate = require("../helpers/validate");
 const openai = require("../config/openai");
 
@@ -8,6 +10,7 @@ const {
   DEFAULT_INTRO_PAGE_TEXT,
   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   buildFreeformIntakePrompt,
+  buildDiscoveryChatPrompt,
   sanitizeReportText,
 } = require("../helpers/euphoriamChatbot");
 const { retrieveSimilarChunks } = require("../helpers/rag");
@@ -25,7 +28,8 @@ const {
   extractCourseIdFromProduct,
 } = require("./kajabi");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
-const { sendEmail } = require("../utils/email");
+const { uploadBufferToSupabase } = require("../utils/storage");
+const { sendEmail, sendEmailBasic } = require("../utils/email");
 const {
   diagnosticReportEmail,
 } = require("../utils/emailTemplate/initialDignosticReport");
@@ -162,7 +166,7 @@ const computeDiagnosticMetrics = ({
   const commitmentScore = clamp(
     Math.round(
       Math.min(100, safeRevenue / 10) +
-      (Array.isArray(products) ? products.length : 0) * 8
+        (Array.isArray(products) ? products.length : 0) * 8
     ),
     0,
     100
@@ -214,6 +218,73 @@ const computeDiagnosticMetrics = ({
     },
     assessments: assessmentSummary,
   };
+};
+
+const truncateForContext = (text = "", max = 6000) => {
+  const safe = String(text || "");
+  if (!safe) return "";
+  return safe.length > max ? `${safe.slice(0, max)}\n...[truncated]` : safe;
+};
+
+const buildDiscoveryEmail = ({ transcript = [], email }) => {
+  const lastMessages = transcript.slice(-10);
+  const body = lastMessages
+    .map((m) => `${m.role === "assistant" ? "Assistant" : "You"}: ${m.content}`)
+    .join("<br/>");
+
+  return `
+  <html>
+    <body style="font-family: Arial, sans-serif; color: #222;">
+      <p>Hi ${email || "there"},</p>
+      <p>Your discovery chat has been saved. Here’s a quick recap of the last messages:</p>
+      <div style="background:#f7f7f7;padding:12px;border-radius:8px;font-size:14px;line-height:1.5;">
+        ${body || "No messages captured."}
+      </div>
+      <p>If you’d like to continue, start a new chat and we’ll build on this.</p>
+      <p style="margin-top:20px;">— Euphoraum AI</p>
+    </body>
+  </html>
+  `;
+};
+
+const persistDiscoveryRecord = async ({
+  userId,
+  email,
+  title,
+  transcript,
+  previousReport,
+  newReport,
+  diagnosticId,
+  pdfUrl,
+}) => {
+  const safeUserId =
+    userId !== undefined && userId !== null && userId !== 0 ? userId : null;
+
+  if (!safeUserId) {
+    console.warn(
+      "[diagnostic] Skipping discovery persist because userId is missing"
+    );
+    return;
+  }
+
+  try {
+    await Discovery.create({
+      userId: safeUserId,
+      title: title || `Diagnostic Follow-up – ${email || "client"}`,
+      data: {
+        email,
+        diagnosticId,
+        transcript,
+        previousReportSnippet: truncateForContext(previousReport, 1500),
+        newReportSnippet: truncateForContext(newReport, 1500),
+        pdfUrl: pdfUrl || null,
+        createdAt: new Date().toISOString(),
+        type: "diagnostic_followup",
+      },
+    });
+  } catch (err) {
+    console.error("[diagnostic] Failed to persist discovery record", err);
+  }
 };
 
 const pick = (obj, keys) =>
@@ -405,12 +476,76 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     return errorResponse(res, "Name is required", 400);
   }
 
-  const transcript = Array.isArray(messages) ? messages : [];
+  // Load any existing diagnostic/intake state for this email to support resume.
+  const existingDiagnostic = await Diagnostic.findOne({ where: { email } });
+  const existingState = existingDiagnostic?.data?.intakeState || {};
+  const existingReport = existingDiagnostic?.data?.aiReport;
+  // Use larger limit to ensure full report is available for discovery conversations
+  const priorReportSnippet = truncateForContext(existingReport, 12000);
+  const existingPreviousReports = Array.isArray(
+    existingDiagnostic?.data?.previousReports
+  )
+    ? existingDiagnostic.data.previousReports
+    : [];
+  const previousReportEntry =
+    existingReport &&
+    !existingPreviousReports.some(
+      (pr) => pr?.aiReport && pr.aiReport === existingReport
+    )
+      ? {
+          aiReport: existingReport,
+          savedAt:
+            existingDiagnostic?.data?.intakeState?.finalizedAt ||
+            existingDiagnostic?.updatedAt ||
+            new Date().toISOString(),
+          pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
+        }
+      : null;
+  const previousReports = previousReportEntry
+    ? [...existingPreviousReports, previousReportEntry]
+    : existingPreviousReports;
+  const hasExistingReport = Boolean(existingReport);
+
+  // If a full report already exists and this is a finalize attempt without new data, short-circuit to avoid duplicate emails.
+  if (finalize && existingReport) {
+    return successResponse(res, "Existing diagnostic already completed", {
+      message:
+        "You already have a completed diagnostic. Start a new discovery chat to get an updated follow-up.",
+      hasExistingReport: true,
+      diagnosticId: existingDiagnostic?.id || null,
+    });
+  }
+
+  // Prefer request transcript; fall back to stored state if request is empty.
+  // For completed diagnostics, start a fresh discovery transcript instead of reusing the intake transcript.
+  const useExistingTranscript =
+    !hasExistingReport &&
+    Array.isArray(existingState.transcript) &&
+    existingState.transcript.length;
+  const transcript =
+    Array.isArray(messages) && messages.length
+      ? messages
+      : useExistingTranscript
+      ? existingState.transcript
+      : [];
+  const lastTurn = transcript[transcript.length - 1];
+  const lastTurnAssistant = lastTurn?.role === "assistant";
+  // Show resume notice when resuming after an assistant turn (only for diagnostic mode, not discovery).
+  const baseResumeNotice =
+    !hasExistingReport && transcript.length > 0 && lastTurnAssistant
+      ? `Welcome back ${name}, let's continue where we left off.`
+      : null;
+  // Don't set returningReportNotice for discovery mode - let the discovery chat prompt handle the greeting naturally
+  const resumeNotice = baseResumeNotice;
+
   const answered = transcript.filter(
     (m) => m?.role === "user" && isAnswerLike(m.content || "")
   ).length;
   const asked = transcript.filter((m) => m?.role === "assistant").length;
   const introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
+  const targetCountForRun = hasExistingReport
+    ? Math.min(targetCount, 6)
+    : targetCount;
 
   if (!finalize) {
     // Pull Kajabi context even during intake to keep questions on-topic.
@@ -441,9 +576,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     const aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-          question: lastAssistant.content,
-          reply: lastUser.content,
-        })
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          })
         : false;
 
     // Track distinct question numbers asked so far to avoid skipping numbers on rephrases.
@@ -459,22 +594,64 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     // Determine if the last user turn actually answered the last assistant question.
     const pendingQuestion = hasAssistantTurn && !aiAnswered;
 
-    const userPrompt = !hasAssistantTurn
-      ? buildFreeformIntakePrompt({
+    // Use discovery chat prompt for returning users with existing reports
+    const isDiscoveryMode = hasExistingReport;
+    
+    let userPrompt;
+    let systemPrompt;
+    
+    if (isDiscoveryMode) {
+      // Discovery mode: freeform conversational chat
+      userPrompt = buildDiscoveryChatPrompt({
         transcript,
-        targetCount,
-        introPageText: introText,
-        factsContext: diagnosticContext,
         retrieved,
-      })
-      : aiAnswered
+        factsContext: diagnosticContext,
+        userName: name,
+        priorReport: priorReportSnippet,
+      });
+      
+      systemPrompt = `You are Euphoriam AI having a natural, flowing conversation. This is NOT a Q&A session or intake. 
+
+CRITICAL RULES:
+- NEVER use numbered questions (Q1, Q2, etc.) - this is a conversation, not an interview
+- NEVER structure responses as "Q1: ..." or count questions
+- Respond naturally to what the user says, like a supportive friend or coach
+- Have a back-and-forth dialogue, not an interrogation
+- If the user shares progress/updates (e.g., "I decreased phone usage", "I'm doing better"), acknowledge it in context of their diagnostic report - reference specific areas from the report
+- If the user asks you something, answer it directly and helpfully
+- If the user asks about their diagnostic report, you have full access to it in the system context - use it to answer their question with specific insights, patterns, and findings
+- If the user asks for "full report", "where can I improve", "go deeper", or similar - provide a COMPREHENSIVE breakdown immediately. Do NOT ask what area to explore. Give them the full analysis.
+- Reference their previous diagnostic when they share updates, ask about it, or when it naturally fits - connect their current state to patterns/areas mentioned in the report
+- Be warm, human, and conversational - not clinical or structured
+- Let the conversation flow organically based on what they share
+- ALWAYS provide a meaningful response - never return empty content
+- When user requests full report or improvements, deliver comprehensive insights organized clearly`;
+    } else {
+      // Diagnostic mode: structured intake
+      userPrompt = !hasAssistantTurn
         ? buildFreeformIntakePrompt({
-          transcript,
-          targetCount,
-          introPageText: introText,
-          factsContext: diagnosticContext,
-          retrieved,
-        })
+            transcript,
+            targetCount: targetCountForRun,
+            introPageText: introText,
+            factsContext: diagnosticContext,
+            retrieved,
+            userName: name,
+            lastMessageFromAssistant: lastTurnAssistant,
+            resumeNotice,
+            priorReport: priorReportSnippet,
+          })
+        : aiAnswered
+        ? buildFreeformIntakePrompt({
+            transcript,
+            targetCount: targetCountForRun,
+            introPageText: introText,
+            factsContext: diagnosticContext,
+            retrieved,
+            userName: name,
+            lastMessageFromAssistant: lastTurnAssistant,
+            resumeNotice,
+            priorReport: priorReportSnippet,
+          })
         : `The user has NOT answered the last question. Do NOT move to the next question. 
 Rephrase and clarify the SAME question only, briefly acknowledge their confusion, and invite them to answer that question now.
 
@@ -483,32 +660,290 @@ User reply: "${lastUser?.content || ""}"
 
 Return only the clarified form of that same question (plus a short acknowledgment), nothing else. 
 Do NOT emit a new question number; stay on the same question.`;
+      
+      systemPrompt = EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT;
+    }
 
-    const aiResponse = await openai.chat.completions.create({
-      model: "gpt-5.2",
-      messages: [
-        { role: "system", content: EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT },
-        ...transcript.map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.content,
-        })),
-        {
-          role: "user",
-          content: userPrompt,
-        },
-      ],
-      temperature: 0.3,
-      max_completion_tokens: 400,
-    });
-    const nextMessage = aiResponse?.choices?.[0]?.message;
+    let messages = [
+      { role: "system", content: systemPrompt },
+    ];
+
+    // Include prior report in system context for both modes (needed for discovery mode to answer questions about it)
+    if (priorReportSnippet) {
+      messages.push({
+        role: "system",
+        content: isDiscoveryMode
+          ? `Previous diagnostic report for ${name} (you have full access to this - use it to answer questions about what the report revealed, their patterns, insights, etc.):\n${priorReportSnippet}`
+          : `Existing diagnostic report for ${name} (reference for continuity; do not re-emit the full report here):\n${priorReportSnippet}`,
+      });
+    }
+
+    messages.push(
+      ...transcript.map((m) => ({
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: m.content,
+      })),
+      {
+        role: "user",
+        content: userPrompt,
+      }
+    );
+
+    // Check if user is asking about diagnostic report (needs more tokens)
+    const lastUserMsg = transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
+    const lowerMsg = lastUserMsg.toLowerCase();
+    const isAskingAboutReport = /diagnostic|report|reveal|show|find|pattern|insight/i.test(lastUserMsg);
+    const isRequestingFullReport = /full report|entire report|everything|go deeper|in depth|where can i improve|improve|tell me all|what did.*reveal/i.test(lowerMsg);
+    const maxTokens = isDiscoveryMode 
+      ? (isRequestingFullReport ? 800 : isAskingAboutReport ? 500 : 300) // Brief summary for full report requests (800 tokens to avoid truncation)
+      : 400;
+    
+    // Update system prompt for full report requests
+    if (isDiscoveryMode && isRequestingFullReport && priorReportSnippet) {
+      systemPrompt = `You are Euphoriam AI. The user asked: "${lastUserMsg}"
+
+You MUST write a brief summary of their diagnostic report. Start immediately with "**What Your Diagnostic Report Revealed:**"
+
+Your response must include:
+1. A 2-3 sentence overview
+2. Key patterns, metrics (with numbers), daily manifestations, strengths, friction points, growth path
+3. Section "**Where You Can Improve:**" with 3-5 actionable areas
+
+Be concise (300-500 words). Extract details from the report in the system context. Write now - do not ask permission.`;
+    }
+
+    // For full report requests, use lower temperature for more focused responses
+    const temperature = isDiscoveryMode && isRequestingFullReport ? 0.3 : (isDiscoveryMode ? 0.7 : 0.3);
+    
+    let aiResponse;
+    let nextMessage;
+    let retryCount = 0;
+    const maxRetries = isDiscoveryMode && isRequestingFullReport ? 1 : 0; // Retry once for full report requests
+    
+    // Try to get response, with retry for full report requests
+    while (retryCount <= maxRetries) {
+      aiResponse = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        messages,
+        temperature,
+        max_completion_tokens: maxTokens,
+      });
+      nextMessage = aiResponse?.choices?.[0]?.message;
+      
+      // If we got content, break
+      if (nextMessage?.content && nextMessage.content.trim() !== "") {
+        break;
+      }
+      
+      // If empty and we should retry, try again with more direct prompt
+      if (retryCount < maxRetries && isRequestingFullReport && priorReportSnippet) {
+        // Retry with even more direct prompt
+        const retryMessages = [
+          { role: "system", content: `You MUST provide a detailed breakdown of the diagnostic report. Start immediately with "**What Your Diagnostic Report Revealed:**"` },
+          { role: "system", content: `DIAGNOSTIC REPORT:\n${priorReportSnippet.substring(0, 10000)}` },
+          ...transcript.slice(-3).map((m) => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content,
+          })),
+          { role: "user", content: `Provide a comprehensive breakdown of my diagnostic report. Start with "**What Your Diagnostic Report Revealed:**" and then "**Where You Can Improve:**"` },
+        ];
+        messages = retryMessages;
+        retryCount++;
+        continue;
+      }
+      
+      break;
+    }
+
+    // Handle empty responses with better fallback
+    if (!nextMessage || !nextMessage.content || nextMessage.content.trim() === "") {
+      if (isDiscoveryMode) {
+        const lastUserMsg = transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
+        const lowerMsg = lastUserMsg.toLowerCase();
+        const isRequestingFullReportFallback = /full report|entire report|everything|go deeper|in depth|where can i improve|improve|tell me all/i.test(lowerMsg);
+        
+        if (isRequestingFullReportFallback && priorReportSnippet) {
+          // Try one more time with a very simple, direct prompt
+          try {
+            const simplePrompt = `Summarize this diagnostic report in 300-500 words. Start with "**What Your Diagnostic Report Revealed:**" then "**Where You Can Improve:**"
+
+Report:
+${priorReportSnippet.substring(0, 8000)}
+
+Write the summary now.`;
+            
+            const fallbackResponse = await openai.chat.completions.create({
+              model: "gpt-5.2",
+              messages: [
+                { role: "system", content: "You are a helpful assistant. Provide concise summaries of diagnostic reports." },
+                { role: "user", content: simplePrompt },
+              ],
+              temperature: 0.3,
+              max_completion_tokens: 800,
+            });
+            
+            const fallbackMessage = fallbackResponse?.choices?.[0]?.message;
+            if (fallbackMessage?.content && fallbackMessage.content.trim() !== "") {
+              nextMessage = fallbackMessage;
+            } else {
+              // Last resort - provide a helpful message
+              nextMessage = {
+                role: "assistant",
+                content: `**What Your Diagnostic Report Revealed:**
+
+I'm having trouble generating the summary right now. Your diagnostic report contains insights about your patterns, metrics, and growth areas. 
+
+**Where You Can Improve:**
+
+Please try asking again in a moment, or ask me about a specific area from your report (e.g., "what are my metrics?" or "where should I focus?").`,
+              };
+            }
+          } catch (err) {
+            console.error("[fallback] Error generating summary:", err);
+            nextMessage = {
+              role: "assistant",
+              content: `**What Your Diagnostic Report Revealed:**
+
+I'm having trouble generating the summary right now. Please try asking again, or ask about a specific area from your report.`,
+            };
+          }
+        } else {
+          nextMessage = {
+            role: "assistant",
+            content: `I'm here. ${lastUserMsg ? `You mentioned "${lastUserMsg}" - tell me more about that, or what's on your mind right now?` : "What would you like to explore today?"}`,
+          };
+        }
+      } else {
+        nextMessage = {
+          role: "assistant",
+          content: "I'm here. How can I help you today?",
+        };
+      }
+    }
+
+    // Clean up numbered questions in discovery mode
+    if (isDiscoveryMode && nextMessage && typeof nextMessage.content === "string") {
+      nextMessage.content = nextMessage.content
+        .replace(/^\s*Q\d+\s*[—–-]?\s*/gim, "") // Remove Q1 — at start
+        .replace(/\*\*Q\d+\s*[—–-]?\s*\*\*/g, "") // Remove **Q1 —**
+        .replace(/Q\d+\s*[—–-]?\s*/g, "") // Remove any Q1 — in text
+        .replace(/Q\d+\)\s*/g, "") // Remove Q1) pattern
+        .trim();
+      
+      // Ensure we still have content after cleanup
+      if (!nextMessage.content || nextMessage.content.trim() === "") {
+        const lastUserMsg = transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
+        nextMessage.content = `I hear you. ${lastUserMsg ? `You mentioned "${lastUserMsg}" - what's coming up for you around that?` : "What's on your mind?"}`;
+      }
+    }
+
+    // Hard-prefix the resume notice if provided, last turn was assistant, and not already present (only for diagnostic mode).
+    if (
+      !isDiscoveryMode &&
+      resumeNotice &&
+      lastTurnAssistant &&
+      nextMessage &&
+      typeof nextMessage.content === "string" &&
+      !nextMessage.content.includes(resumeNotice)
+    ) {
+      nextMessage = {
+        ...nextMessage,
+        content: `${resumeNotice}\n\n${nextMessage.content}`.trim(),
+      };
+    }
+
+    // Strip any leading filler before the first Q-line; keep resume notice if present (only for diagnostic mode).
+    if (!isDiscoveryMode && nextMessage && typeof nextMessage.content === "string") {
+      const lines = nextMessage.content.split(/\r?\n/);
+      // Only strip down to the Q-line when resuming after an assistant turn; otherwise keep acknowledgments.
+      if (lastTurnAssistant) {
+        const qIndex = lines.findIndex((ln) => /^\s*\**Q\d+/i.test(ln.trim()));
+        if (qIndex > -1) {
+          const kept = lines.slice(qIndex).join("\n").trim();
+          const hasResume =
+            resumeNotice && nextMessage.content.includes(resumeNotice);
+          nextMessage = {
+            ...nextMessage,
+            content: hasResume ? `${resumeNotice}\n\n${kept}`.trim() : kept,
+          };
+        }
+      }
+    }
+
+    // Build updated transcript including the assistant reply we just generated (for resume after refresh).
+    const updatedTranscript = nextMessage
+      ? [...transcript, nextMessage]
+      : [...transcript];
+
+    // Maintain accepted answers per distinct Q# to support resume.
+    const acceptedAnswers = Array.isArray(existingState.acceptedAnswers)
+      ? [...existingState.acceptedAnswers]
+      : [];
+    if (aiAnswered && lastAssistant) {
+      const qNum = extractQuestionNumber(lastAssistant.content);
+      if (qNum) {
+        const idx = acceptedAnswers.findIndex(
+          (a) => Number(a.questionNumber) === Number(qNum)
+        );
+        const entry = {
+          questionNumber: qNum,
+          questionText: lastAssistant.content,
+          answerText: lastUser?.content || "",
+        };
+        if (idx >= 0) {
+          acceptedAnswers[idx] = entry;
+        } else {
+          acceptedAnswers.push(entry);
+        }
+      }
+    }
 
     // Compute distinct questions answered: count completed question numbers only, excluding the pending one.
     const answeredCount = maxQuestionNumber
       ? maxQuestionNumber - (pendingQuestion ? 1 : 0)
       : 0;
 
-    // If we've gathered all answers, auto-generate the diagnostic/PDF.
-    if (answeredCount >= targetCount) {
+    // Persist intake progress (draft) so we can resume after refresh.
+    const intakeState = {
+      transcript: updatedTranscript,
+      acceptedAnswers,
+      answeredCount,
+      lastQuestionNumber: maxQuestionNumber,
+      pendingQuestion,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (existingDiagnostic) {
+      await existingDiagnostic.update({
+        title:
+          existingDiagnostic.title ||
+          `Euphoriam Intake (Draft) – ${
+            existingDiagnostic?.data?.profile?.name || name
+          }`,
+        data: {
+          ...(existingDiagnostic.data || {}),
+          intakeState,
+        },
+      });
+    } else {
+      await Diagnostic.create({
+        userId: req.user?.sub || null,
+        email,
+        title: `Euphoriam Intake (Draft) – ${name}`,
+        data: {
+          profile: { name, email },
+          intakeState,
+        },
+      });
+    }
+
+    // If we've gathered all answers, auto-generate the diagnostic/PDF (only for first-time diagnostics).
+    if (
+      !hasExistingReport &&
+      answeredCount >= targetCount &&
+      !pendingQuestion &&
+      aiAnswered
+    ) {
       const {
         courseAssessments,
         normalizedProducts,
@@ -535,6 +970,7 @@ Do NOT emit a new question number; stay on the same question.`;
               intakeAnswers: transcript,
               introPageText: introText,
               retrieved: finalizeRetrieved,
+              previousReport: priorReportSnippet,
             }),
           },
         ],
@@ -547,8 +983,9 @@ Do NOT emit a new question number; stay on the same question.`;
       ).trim();
       reportText = sanitizeReportText(reportText, metrics);
 
-      const diagnostic = await Diagnostic.create({
+      const diagnosticPayload = {
         userId: req.user?.sub || null,
+        email,
         title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
         data: {
           customerId: customerData.id,
@@ -568,16 +1005,47 @@ Do NOT emit a new question number; stay on the same question.`;
           offers: normalizedOffers,
           courseAssessments,
           metrics,
-          intakeTranscript: transcript,
+          previousReports,
+          intakeTranscript: updatedTranscript,
           aiReport: reportText,
+          intakeState: {
+            ...intakeState,
+            finalizedAt: new Date().toISOString(),
+          },
           rawSource: {
             kajabiCustomerId: customerData.id,
             kajabiContactId: contactId,
           },
         },
-      });
+      };
+
+      const diagnostic = existingDiagnostic
+        ? await existingDiagnostic.update(diagnosticPayload)
+        : await Diagnostic.create(diagnosticPayload);
 
       const pdfPath = await generateDiagnosticPdf(diagnostic);
+      let pdf = { path: pdfPath, url: null };
+      try {
+        const buffer = await fs.promises.readFile(pdfPath);
+        const upload = await uploadBufferToSupabase({
+          buffer,
+          objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
+          contentType: "application/pdf",
+        });
+        pdf = upload;
+        console.log("[diagnostic] PDF uploaded to Supabase", upload);
+        await diagnostic.update({
+          data: {
+            ...(diagnostic.data || {}),
+            pdf,
+          },
+        });
+      } catch (err) {
+        console.error(
+          "[diagnostic] Failed to upload diagnostic PDF to Supabase",
+          err
+        );
+      }
 
       // Email the user their report
       await sendEmail(
@@ -587,24 +1055,42 @@ Do NOT emit a new question number; stay on the same question.`;
         pdfPath
       );
 
+      await persistDiscoveryRecord({
+        userId: existingDiagnostic?.id ?? 0,
+        email,
+        title: diagnosticPayload.title,
+        transcript: updatedTranscript,
+        previousReport: existingReport,
+        newReport: reportText,
+        diagnosticId: diagnostic.id,
+        pdfUrl: pdf.url || null,
+      });
+
       return successResponse(res, "Chatbot diagnostic (auto-finalized)", {
         diagnosticId: diagnostic.id,
         diagnostic: diagnostic.data,
         pdfPath,
+        pdfUrl: pdf.url || null,
         reportText,
         autoFinalized: true,
+        resumeNotice,
       });
     }
 
     return successResponse(res, "Next chatbot message", {
       nextMessage,
       introPageText: introText,
-      transcript,
+      transcript: updatedTranscript,
+      intakeState,
       retrieved,
+      resumeNotice,
+      answeredCount,
+      pendingQuestion,
+      aiAnswered,
     });
   }
 
-  // Finalize: fetch Kajabi context, then generate the full report using the transcript.
+  // Finalize: if existing report, save discovery summary; otherwise generate full diagnostic.
   const {
     diagnosticContext,
     courseAssessments,
@@ -625,10 +1111,79 @@ Do NOT emit a new question number; stay on the same question.`;
     );
   }
 
-  const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
+  const transcriptForFinal =
+    (Array.isArray(existingState.transcript) && existingState.transcript.length
+      ? existingState.transcript
+      : transcript) || [];
+
+  const lastUser = [...transcriptForFinal]
+    .reverse()
+    .find((m) => m?.role === "user");
   const retrieved = lastUser?.content
     ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
     : [];
+
+  if (hasExistingReport) {
+    // Generate a follow-up discovery report using prior diagnostic + new transcript
+    const discoveryPrompt = `
+You are generating a brief discovery follow-up report.
+Context: The user already has a completed diagnostic report.
+
+Previous diagnostic (reference):
+${priorReportSnippet || "None"}
+
+New conversation transcript (latest messages last):
+${JSON.stringify(transcriptForFinal, null, 2)}
+
+Produce a concise follow-up report (no PDF formatting needed) that:
+- Opens with "Welcome back, <name>." (use the name from attributes)
+- Acknowledges continuity from the prior diagnostic.
+- Highlights changes since the prior report.
+- Answers: "How is your stress?" and other relevant follow-ups inferred from the transcript.
+- Recommends 3-5 focused next steps.
+Keep it under 400 words. Plain text only.`;
+
+    let discoveryReport = "";
+    try {
+      const aiDiscovery = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [{ role: "user", content: discoveryPrompt }],
+        temperature: 0.35,
+        max_completion_tokens: 800,
+      });
+      discoveryReport =
+        aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
+    } catch (err) {
+      console.error("[discovery] failed to generate follow-up report", err);
+    }
+
+    await persistDiscoveryRecord({
+      userId: existingDiagnostic?.id ?? null,
+      email,
+      title: `Discovery Follow-up – ${attributes.name}`,
+      transcript: transcriptForFinal,
+      previousReport: priorReportSnippet,
+      newReport: discoveryReport,
+      diagnosticId: existingDiagnostic?.id || null,
+      pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
+    });
+
+    if (email) {
+      await sendEmailBasic(
+        email,
+        "Your discovery follow-up",
+        discoveryReport
+          ? discoveryReport.replace(/\n/g, "<br/>")
+          : buildDiscoveryEmail({ transcript: transcriptForFinal, email })
+      );
+    }
+
+    return successResponse(res, "Discovery chat saved", {
+      discovery: true,
+      message: "Discovery chat saved and emailed.",
+      discoveryReport: discoveryReport || null,
+    });
+  }
 
   const aiResponse = await openai.chat.completions.create({
     model: "gpt-5.2",
@@ -638,9 +1193,10 @@ Do NOT emit a new question number; stay on the same question.`;
         role: "user",
         content: buildFinalReportPrompt({
           customerContext: diagnosticContext,
-          intakeAnswers: transcript,
+          intakeAnswers: transcriptForFinal,
           introPageText: introText,
           retrieved,
+          previousReport: priorReportSnippet,
         }),
       },
     ],
@@ -658,8 +1214,9 @@ Do NOT emit a new question number; stay on the same question.`;
     );
   }
 
-  const diagnostic = await Diagnostic.create({
+  const finalPayload = {
     userId: req.user?.sub || null,
+    email,
     title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
     data: {
       customerId: customerData.id,
@@ -679,28 +1236,80 @@ Do NOT emit a new question number; stay on the same question.`;
       offers: normalizedOffers,
       courseAssessments,
       metrics,
-      intakeTranscript: transcript,
+      previousReports,
+      intakeTranscript: transcriptForFinal,
       aiReport: reportText,
+      intakeState: {
+        ...(existingState || {}),
+        transcript: transcriptForFinal,
+        finalizedAt: new Date().toISOString(),
+      },
       rawSource: {
         kajabiCustomerId: customerData.id,
         kajabiContactId: contactId,
       },
     },
-  });
+  };
+
+  const diagnostic = existingDiagnostic
+    ? await existingDiagnostic.update(finalPayload)
+    : await Diagnostic.create(finalPayload);
 
   const pdfPath = await generateDiagnosticPdf(diagnostic);
+  let pdf = { path: pdfPath, url: null };
+  try {
+    const buffer = await fs.promises.readFile(pdfPath);
+    const upload = await uploadBufferToSupabase({
+      buffer,
+      objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
+      contentType: "application/pdf",
+    });
+    pdf = upload;
+    console.log("[diagnostic] PDF uploaded to Supabase", upload);
+    await diagnostic.update({
+      data: {
+        ...(diagnostic.data || {}),
+        pdf,
+      },
+    });
+  } catch (err) {
+    console.error(
+      "[diagnostic] Failed to upload diagnostic PDF to Supabase",
+      err
+    );
+  }
+
+  // Email the user their updated report
+  await sendEmail(
+    attributes.email,
+    "Your Diagnostic Report – Euphoraum-AI",
+    diagnosticReportEmail(attributes.name),
+    pdfPath
+  );
+
+  await persistDiscoveryRecord({
+    userId: existingDiagnostic?.id ?? 0,
+    email,
+    title: finalPayload.title,
+    transcript: transcriptForFinal,
+    previousReport: existingReport,
+    newReport: reportText,
+    diagnosticId: diagnostic.id,
+    pdfUrl: pdf.url || null,
+  });
 
   return successResponse(res, "Chatbot diagnostic (freeform) generated", {
     diagnosticId: diagnostic.id,
     diagnostic: diagnostic.data,
     pdfPath,
+    pdfUrl: pdf.url || null,
     reportText,
   });
 };
 
 const listMine = async (req, res) => {
   const diagnostics = await Diagnostic.findAll({
-    where: { userId: req.user.sub },
+    where: { email: req.body.email },
     order: [["createdAt", "DESC"]],
   });
   return successResponse(res, "Diagnostics fetched", diagnostics);
@@ -730,10 +1339,126 @@ const getById = async (req, res) => {
   return successResponse(res, "Diagnostic fetched", diagnostic);
 };
 
+const getAllPdfUrls = async (req, res) => {
+  const { email } = req.body || req.query || {};
+
+  if (!email) {
+    return errorResponse(res, "Email is required", 400);
+  }
+
+  try {
+    // Get all diagnostics for this email
+    const diagnostics = await Diagnostic.findAll({
+      where: { email },
+      order: [["createdAt", "DESC"]],
+    });
+
+    // Get all discoveries for this email (query all and filter by email in data field)
+    const allDiscoveries = await Discovery.findAll({
+      order: [["createdAt", "DESC"]],
+    });
+    const discoveries = allDiscoveries.filter(
+      (d) => d.data?.email === email
+    );
+
+    const allPdfUrls = [];
+
+    // Extract PDF URLs from diagnostics
+    diagnostics.forEach((diagnostic) => {
+      const data = diagnostic.data || {};
+
+      // Current PDF URL
+      if (data.pdf?.url) {
+        allPdfUrls.push({
+          type: "diagnostic",
+          diagnosticId: diagnostic.id,
+          title: diagnostic.title || `Diagnostic Report ${diagnostic.id}`,
+          url: data.pdf.url,
+          createdAt: diagnostic.createdAt,
+          isCurrent: true,
+        });
+      }
+
+      // PDF URLs array
+      if (Array.isArray(data.pdfUrls)) {
+        data.pdfUrls.forEach((url, index) => {
+          // Skip if it's the same as current PDF
+          if (url !== data.pdf?.url) {
+            allPdfUrls.push({
+              type: "diagnostic",
+              diagnosticId: diagnostic.id,
+              title: `${diagnostic.title || `Diagnostic ${diagnostic.id}`} - Version ${index + 1}`,
+              url: url,
+              createdAt: diagnostic.updatedAt || diagnostic.createdAt,
+              isCurrent: false,
+            });
+          }
+        });
+      }
+
+      // Previous reports PDF URLs
+      if (Array.isArray(data.previousReports)) {
+        data.previousReports.forEach((prevReport, index) => {
+          if (prevReport.pdfUrl) {
+            allPdfUrls.push({
+              type: "diagnostic_previous",
+              diagnosticId: diagnostic.id,
+              title: `Previous Report ${index + 1} - ${diagnostic.title || `Diagnostic ${diagnostic.id}`}`,
+              url: prevReport.pdfUrl,
+              createdAt: prevReport.savedAt ? new Date(prevReport.savedAt) : diagnostic.createdAt,
+              isCurrent: false,
+            });
+          }
+        });
+      }
+    });
+
+    // Extract PDF URLs from discoveries
+    discoveries.forEach((discovery) => {
+      const data = discovery.data || {};
+      if (data.pdfUrl) {
+        allPdfUrls.push({
+          type: "discovery",
+          discoveryId: discovery.id,
+          diagnosticId: data.diagnosticId || null,
+          title: discovery.title || `Discovery Report ${discovery.id}`,
+          url: data.pdfUrl,
+          createdAt: discovery.createdAt,
+          isCurrent: false,
+        });
+      }
+    });
+
+    // Sort by creation date (newest first)
+    allPdfUrls.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Remove duplicates based on URL
+    const uniqueUrls = [];
+    const seenUrls = new Set();
+    allPdfUrls.forEach((item) => {
+      if (!seenUrls.has(item.url)) {
+        seenUrls.add(item.url);
+        uniqueUrls.push(item);
+      }
+    });
+
+    return successResponse(res, "PDF URLs fetched", {
+      total: uniqueUrls.length,
+      pdfs: uniqueUrls,
+    });
+  } catch (error) {
+    console.error("[getAllPdfUrls] Error:", error);
+    return errorResponse(res, "Failed to fetch PDF URLs", 500);
+  }
+};
+
 module.exports = {
   listMine,
   listAll,
   getById,
   chatbotDiagnosticFreeform,
   buildKajabiDiagnosticContext,
+  truncateForContext,
+  persistDiscoveryRecord,
+  getAllPdfUrls,
 };

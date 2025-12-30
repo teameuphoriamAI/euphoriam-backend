@@ -583,6 +583,11 @@ const scheduleInactivity = (socket, session) => {
   clearInactivity(session);
 
   session.idleTimer = setTimeout(async () => {
+    // Don't show inactivity message if discovery chat was already saved and emailed
+    if (session.discoverySavedAndEmailed) {
+      return;
+    }
+    
     socket.emit("ended", {
       reason: "inactive",
       message: "Chat ended due to inactivity. Summary emailed.",
@@ -660,7 +665,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [
-        { role: "system", content: prompt },
+        { role: "system", content: promptContent },
         {
           role: "user",
           content: buildFinalReportPrompt({
@@ -769,6 +774,8 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
           discoveryReportEmail(attributes.name || session.email.split("@")[0]),
           pdfPath
         );
+        // Mark that discovery chat has been saved and emailed
+        session.discoverySavedAndEmailed = true;
       } catch (err) {
         console.error("[socket discovery] email failed", err);
       }

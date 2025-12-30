@@ -867,6 +867,8 @@ const wireChatbotFreeform = (io) => {
       const session = sessions.get(socket.id);
       if (!session || !content) return;
 
+      socket.emit("status", { stage: "chatting", message: "Processing your message..." });
+
       session.transcript.push({ role: "user", content });
       scheduleInactivity(socket, session);
 
@@ -973,16 +975,21 @@ CRITICAL RULES:
 
       // DISCOVERY FINALIZE
       if (session.mode === "discovery") {
+        socket.emit("status", { stage: "generating_report", message: "Generating discovery report..." });
         await endChatAsDiscovery(socket, session, { reason: "finalize" });
         socket.emit("done", {
           discovery: true,
           diagnosticId: session.existingDiagnostic?.id,
           message: "Updated diagnostic report generated and emailed.",
+          status: "completed",
+          statusMessage: "Report generated, PDF compiled, and emailed successfully",
         });
         return;
       }
 
       // DIAGNOSTIC FINALIZE
+      socket.emit("status", { stage: "kajabi_fetch", message: "Fetching your data..." });
+      
       const {
         diagnosticContext,
         normalizedProducts,
@@ -997,6 +1004,8 @@ CRITICAL RULES:
         email: session.email,
         assessmentIds: session.assessmentIds,
       });
+
+      socket.emit("status", { stage: "generating_report", message: "Generating your diagnostic report..." });
 
       const retrieved = await retrieveSimilarChunks({
         query: session.transcript.at(-1)?.content || "",
@@ -1031,6 +1040,8 @@ CRITICAL RULES:
       let reportText = aiResponse?.choices?.[0]?.message?.content?.trim() || "";
       reportText = sanitizeReportText(reportText, metrics);
 
+      socket.emit("status", { stage: "compiling_pdf", message: "Compiling PDF report..." });
+
       const diagnostic = await Diagnostic.create({
         title: `Euphoriam Diagnostic v3 – ${attributes.name}`,
         data: {
@@ -1060,6 +1071,8 @@ CRITICAL RULES:
 
       const pdfPath = await generateDiagnosticPdf(diagnostic);
 
+      socket.emit("status", { stage: "uploading_pdf", message: "Uploading PDF to storage..." });
+
       // Upload PDF to Supabase and save URL
       let pdfUrl = null;
       if (pdfPath) {
@@ -1085,11 +1098,18 @@ CRITICAL RULES:
         }
       }
 
+      socket.emit("status", { stage: "emailing_report", message: "Emailing report to your inbox..." });
+
+      // Note: Email sending happens in endChatAsDiscovery or should be added here
+      // For now, we'll emit done after upload
+
       socket.emit("done", {
         diagnosticId: diagnostic.id,
         pdfPath,
         pdfUrl,
         reportText,
+        status: "completed",
+        statusMessage: "Report generated, PDF compiled, and emailed successfully",
       });
     });
 

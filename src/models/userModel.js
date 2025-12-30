@@ -34,6 +34,10 @@ const User = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    status: {
+      type: DataTypes.ENUM("active", "block"),
+      defaultValue: "active",
+    },
     metadata: {
       type: DataTypes.JSONB,
       allowNull: true,

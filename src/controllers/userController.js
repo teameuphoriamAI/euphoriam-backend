@@ -8,12 +8,96 @@ const { Product } = require("../models/productModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { CoachingSession } = require("../models/coachingSessionModel");
-
 const listUsers = async (_req, res) => {
-  const users = await userModel.getAll();
-  return successResponse(res, "Users fetched", users);
-};
+  try {
+    const users = await User.findAll({
+      where: { role: "user" },
+      attributes: { exclude: ["password"] },
+      include: [
+        {
+          model: Diagnostic,
+          required: false,
+        },
+        {
+          model: Discovery,
+          required: false,
+        },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
 
+    // Add report counts to each user
+    const usersWithReportCounts = users.map((user) => {
+      const userJson = user.toJSON();
+      console.log("dig", userJson.Diagnostics[0].dataValues.data.pdfUrls);
+
+      const diagnosticCount = userJson.Diagnostics
+        ? userJson.Diagnostics[0].dataValues.data.pdfUrls.length
+        : 0;
+      const discoveryCount = userJson.Discoveries
+        ? userJson.Discoveries.length
+        : 0;
+      return {
+        ...userJson,
+        diagnosticCount,
+        discoveryCount,
+        totalReportCount: diagnosticCount + discoveryCount,
+      };
+    });
+
+    return successResponse(res, "Users fetched", usersWithReportCounts);
+  } catch (err) {
+    console.error("[listUsers] Error:", err);
+    return errorResponse(res, err.message || "Failed to fetch users", 500);
+  }
+};
+const userReport = async (_req, res) => {
+  try {
+    const id = _req.params.id;
+    const users = await User.findOne({
+      where: { id },
+      attributes: { exclude: ["password"] },
+      include: [
+        {
+          model: Diagnostic,
+          required: false,
+        },
+        {
+          model: Discovery,
+          required: false,
+        },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    // Add report counts to each user
+    // const usersWithReportCounts = users.map((user) => {
+    const userJson = users.toJSON();
+    console.log("dig", userJson.Diagnostics[0].dataValues.data.pdfUrls);
+
+    const diagnosticCount = userJson.Diagnostics
+      ? userJson.Diagnostics[0].dataValues.data.pdfUrls.length
+      : 0;
+    const discoveryCount = userJson.Discoveries
+      ? userJson.Discoveries.length
+      : 0;
+    // return {
+    //   diagnosticCount,
+    //   discoveryCount,
+    // };
+    // });
+    let pdf = userJson.Diagnostics
+      ? userJson.Diagnostics[0].dataValues.data.pdfUrls
+      : null;
+    return successResponse(res, "Users fetched", {
+      diagnosticCount,
+      pdf,
+    });
+  } catch (err) {
+    console.error("[listUsers] Error:", err);
+    return errorResponse(res, err.message || "Failed to fetch users", 500);
+  }
+};
 const createUser = async (req, res) => {
   const payload = validate(userSchema, req.body);
   const findUser = await userModel.findOne(payload.email);
@@ -42,4 +126,4 @@ const getMe = async (req, res) => {
   return successResponse(res, "User fetched", user);
 };
 
-module.exports = { listUsers, createUser, getMe };
+module.exports = { listUsers, createUser, getMe, userReport };

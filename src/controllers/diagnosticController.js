@@ -1546,7 +1546,255 @@ Just answer that.`,
         reportText,
         autoFinalized: true,
         resumeNotice,
+        status: "completed",
+        statusMessage: "Report generated, PDF compiled, and emailed successfully",
+        userMessage: `Your new diagnostic report has been generated and emailed to ${email}. Please check your inbox.`,
       });
+    }
+
+    // For discovery mode: Check if user wants to end/generate report or has replied perfectly
+    // Also check if the bot previously signaled the end and user just responded
+    if (isDiscoveryMode && lastUser) {
+      const { 
+        detectUserWantsToEndOrGenerateReport, 
+        detectConversationComplete,
+        detectBotSignaledEnd 
+      } = require("../utils/validation");
+      
+      const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
+        userMessage: lastUser.content,
+        transcript: updatedTranscript,
+      });
+
+      // Check if the bot's PREVIOUS message (before user's response) signaled the end
+      // If bot signaled end in previous message and user just responded, conversation is complete
+      let botPreviouslySignaledEnd = false;
+      if (lastAssistant) {
+        botPreviouslySignaledEnd = await detectBotSignaledEnd({
+          lastAssistantMessage: lastAssistant,
+          transcript: transcript, // Use original transcript, not updated (before nextMessage)
+        });
+      }
+
+      // If bot previously signaled end and user just responded, conversation is complete
+      const conversationComplete = botPreviouslySignaledEnd || await detectConversationComplete({
+        transcript: updatedTranscript,
+        lastUserMessage: lastUser,
+        lastAssistantMessage: lastAssistant, // Check the previous assistant message
+      });
+
+      // If user wants to end/generate report OR conversation is complete, generate discovery report
+      if (wantsToEndOrGenerate || conversationComplete) {
+        // Build Kajabi context to get attributes
+        const {
+          diagnosticContext: discoveryContext,
+          attributes: discoveryAttributes,
+        } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+        // Get previous discovery if exists
+        const previousDiscoveries = await Discovery.findAll({
+          where: { 
+            userId: existingDiagnostic?.userId || appUser?.id || null 
+          },
+          order: [["createdAt", "DESC"]],
+          limit: 1,
+        });
+        const previousDiscovery = previousDiscoveries[0];
+
+        // Generate discovery report using old diagnostic + previous discovery if exists
+        // Format should match the full diagnostic PDF format
+        const discoveryPrompt = `
+You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
+
+Context: The user already has a completed diagnostic report and may have previous discovery sessions.
+
+Previous diagnostic (reference):
+${priorReportSnippet || "None"}
+
+${previousDiscovery ? `Previous discovery report (reference):
+${truncateForContext(previousDiscovery.data?.newReportSnippet || previousDiscovery.data?.newReport || "", 4000)}` : ""}
+
+New conversation transcript (latest messages last):
+${JSON.stringify(updatedTranscript, null, 2)}
+
+Client Name: ${discoveryAttributes?.name || name}
+Client ID: ${discoveryContext?.customer?.id || "N/A"}
+Report Type: Full Diagnostic (Updated)
+Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+
+Generate a FULL DISCOVERY REPORT following this EXACT format:
+
+EUPHORIAM™ FULL DIAGNOSTIC REPORT
+
+Client: [Client Name]
+Client ID: [Client ID]
+Report Type: Full Diagnostic (Updated)
+Prepared by: Euphoriam AI
+Date: [Date]
+
+BEFORE YOU READ THIS
+
+This document is not feedback.
+It is structural recognition.
+
+Nothing here is asking you to improve, fix, or push.
+It describes the forces governing your movement, your pauses, and your timing.
+
+Your system does not respond to motivation.
+It responds to safety, consent, and coherence.
+
+Read slowly.
+Let it land in the body, not the mind.
+
+SECTION 1 — CORE STRUCTURE DETECTION
+[Analyze their primary structure based on metrics and conversation]
+
+SECTION 2 — AVOIDANCE BEHAVIOUR (REFINED)
+[Identify their avoidance patterns from the conversation]
+
+SECTION 3 — VORTEX MAPPING
+[Map their vortex type and activation points]
+
+SECTION 4 — SOMATIC CONFIRMATION
+[Body data observed from the conversation]
+
+SECTION 5 — GRAVITY (3D CODE)
+[Gravity percentage and what it's doing]
+
+SECTION 6 — CONSCIOUSNESS LEVEL
+[CL level and interpretation]
+
+SECTION 7 — QUANTUM GENIUS CODES (QGC)
+[QGC activation percentage and what it looks like]
+
+SECTION 8 — SIGNAL COHERENCE & OUTPUT
+[Signal Coherence and Signal Output analysis]
+
+SECTION 9 — ANGLE OF GROWTH (UPDATED)
+[Their growth axis based on structure]
+
+SECTION 10 — FIRST CORRECTION (COMPLETED)
+[What corrections were made in this session]
+
+SECTION 11 — UNLIMITED CREATOR ALIGNMENT
+[Aligned work based on their structure]
+
+FINAL SUMMARY
+[Summary paragraph]
+
+Use the exact metrics from the diagnostic:
+- Gravity: ${diagnosticMetrics.gravity || "N/A"}%
+- Signal Coherence: ${diagnosticMetrics.signalCoherence || "N/A"}%
+- Signal Output: ${diagnosticMetrics.signalOutput || "N/A"}%
+- CL: ${diagnosticMetrics.consciousnessLevel || "N/A"}
+- QGC: ${diagnosticMetrics.qgcActivation || "N/A"}%
+
+Generate the full report in this format.`;
+
+        let discoveryReport = "";
+        try {
+          const aiDiscovery = await openai.chat.completions.create({
+            model: "gpt-5.2",
+            messages: [{ role: "user", content: discoveryPrompt }],
+            temperature: 0.15,
+            max_completion_tokens: 4500,
+          });
+          discoveryReport =
+            aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
+        } catch (err) {
+          console.error("[discovery] failed to generate follow-up report", err);
+        }
+
+        if (discoveryReport) {
+          // Determine discovery type from request or default to integrated
+          const discoveryType = req.body.discoveryType || "integrated";
+
+          // Get user ID from diagnostic or find by email
+          const userForDiscovery = existingDiagnostic?.userId
+            ? await User.findByPk(existingDiagnostic.userId)
+            : await User.findOne({ where: { email } });
+
+          // Generate PDF for discovery report
+          // Create a diagnostic-like object for PDF generation
+          const discoveryForPdf = {
+            id: existingDiagnostic?.id || Date.now(),
+            title: `Discovery Follow-up – ${discoveryAttributes?.name || name}`,
+            userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+            data: {
+              profile: {
+                name: discoveryAttributes?.name || name,
+                email: email,
+              },
+              aiReport: discoveryReport,
+              metrics: diagnosticMetrics,
+              customerId: discoveryContext?.customer?.id || null,
+            },
+          };
+
+          let pdfPath = null;
+          let pdfUrl = null;
+          try {
+            pdfPath = await generateDiagnosticPdf(discoveryForPdf);
+            
+            // Upload PDF to Supabase
+            if (pdfPath) {
+              const buffer = await fs.promises.readFile(pdfPath);
+              const upload = await uploadBufferToSupabase({
+                buffer,
+                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()}-${Date.now()}.pdf`,
+                contentType: "application/pdf",
+              });
+              pdfUrl = upload.url || null;
+            }
+          } catch (err) {
+            console.error("[discovery] PDF generation/upload failed", err);
+          }
+
+          await persistDiscoveryRecord({
+            userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+            email,
+            title: `Discovery Follow-up – ${discoveryAttributes?.name || name}`,
+            transcript: updatedTranscript,
+            previousReport: priorReportSnippet,
+            newReport: discoveryReport,
+            diagnosticId: existingDiagnostic?.id || null,
+            pdfUrl: pdfUrl || existingDiagnostic?.data?.pdf?.url || null,
+            discoveryType,
+          });
+
+          if (email) {
+            const { discoveryReportEmail } = require("../utils/emailTemplate/initialDiscoveryReport");
+            // Email with PDF attachment if available
+            if (pdfPath) {
+              await sendEmail(
+                email,
+                "Your Discovery Report – Euphoriam AI",
+                discoveryReportEmail(discoveryAttributes?.name || name),
+                pdfPath
+              );
+            } else {
+              // Fallback to basic email if PDF generation failed
+              await sendEmailBasic(
+                email,
+                "Your discovery follow-up",
+                discoveryReport.replace(/\n/g, "<br/>")
+              );
+            }
+          }
+
+          return successResponse(res, "Discovery chat saved", {
+            discovery: true,
+            message: "Discovery chat saved and emailed.",
+            discoveryReport: discoveryReport || null,
+            pdfPath: pdfPath || null,
+            pdfUrl: pdfUrl || null,
+            autoGenerated: true,
+            status: "completed",
+            statusMessage: "Report generated, PDF compiled, and emailed successfully",
+            userMessage: `Your new discovery report has been generated and emailed to ${email}. Please check your inbox.`,
+          });
+        }
+      }
     }
 
     return successResponse(res, "Next chatbot message", {
@@ -1559,6 +1807,8 @@ Just answer that.`,
       answeredCount,
       pendingQuestion,
       aiAnswered,
+      status: "chatting",
+      statusMessage: "Chatting in progress",
     });
   }
 
@@ -1602,32 +1852,112 @@ Just answer that.`,
     : [];
 
   if (hasExistingReport) {
-    // Generate a follow-up discovery report using prior diagnostic + new transcript
+    // Get previous discovery if exists
+    const previousDiscoveries = await Discovery.findAll({
+      where: { 
+        userId: existingDiagnostic?.userId || appUser?.id || null 
+      },
+      order: [["createdAt", "DESC"]],
+      limit: 1,
+    });
+    const previousDiscovery = previousDiscoveries[0];
+
+    // Generate a FULL discovery report using prior diagnostic + new transcript
     const discoveryPrompt = `
-You are generating a brief discovery follow-up report.
-Context: The user already has a completed diagnostic report.
+You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
+
+Context: The user already has a completed diagnostic report and may have previous discovery sessions.
 
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
+${previousDiscovery ? `Previous discovery report (reference):
+${truncateForContext(previousDiscovery.data?.newReportSnippet || previousDiscovery.data?.newReport || "", 4000)}` : ""}
+
 New conversation transcript (latest messages last):
 ${JSON.stringify(transcriptForFinal, null, 2)}
 
-Produce a concise follow-up report (no PDF formatting needed) that:
-- Opens with "Welcome back, <name>." (use the name from attributes)
-- Acknowledges continuity from the prior diagnostic.
-- Highlights changes since the prior report.
-- Answers: "How is your stress?" and other relevant follow-ups inferred from the transcript.
-- Recommends 3-5 focused next steps.
-Keep it under 400 words. Plain text only.`;
+Client Name: ${attributes.name || name}
+Client ID: ${customerData.id || "N/A"}
+Report Type: Full Diagnostic (Updated)
+Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+
+Generate a FULL DISCOVERY REPORT following this EXACT format:
+
+EUPHORIAM™ FULL DIAGNOSTIC REPORT
+
+Client: [Client Name]
+Client ID: [Client ID]
+Report Type: Full Diagnostic (Updated)
+Prepared by: Euphoriam AI
+Date: [Date]
+
+BEFORE YOU READ THIS
+
+This document is not feedback.
+It is structural recognition.
+
+Nothing here is asking you to improve, fix, or push.
+It describes the forces governing your movement, your pauses, and your timing.
+
+Your system does not respond to motivation.
+It responds to safety, consent, and coherence.
+
+Read slowly.
+Let it land in the body, not the mind.
+
+SECTION 1 — CORE STRUCTURE DETECTION
+[Analyze their primary structure based on metrics and conversation]
+
+SECTION 2 — AVOIDANCE BEHAVIOUR (REFINED)
+[Identify their avoidance patterns from the conversation]
+
+SECTION 3 — VORTEX MAPPING
+[Map their vortex type and activation points]
+
+SECTION 4 — SOMATIC CONFIRMATION
+[Body data observed from the conversation]
+
+SECTION 5 — GRAVITY (3D CODE)
+[Gravity percentage and what it's doing]
+
+SECTION 6 — CONSCIOUSNESS LEVEL
+[CL level and interpretation]
+
+SECTION 7 — QUANTUM GENIUS CODES (QGC)
+[QGC activation percentage and what it looks like]
+
+SECTION 8 — SIGNAL COHERENCE & OUTPUT
+[Signal Coherence and Signal Output analysis]
+
+SECTION 9 — ANGLE OF GROWTH (UPDATED)
+[Their growth axis based on structure]
+
+SECTION 10 — FIRST CORRECTION (COMPLETED)
+[What corrections were made in this session]
+
+SECTION 11 — UNLIMITED CREATOR ALIGNMENT
+[Aligned work based on their structure]
+
+FINAL SUMMARY
+[Summary paragraph]
+
+Use the exact metrics from the diagnostic:
+- Gravity: ${metrics.gravity || "N/A"}%
+- Signal Coherence: ${metrics.signalCoherence || "N/A"}%
+- Signal Output: ${metrics.signalOutput || "N/A"}%
+- CL: ${metrics.consciousnessLevel || "N/A"}
+- QGC: ${metrics.qgcActivation || "N/A"}%
+
+Generate the full report in this format.`;
 
     let discoveryReport = "";
     try {
       const aiDiscovery = await openai.chat.completions.create({
-        model: "gpt-4.1-mini",
+        model: "gpt-5.2",
         messages: [{ role: "user", content: discoveryPrompt }],
-        temperature: 0.35,
-        max_completion_tokens: 800,
+        temperature: 0.15,
+        max_completion_tokens: 4500,
       });
       discoveryReport =
         aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
@@ -1643,6 +1973,44 @@ Keep it under 400 words. Plain text only.`;
       ? await User.findByPk(existingDiagnostic.userId)
       : await User.findOne({ where: { email } });
 
+    // Generate PDF for discovery report
+    let pdfPath = null;
+    let pdfUrl = null;
+    if (discoveryReport) {
+      try {
+        // Create a diagnostic-like object for PDF generation
+        const discoveryForPdf = {
+          id: existingDiagnostic?.id || Date.now(),
+          title: `Discovery Follow-up – ${attributes.name}`,
+          userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+          data: {
+            profile: {
+              name: attributes.name,
+              email: email,
+            },
+            aiReport: discoveryReport,
+            metrics: metrics,
+            customerId: customerData.id || null,
+          },
+        };
+
+        pdfPath = await generateDiagnosticPdf(discoveryForPdf);
+        
+        // Upload PDF to Supabase
+        if (pdfPath) {
+          const buffer = await fs.promises.readFile(pdfPath);
+          const upload = await uploadBufferToSupabase({
+            buffer,
+            objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()}-${Date.now()}.pdf`,
+            contentType: "application/pdf",
+          });
+          pdfUrl = upload.url || null;
+        }
+      } catch (err) {
+        console.error("[discovery finalize] PDF generation/upload failed", err);
+      }
+    }
+
     await persistDiscoveryRecord({
       userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
       email,
@@ -1651,24 +2019,41 @@ Keep it under 400 words. Plain text only.`;
       previousReport: priorReportSnippet,
       newReport: discoveryReport,
       diagnosticId: existingDiagnostic?.id || null,
-      pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
+      pdfUrl: pdfUrl || existingDiagnostic?.data?.pdf?.url || null,
       discoveryType,
     });
 
     if (email) {
-      await sendEmailBasic(
-        email,
-        "Your discovery follow-up",
-        discoveryReport
-          ? discoveryReport.replace(/\n/g, "<br/>")
-          : buildDiscoveryEmail({ transcript: transcriptForFinal, email })
-      );
+      const { discoveryReportEmail } = require("../utils/emailTemplate/initialDiscoveryReport");
+      // Email with PDF attachment if available
+      if (pdfPath && discoveryReport) {
+        await sendEmail(
+          email,
+          "Your Discovery Report – Euphoriam AI",
+          discoveryReportEmail(attributes.name),
+          pdfPath
+        );
+      } else {
+        // Fallback to basic email if PDF generation failed
+        await sendEmailBasic(
+          email,
+          "Your discovery follow-up",
+          discoveryReport
+            ? discoveryReport.replace(/\n/g, "<br/>")
+            : buildDiscoveryEmail({ transcript: transcriptForFinal, email })
+        );
+      }
     }
 
     return successResponse(res, "Discovery chat saved", {
       discovery: true,
       message: "Discovery chat saved and emailed.",
       discoveryReport: discoveryReport || null,
+      pdfPath: pdfPath || null,
+      pdfUrl: pdfUrl || null,
+      status: "completed",
+      statusMessage: "Report generated, PDF compiled, and emailed successfully",
+      userMessage: `Your new discovery report has been generated and emailed to ${email}. Please check your inbox.`,
     });
   }
   const prompt = await getLatestPromptFromDb();
@@ -1834,6 +2219,9 @@ Keep it under 400 words. Plain text only.`;
     pdfPath,
     pdfUrl: pdf.url || null,
     reportText,
+    status: "completed",
+    statusMessage: "Report generated, PDF compiled, and emailed successfully",
+    userMessage: `Your new diagnostic report has been generated and emailed to ${email}. Please check your inbox.`,
   });
 };
 

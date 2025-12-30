@@ -444,7 +444,7 @@ const {
   EUPHORIAM_V3_SYSTEM_PROMPT,
   sanitizeReportText,
 } = require("../helpers/euphoriamChatbot");
-
+const {} = require("../");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
   buildKajabiDiagnosticContext,
@@ -455,6 +455,7 @@ const {
 const openai = require("../config/openai");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
+const { Prompt } = require("../models/promptModel");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { sendEmailBasic, sendEmail } = require("../utils/email");
 const { uploadBufferToSupabase } = require("../utils/storage");
@@ -465,6 +466,94 @@ const {
 const fs = require("fs");
 
 /* -------------------- Utils -------------------- */
+const getLatestPromptFromDb = async () => {
+  try {
+    const prompt = await Prompt.findOne({
+      where: { isActive: true },
+      order: [["createdAt", "DESC"]],
+      raw: true, // returns plain JS object
+    });
+
+    if (!prompt) return null;
+
+    const SUPPORT_LOCK_PROMPT = `
+🌑 USER QUESTION SUPPORT LOCK (ADDED — DO NOT REMOVE)
+
+Purpose:
+If the user asks a question, the system must help them understand and answer it without advancing the flow.
+
+Rules:
+
+If the user asks a question at any time (including during the 12-question intake):
+
+Pause progression immediately
+
+Do NOT move to the next question
+
+Do NOT alter, reword, or replace the original question
+
+Do NOT interpret their question as an answer
+
+Your role is strictly to:
+
+Clarify what the question is asking
+
+Explain how to think about answering it
+
+Offer gentle examples without leading
+
+Reflect dimensions they may consider
+
+⚖️ PROGRESS AND CONFIRMATION LOGIC
+
+1. If the user provides a short answer (e.g., "yes", "no", "A", "d,d,d"), accept it as progress if it fits the context.
+
+2. DO NOT perform redundant confirmations (e.g., "Are you 100% sure?") unless the user's answer is truly ambiguous or contradictory.
+
+3. If you understand the user's answer, acknowledge it and move to the NEXT question immediately.
+
+Maintain Euphoriam tone
+
+You must always return control to the SAME question.
+
+End by inviting them to answer that exact question
+
+Never advance the intake
+
+Never diagnose early
+
+Language constraints:
+
+No pressure
+
+No urgency
+
+No prompting to move on
+
+No biasing or leading
+
+The prompt is immutable.
+
+The user is never asked to change it
+
+The system never modifies it
+
+Support is clarification only
+
+If a conflict occurs: do not advance — clarity comes first.
+
+**NEVER Move to the next question until the user refuses to answer or we get the answer to the last question**
+`;
+
+    return {
+      ...prompt,
+      fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}`,
+    };
+  } catch (error) {
+    console.error("Error fetching latest prompt:", error);
+    return null;
+  }
+};
 
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const isAnswerLike = (text = "") => {
@@ -563,10 +652,16 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     });
 
     // Generate UPDATED full diagnostic report (not discovery report)
+    const prompt = await getLatestPromptFromDb();
+    // Extract string content from prompt object, or use fallback
+    const promptContent =
+      typeof prompt === "string"
+        ? prompt
+        : prompt?.fullPrompt || prompt?.content || EUPHORIAM_V3_SYSTEM_PROMPT;
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [
-        { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
+        { role: "system", content: prompt },
         {
           role: "user",
           content: buildFinalReportPrompt({
@@ -908,11 +1003,17 @@ CRITICAL RULES:
         query: session.transcript.at(-1)?.content || "",
         topK: 3,
       });
+      const prompt = await getLatestPromptFromDb();
+      // Extract string content from prompt object, or use fallback
+      const promptContent =
+        typeof prompt === "string"
+          ? prompt
+          : prompt?.fullPrompt || prompt?.content || EUPHORIAM_V3_SYSTEM_PROMPT;
 
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
         messages: [
-          { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
+          { role: "system", content: prompt },
           {
             role: "user",
             content: buildFinalReportPrompt({

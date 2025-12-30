@@ -311,6 +311,17 @@ const pick = (obj, keys) =>
     return acc;
   }, {});
 
+// Helper function to render metrics gauge for discovery reports
+const renderGauge = (value) => {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  const totalBlocks = 12;
+  const filled = Math.round((v / 100) * totalBlocks);
+  const empty = totalBlocks - filled;
+  const filledBlock = "█".repeat(filled);
+  const emptyBlock = "░".repeat(empty);
+  return `${filledBlock}${emptyBlock} ${v}%`;
+};
+
 const normalizeKajabiOffer = (o) => {
   const data = o?.data;
   const attributes = data?.attributes || {};
@@ -589,8 +600,54 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   const existingReport = existingDiagnostic?.data?.aiReport;
   // Extract metrics from diagnostic data
   const diagnosticMetrics = existingDiagnostic?.data?.metrics || {};
-  // Extract report date
-  const reportDate = existingDiagnostic?.data?.generatedAt
+  
+  // Load latest discovery to get updated metrics (vortex, pmatrice)
+  let latestDiscovery = null;
+  let latestDiscoveryReport = null;
+  let latestDiscoveryMetrics = diagnosticMetrics; // Default to diagnostic metrics
+  
+  if (existingDiagnostic?.userId) {
+    const discoveries = await Discovery.findAll({
+      where: { userId: existingDiagnostic.userId },
+      order: [["createdAt", "DESC"]],
+      limit: 1,
+    });
+    latestDiscovery = discoveries[0] || null;
+    
+    if (latestDiscovery) {
+      // Get the latest discovery report (newReportSnippet or newReport)
+      latestDiscoveryReport = latestDiscovery.data?.newReportSnippet || 
+                              latestDiscovery.data?.newReport || 
+                              null;
+      
+      // Extract metrics from latest discovery report if available
+      if (latestDiscoveryReport) {
+        // Try to extract metrics from the discovery report text
+        const gravityMatch = latestDiscoveryReport.match(/Gravity[:\s]+(\d+(?:\.\d+)?)%?/i);
+        const signalCoherenceMatch = latestDiscoveryReport.match(/Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i);
+        const signalOutputMatch = latestDiscoveryReport.match(/Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i);
+        const clMatch = latestDiscoveryReport.match(/Consciousness\s+Level[:\s]+(\d+(?:\.\d+)?)|CL[:\s]+(\d+(?:\.\d+)?)/i);
+        const qgcMatch = latestDiscoveryReport.match(/QGC[:\s]+(\d+(?:\.\d+)?)%?|Quantum\s+Genius\s+Codes[:\s]+(\d+(?:\.\d+)?)%?/i);
+        
+        latestDiscoveryMetrics = {
+          ...diagnosticMetrics, // Start with diagnostic metrics as base
+          gravity: gravityMatch ? parseFloat(gravityMatch[1]) : diagnosticMetrics.gravity,
+          signalCoherence: signalCoherenceMatch ? parseFloat(signalCoherenceMatch[1]) : diagnosticMetrics.signalCoherence,
+          signalOutput: signalOutputMatch ? parseFloat(signalOutputMatch[1]) : diagnosticMetrics.signalOutput,
+          consciousnessLevel: clMatch ? parseFloat(clMatch[1] || clMatch[2]) : diagnosticMetrics.consciousnessLevel,
+          qgcActivation: qgcMatch ? parseFloat(qgcMatch[1] || qgcMatch[2]) : diagnosticMetrics.qgcActivation,
+        };
+      }
+    }
+  }
+  
+  // Extract report date - prefer latest discovery date, then diagnostic date
+  const reportDate = latestDiscovery?.createdAt
+    ? new Date(latestDiscovery.createdAt).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      })
+    : existingDiagnostic?.data?.generatedAt
     ? new Date(existingDiagnostic.data.generatedAt).toLocaleDateString(
         "en-US",
         { month: "short", day: "numeric" }
@@ -601,8 +658,12 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         day: "numeric",
       })
     : null;
+  
+  // Use latest discovery report if available, otherwise use diagnostic report
   // Use larger limit to ensure full report is available for discovery conversations
-  const priorReportSnippet = truncateForContext(existingReport, 12000);
+  const priorReportSnippet = latestDiscoveryReport
+    ? truncateForContext(latestDiscoveryReport, 12000)
+    : truncateForContext(existingReport, 12000);
   const existingPreviousReports = Array.isArray(
     existingDiagnostic?.data?.previousReports
   )
@@ -738,7 +799,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         userName: name,
         priorReport: priorReportSnippet,
         discoveryType,
-        metrics: diagnosticMetrics, // Pass actual metrics data
+        metrics: latestDiscoveryMetrics, // Use latest discovery metrics (includes updated vortex, pmatrice)
         reportDate: reportDate, // Pass report date
       });
 
@@ -1622,74 +1683,101 @@ Client ID: ${discoveryContext?.customer?.id || "N/A"}
 Report Type: Full Diagnostic (Updated)
 Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
 
-Generate a FULL DISCOVERY REPORT following this EXACT format:
+CRITICAL: You MUST generate the report in the EXACT format that matches the diagnostic report format. The report MUST start with the intro page format below.
 
-EUPHORIAM™ FULL DIAGNOSTIC REPORT
+Generate a FULL DISCOVERY REPORT following this EXACT format (start with divider lines and intro page):
 
-Client: [Client Name]
-Client ID: [Client ID]
-Report Type: Full Diagnostic (Updated)
-Prepared by: Euphoriam AI
-Date: [Date]
+----------------------------------------
 
-BEFORE YOU READ THIS
+✨ BEFORE YOU READ THIS DIAGNOSTIC
+A Message About What You're About to Receive
+This document is not a simple write-up.
+It is a map of the structures governing your inner reality.
+It outlines:
+● the architecture of your identity
+● the gravitational pulls in your field
+● the multidimensional coding you carry
+● the vortex behind your resistance
+● the subatomic themes you inherited
+● the patterns that shape your outcomes
+● and the version of you trying to emerge
+This is not about psychology.
+This is not about mindset.
+This is not about behaviour.
+It is about consciousness physics — the forces beneath your thoughts, choices, and reality.
+Inside this diagnostic, you will see:
+● the hidden rules your identity has been obeying
+● the roles you inherited without choosing
+● the avoidance strategies that protect your deeper power
+● the structural reasons your expansion has looped
+● and the exact levers that move your destiny timeline
+You'll also see your:
+● Gravity (the pull of old identity)
+● Signal Output (your broadcast strength)
+● Quantum Genius Codes
+● Consciousness Level
+● Signal Coherence
+● Vortex
+Read this slowly.
+Let each section land in your body.
+This is not new information.
+This is recognition.
+Your deeper identity already knows every word.
+Once you see your structure clearly — reality reorganises around it.
+This is your map.
+And now that you have it, everything changes.
 
-This document is not feedback.
-It is structural recognition.
+----------------------------------------
 
-Nothing here is asking you to improve, fix, or push.
-It describes the forces governing your movement, your pauses, and your timing.
-
-Your system does not respond to motivation.
-It responds to safety, consent, and coherence.
-
-Read slowly.
-Let it land in the body, not the mind.
-
-SECTION 1 — CORE STRUCTURE DETECTION
+SECTION 1 — Structure Type Detection
 [Analyze their primary structure based on metrics and conversation]
 
-SECTION 2 — AVOIDANCE BEHAVIOUR (REFINED)
+SECTION 2 — Avoidance Behaviour Mapping
 [Identify their avoidance patterns from the conversation]
 
-SECTION 3 — VORTEX MAPPING
+SECTION 3 — Vortex Settings
 [Map their vortex type and activation points]
 
-SECTION 4 — SOMATIC CONFIRMATION
-[Body data observed from the conversation]
+SECTION 4 — 3D Code (Gravity %)
+[Gravity percentage and what it's doing - use exact value: ${diagnosticMetrics.gravity || "N/A"}%]
 
-SECTION 5 — GRAVITY (3D CODE)
-[Gravity percentage and what it's doing]
+SECTION 5 — Consciousness Level (CL)
+[CL level and interpretation - use exact value: ${diagnosticMetrics.consciousnessLevel || "N/A"}]
 
-SECTION 6 — CONSCIOUSNESS LEVEL
-[CL level and interpretation]
+SECTION 6 — Quantum Genius Codes (QGC)
+[QGC activation percentage and what it looks like - use exact value: ${diagnosticMetrics.qgcActivation || "N/A"}%]
 
-SECTION 7 — QUANTUM GENIUS CODES (QGC)
-[QGC activation percentage and what it looks like]
+SECTION 7 — Signal Coherence
+[Signal Coherence analysis - use exact value: ${diagnosticMetrics.signalCoherence || "N/A"}%]
 
-SECTION 8 — SIGNAL COHERENCE & OUTPUT
-[Signal Coherence and Signal Output analysis]
+SECTION 8 — Signal Output (IP-Protected)
+[Signal Output analysis - use exact value: ${diagnosticMetrics.signalOutput || "N/A"}%]
 
-SECTION 9 — ANGLE OF GROWTH (UPDATED)
+SECTION 9 — Angle of Growth
 [Their growth axis based on structure]
 
-SECTION 10 — FIRST CORRECTION (COMPLETED)
+SECTION 10 — First Correction
 [What corrections were made in this session]
 
-SECTION 11 — UNLIMITED CREATOR ALIGNMENT
-[Aligned work based on their structure]
+Metrics Gauge
+QGC Activation:     ${renderGauge(diagnosticMetrics.qgcActivation || 0)}
+Consciousness Level: ${renderGauge((diagnosticMetrics.consciousnessLevel || 0) * 20)}
+Gravity:             ${renderGauge(diagnosticMetrics.gravity || 0)}
+Signal Coherence:    ${renderGauge(diagnosticMetrics.signalCoherence || 0)}
+Signal Output:       ${renderGauge(diagnosticMetrics.signalOutput || 0)}
 
-FINAL SUMMARY
+Unlimited Creator Recommendations
+[Recommendations based on their structure]
+
+Evolution Notes
+[Notes on their evolution and progress]
+
+Final Summary
 [Summary paragraph]
 
-Use the exact metrics from the diagnostic:
-- Gravity: ${diagnosticMetrics.gravity || "N/A"}%
-- Signal Coherence: ${diagnosticMetrics.signalCoherence || "N/A"}%
-- Signal Output: ${diagnosticMetrics.signalOutput || "N/A"}%
-- CL: ${diagnosticMetrics.consciousnessLevel || "N/A"}
-- QGC: ${diagnosticMetrics.qgcActivation || "N/A"}%
+End of Report
 
-Generate the full report in this format.`;
+Generate the full report in this exact format.`;
 
         let discoveryReport = "";
         try {
@@ -1882,74 +1970,101 @@ Client ID: ${customerData.id || "N/A"}
 Report Type: Full Diagnostic (Updated)
 Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
 
-Generate a FULL DISCOVERY REPORT following this EXACT format:
+CRITICAL: You MUST generate the report in the EXACT format that matches the diagnostic report format. The report MUST start with the intro page format below.
 
-EUPHORIAM™ FULL DIAGNOSTIC REPORT
+Generate a FULL DISCOVERY REPORT following this EXACT format (start with divider lines and intro page):
 
-Client: [Client Name]
-Client ID: [Client ID]
-Report Type: Full Diagnostic (Updated)
-Prepared by: Euphoriam AI
-Date: [Date]
+----------------------------------------
 
-BEFORE YOU READ THIS
+✨ BEFORE YOU READ THIS DIAGNOSTIC
+A Message About What You're About to Receive
+This document is not a simple write-up.
+It is a map of the structures governing your inner reality.
+It outlines:
+● the architecture of your identity
+● the gravitational pulls in your field
+● the multidimensional coding you carry
+● the vortex behind your resistance
+● the subatomic themes you inherited
+● the patterns that shape your outcomes
+● and the version of you trying to emerge
+This is not about psychology.
+This is not about mindset.
+This is not about behaviour.
+It is about consciousness physics — the forces beneath your thoughts, choices, and reality.
+Inside this diagnostic, you will see:
+● the hidden rules your identity has been obeying
+● the roles you inherited without choosing
+● the avoidance strategies that protect your deeper power
+● the structural reasons your expansion has looped
+● and the exact levers that move your destiny timeline
+You'll also see your:
+● Gravity (the pull of old identity)
+● Signal Output (your broadcast strength)
+● Quantum Genius Codes
+● Consciousness Level
+● Signal Coherence
+● Vortex
+Read this slowly.
+Let each section land in your body.
+This is not new information.
+This is recognition.
+Your deeper identity already knows every word.
+Once you see your structure clearly — reality reorganises around it.
+This is your map.
+And now that you have it, everything changes.
 
-This document is not feedback.
-It is structural recognition.
+----------------------------------------
 
-Nothing here is asking you to improve, fix, or push.
-It describes the forces governing your movement, your pauses, and your timing.
-
-Your system does not respond to motivation.
-It responds to safety, consent, and coherence.
-
-Read slowly.
-Let it land in the body, not the mind.
-
-SECTION 1 — CORE STRUCTURE DETECTION
+SECTION 1 — Structure Type Detection
 [Analyze their primary structure based on metrics and conversation]
 
-SECTION 2 — AVOIDANCE BEHAVIOUR (REFINED)
+SECTION 2 — Avoidance Behaviour Mapping
 [Identify their avoidance patterns from the conversation]
 
-SECTION 3 — VORTEX MAPPING
+SECTION 3 — Vortex Settings
 [Map their vortex type and activation points]
 
-SECTION 4 — SOMATIC CONFIRMATION
-[Body data observed from the conversation]
+SECTION 4 — 3D Code (Gravity %)
+[Gravity percentage and what it's doing - use exact value: ${metrics.gravity || "N/A"}%]
 
-SECTION 5 — GRAVITY (3D CODE)
-[Gravity percentage and what it's doing]
+SECTION 5 — Consciousness Level (CL)
+[CL level and interpretation - use exact value: ${metrics.consciousnessLevel || "N/A"}]
 
-SECTION 6 — CONSCIOUSNESS LEVEL
-[CL level and interpretation]
+SECTION 6 — Quantum Genius Codes (QGC)
+[QGC activation percentage and what it looks like - use exact value: ${metrics.qgcActivation || "N/A"}%]
 
-SECTION 7 — QUANTUM GENIUS CODES (QGC)
-[QGC activation percentage and what it looks like]
+SECTION 7 — Signal Coherence
+[Signal Coherence analysis - use exact value: ${metrics.signalCoherence || "N/A"}%]
 
-SECTION 8 — SIGNAL COHERENCE & OUTPUT
-[Signal Coherence and Signal Output analysis]
+SECTION 8 — Signal Output (IP-Protected)
+[Signal Output analysis - use exact value: ${metrics.signalOutput || "N/A"}%]
 
-SECTION 9 — ANGLE OF GROWTH (UPDATED)
+SECTION 9 — Angle of Growth
 [Their growth axis based on structure]
 
-SECTION 10 — FIRST CORRECTION (COMPLETED)
+SECTION 10 — First Correction
 [What corrections were made in this session]
 
-SECTION 11 — UNLIMITED CREATOR ALIGNMENT
-[Aligned work based on their structure]
+Metrics Gauge
+QGC Activation:     ${renderGauge(metrics.qgcActivation || 0)}
+Consciousness Level: ${renderGauge((metrics.consciousnessLevel || 0) * 20)}
+Gravity:             ${renderGauge(metrics.gravity || 0)}
+Signal Coherence:    ${renderGauge(metrics.signalCoherence || 0)}
+Signal Output:       ${renderGauge(metrics.signalOutput || 0)}
 
-FINAL SUMMARY
+Unlimited Creator Recommendations
+[Recommendations based on their structure]
+
+Evolution Notes
+[Notes on their evolution and progress]
+
+Final Summary
 [Summary paragraph]
 
-Use the exact metrics from the diagnostic:
-- Gravity: ${metrics.gravity || "N/A"}%
-- Signal Coherence: ${metrics.signalCoherence || "N/A"}%
-- Signal Output: ${metrics.signalOutput || "N/A"}%
-- CL: ${metrics.consciousnessLevel || "N/A"}
-- QGC: ${metrics.qgcActivation || "N/A"}%
+End of Report
 
-Generate the full report in this format.`;
+Generate the full report in this exact format.`;
 
     let discoveryReport = "";
     try {

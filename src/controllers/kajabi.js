@@ -14,9 +14,7 @@ import { getKajabiAccessToken, createKajabiClient } from "../config/kajabi.js";
 // }
 export async function getCustomerByEmail(email) {
   try {
-    const accessToken = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(accessToken);
-    console.log("kajabi", kajabi);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get("/customers", {
       params: {
@@ -25,8 +23,6 @@ export async function getCustomerByEmail(email) {
         "page[size]": 1,
       },
     });
-    console.log("response", res.data);
-
     const customers = res.data?.data || [];
     return customers.length > 0 ? customers[0] : null;
   } catch (err) {
@@ -37,8 +33,8 @@ export async function getCustomerByEmail(email) {
 
 export async function getCustomerFullDetails(customerId) {
   try {
-    const accessToken = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(accessToken);
+    const kajabi = await createKajabiClient();
+
     const res = await kajabi.get(`/customers/${customerId}`, {
       // params: {
       //   include: "products,offers,tags,subscriptions,assessments",
@@ -56,8 +52,7 @@ export async function getCustomerFullDetails(customerId) {
 }
 export async function getSiteById(siteId, fields = "name,subdomain") {
   try {
-    const token = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(token);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get(`/sites/${siteId}`, {
       // params: {
@@ -73,8 +68,7 @@ export async function getSiteById(siteId, fields = "name,subdomain") {
 }
 export async function getProductById(productId) {
   try {
-    const token = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(token);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get(`/products/${productId}`, {});
 
@@ -86,8 +80,7 @@ export async function getProductById(productId) {
 }
 export async function getCourseById(courseId, include = "categories,posts") {
   try {
-    const token = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(token);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get(`/courses/${courseId}`, {
       params: {},
@@ -101,8 +94,7 @@ export async function getCourseById(courseId, include = "categories,posts") {
 }
 export async function getOfferById(offerId, fields = "title,price,created_at") {
   try {
-    const token = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(token);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get(`/offers/${offerId}`, {
       params: {
@@ -122,8 +114,7 @@ export async function getPurchaseById(
   fields = "status,created_at,expires_at"
 ) {
   try {
-    const token = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(token);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get(`/purchases/${purchaseId}`, {
       params: {
@@ -139,8 +130,7 @@ export async function getPurchaseById(
 }
 export async function getContactById(contactId) {
   try {
-    const token = await getKajabiAccessToken();
-    const kajabi = createKajabiClient(token);
+    const kajabi = await createKajabiClient();
 
     const res = await kajabi.get(`/contacts/${contactId}`, {
       // params: {
@@ -156,8 +146,7 @@ export async function getContactById(contactId) {
 }
 
 export async function getCustomersByCompletedAssessment(assessmentId) {
-  const token = await getKajabiAccessToken();
-  const kajabi = createKajabiClient(token);
+  const kajabi = await createKajabiClient();
 
   const res = await kajabi.get("/customers", {
     params: {
@@ -171,8 +160,7 @@ export async function getCustomersByCompletedAssessment(assessmentId) {
 }
 
 export async function getCustomersByPassedAssessment(assessmentId) {
-  const token = await getKajabiAccessToken();
-  const kajabi = createKajabiClient(token);
+  const kajabi = await createKajabiClient();
 
   const res = await kajabi.get("/customers", {
     params: {
@@ -186,8 +174,7 @@ export async function getCustomersByPassedAssessment(assessmentId) {
 }
 
 export async function getCustomersByFailedAssessment(assessmentId) {
-  const token = await getKajabiAccessToken();
-  const kajabi = createKajabiClient(token);
+  const kajabi = await createKajabiClient();
 
   const res = await kajabi.get("/customers", {
     params: {
@@ -200,8 +187,7 @@ export async function getCustomersByFailedAssessment(assessmentId) {
   return res.data?.data || [];
 }
 export async function getProductWithCourse(productId) {
-  const token = await getKajabiAccessToken();
-  const kajabi = createKajabiClient(token);
+  const kajabi = await createKajabiClient();
 
   const res = await kajabi.get(`/products/${productId}`, {
     // params: {
@@ -222,8 +208,7 @@ export function extractCourseIdFromProduct(productData) {
 }
 
 export async function getCourseWithPosts(courseId) {
-  const token = await getKajabiAccessToken();
-  const kajabi = createKajabiClient(token);
+  const kajabi = await createKajabiClient();
 
   console.log("📘 Fetching course:", courseId);
 

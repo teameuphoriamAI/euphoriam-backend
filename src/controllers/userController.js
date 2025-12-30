@@ -29,12 +29,15 @@ const listUsers = async (_req, res) => {
     // Add report counts to each user
     const usersWithReportCounts = users.map((user) => {
       const userJson = user.toJSON();
-      console.log("dig", userJson.Diagnostics[0].dataValues.data.pdfUrls);
 
-      const diagnosticCount = userJson.Diagnostics
-        ? userJson.Diagnostics[0].dataValues.data.pdfUrls.length
+      // Check if Diagnostics exists and has items, and if data.pdfUrls exists
+      const diagnosticCount = userJson.Diagnostics && 
+                              userJson.Diagnostics.length > 0 && 
+                              userJson.Diagnostics[0].data &&
+                              Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+        ? userJson.Diagnostics[0].data.pdfUrls.length
         : 0;
-      const discoveryCount = userJson.Discoveries
+      const discoveryCount = userJson.Discoveries && Array.isArray(userJson.Discoveries)
         ? userJson.Discoveries.length
         : 0;
       return {
@@ -71,23 +74,28 @@ const userReport = async (_req, res) => {
     });
 
     // Add report counts to each user
-    // const usersWithReportCounts = users.map((user) => {
-    const userJson = users.toJSON();
-    console.log("dig", userJson.Diagnostics[0].dataValues.data.pdfUrls);
+    if (!users) {
+      return errorResponse(res, "User not found", 404);
+    }
 
-    const diagnosticCount = userJson.Diagnostics
-      ? userJson.Diagnostics[0].dataValues.data.pdfUrls.length
+    const userJson = users.toJSON();
+
+    // Check if Diagnostics exists and has items, and if data.pdfUrls exists
+    const diagnosticCount = userJson.Diagnostics && 
+                            userJson.Diagnostics.length > 0 && 
+                            userJson.Diagnostics[0].data &&
+                            Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+      ? userJson.Diagnostics[0].data.pdfUrls.length
       : 0;
-    const discoveryCount = userJson.Discoveries
+    const discoveryCount = userJson.Discoveries && Array.isArray(userJson.Discoveries)
       ? userJson.Discoveries.length
       : 0;
-    // return {
-    //   diagnosticCount,
-    //   discoveryCount,
-    // };
-    // });
-    let pdf = userJson.Diagnostics
-      ? userJson.Diagnostics[0].dataValues.data.pdfUrls
+    
+    let pdf = userJson.Diagnostics && 
+              userJson.Diagnostics.length > 0 && 
+              userJson.Diagnostics[0].data &&
+              Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+      ? userJson.Diagnostics[0].data.pdfUrls
       : null;
     return successResponse(res, "Users fetched", {
       diagnosticCount,

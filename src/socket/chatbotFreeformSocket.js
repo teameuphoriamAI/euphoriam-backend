@@ -444,7 +444,6 @@ const {
   EUPHORIAM_V3_SYSTEM_PROMPT,
   sanitizeReportText,
 } = require("../helpers/euphoriamChatbot");
-const {} = require("../");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
   buildKajabiDiagnosticContext,

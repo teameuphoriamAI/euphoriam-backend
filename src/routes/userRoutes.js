@@ -18,6 +18,16 @@ router.post(
   requireRole(["admin"]),
   asyncHandler(userController.createUser)
 );
-
+router.post(
+  "/",
+  auth,
+  requireRole(["admin"]),
+  asyncHandler(userController.createUser)
+);
+router.get(
+  "/report/:id",
+  auth,
+  requireRole(["admin"]),
+  asyncHandler(userController.userReport)
+);
 module.exports = router;
-

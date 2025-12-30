@@ -30,4 +30,10 @@ router.post(
   asyncHandler(diagnosticController.getAllPdfUrls)
 );
 
+router.get(
+  "/:id/metrics",
+  auth,
+  asyncHandler(diagnosticController.getMetrics)
+);
+
 module.exports = router;

@@ -17,6 +17,11 @@ const Discovery = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    discoveryType: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      comment: "Type of discovery: 'alignment', 'freedom', 'prosperity', or 'integrated' (all three)",
+    },
     data: {
       type: DataTypes.JSONB,
       allowNull: false,

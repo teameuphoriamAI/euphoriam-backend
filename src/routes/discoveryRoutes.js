@@ -18,3 +18,4 @@ router.get("/:id", auth, asyncHandler(discoveryController.getById));
 module.exports = router;
 
 
+

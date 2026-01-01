@@ -280,7 +280,7 @@ Use the 12-Question Deep Intake focused on structure, vortex, avoidance, and res
 After Q12 → produce complete diagnostic with intro page.
 RETURNING USERS
 Start with:
-"Welcomes back. I've loaded your last report. What's been happening since your last check-in?"
+"Welcome back. I've loaded your last report. What's been happening since your last check-in?"
 Then → produce updated full diagnostic with intro page.
 
 🌑 ABSOLUTE BOUNDARIES
@@ -356,6 +356,7 @@ const formatFactsContext = (context = {}) => {
     .filter(Boolean)
     .join(" | ");
 };
+const isQuestion = (text = "") => text.trim().endsWith("?");
 
 const buildFreeformIntakePrompt = ({
   transcript = [],
@@ -369,7 +370,6 @@ const buildFreeformIntakePrompt = ({
   priorReport,
   distinctQuestionNumbers = [], // Array of distinct question numbers already asked
 }) => {
-  const isQuestion = (text = "") => text.trim().endsWith("?");
   const userMessages = transcript.filter(
     (m) => m?.role === "user" && !isQuestion(m.content || "")
   ).length;
@@ -732,7 +732,7 @@ ${
 
 REQUIRED FORMAT - Follow this EXACTLY:
 
-1. Start with: "Welcomes back. I've loaded your last report."
+1. Start with: "Welcome back. I've loaded your last report."
 
 2. Reflect back their structure FIRST using the ACTUAL METRICS DATA provided above:
    - Use the Gravity % value provided (${
@@ -855,7 +855,7 @@ ${
   formattedMetricsSection
     ? `✅ COMPLETE TEMPLATE WITH METRICS:
 
-"WelcomeEs back. I've loaded your last report.
+"Welcome back. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
@@ -899,7 +899,7 @@ Just answer that."
 ⚠️ ABSOLUTE RULE: If you output ANY text in square brackets like "[YOU MUST READ..." or "[EXTRACT..." or "[FORMULATE...", you have FAILED. You must output ONLY actual extracted content from the report.`
     : `EXAMPLE OF CORRECT OUTPUT (NOTE: This is an EXAMPLE showing the STRUCTURE - you must use ACTUAL content from the report, not copy this example):
 
-"Welcomees back. I've loaded your last report.
+"Welcome back. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
@@ -1217,7 +1217,7 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
    - CRITICAL: You MUST start with structure reflection, NOT generic greetings
    - NEVER start with "I'm here" or "What would you like to explore today?"
    - NEVER output placeholder text in square brackets - always use actual values
-   - ALWAYS start with: "Welcome backk. I've loaded your last report."
+   - ALWAYS start with: "Welcome back. I've loaded your last report."
    - Then: "I want to reflect it back to you first — simply and cleanly — before we move anywhere."
    - Use the ACTUAL metrics values provided in the user prompt (they are formatted and ready to use)
    - Extract and display: Gravity %, Signal Coherence %, Signal Output %, CL, QGC % with interpretations (use the actual numbers, not placeholders)
@@ -1476,9 +1476,15 @@ const checkWantsNewDiagnostic = (transcript, existingState) => {
   const intakeInProgress =
     existingState.answeredCount > 0 && existingState.answeredCount < 12;
 
+  // If there are no user messages yet (first interaction), don't use the persisted flag
+  // This allows showing existing report first on first interaction
+  const hasUserMessages = transcript.some((m) => m?.role === "user");
+  const shouldUsePersistedFlag = hasUserMessages || intakeInProgress;
+
   return {
     wantsNewDiagnostic:
-      wantsNewDiagnosticInMessage || previouslyRequestedNewDiagnostic,
+      wantsNewDiagnosticInMessage ||
+      (shouldUsePersistedFlag && previouslyRequestedNewDiagnostic),
     intakeInProgress,
   };
 };
@@ -1552,7 +1558,52 @@ const trackQuestionNumbers = (transcript) => {
     distinctQuestionsAnswered: distinctQuestionNumbers.length,
   };
 };
+// Lightweight AI check to decide if a user reply is an answer to the last question.
+const isAiLikelyAnswer = async ({ question, reply }) => {
+  const t = (reply || "").trim().toLowerCase();
+  if (!t) return false;
+  if (isQuestion(t)) return false;
+  // Hard fail on clarify/intents
+  const clarifyPhrases = [
+    "elaborate",
+    "clarify",
+    "explain",
+    "repeat",
+    "don't understand",
+    "do not understand",
+    "not sure",
+    "what do you mean",
+    "?", // ends with question mark
+  ];
+  if (clarifyPhrases.some((p) => t.includes(p))) return false;
+  const alpha = t.match(/[A-Za-z]/g);
+  // Relaxed: Allow short answers to pass to the AI classifier
+  if (!alpha || alpha.length < 1) return false;
 
+  const prompt = `
+You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
+
+Question: "${question || "N/A"}"
+Reply: "${reply}"
+
+Rules:
+- Reply only "yes" or "no".
+- "yes" if the reply attempts to answer; "no" if it is just a question, "I don't know", or unrelated.
+`;
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_tokens: 3,
+    });
+    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
+    return txt.includes("yes");
+  } catch (err) {
+    console.error("[isAiLikelyAnswer] fallback to heuristic", err);
+    return false;
+  }
+};
 /**
  * Builds prompts for chat (system and user prompts)
  */

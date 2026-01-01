@@ -63,7 +63,7 @@ const extractQuestionNumber = (text = "") => {
 
 const sessions = new Map();
 const namespace = "/ws/chatbot-freeform";
-const INACTIVITY_MS = 5 * 60 * 1000;
+const INACTIVITY_MS = 10 * 60 * 1000;
 
 /* -------------------- Inactivity -------------------- */
 

@@ -8,6 +8,7 @@ const { Product } = require("../models/productModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { CoachingSession } = require("../models/coachingSessionModel");
+const { buildKajabiDiagnosticContext } = require("./kajabi");
 const listUsers = async (_req, res) => {
   try {
     const users = await User.findAll({
@@ -31,15 +32,17 @@ const listUsers = async (_req, res) => {
       const userJson = user.toJSON();
 
       // Check if Diagnostics exists and has items, and if data.pdfUrls exists
-      const diagnosticCount = userJson.Diagnostics && 
-                              userJson.Diagnostics.length > 0 && 
-                              userJson.Diagnostics[0].data &&
-                              Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
-        ? userJson.Diagnostics[0].data.pdfUrls.length
-        : 0;
-      const discoveryCount = userJson.Discoveries && Array.isArray(userJson.Discoveries)
-        ? userJson.Discoveries.length
-        : 0;
+      const diagnosticCount =
+        userJson.Diagnostics &&
+        userJson.Diagnostics.length > 0 &&
+        userJson.Diagnostics[0].data &&
+        Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+          ? userJson.Diagnostics[0].data.pdfUrls.length
+          : 0;
+      const discoveryCount =
+        userJson.Discoveries && Array.isArray(userJson.Discoveries)
+          ? userJson.Discoveries.length
+          : 0;
       return {
         ...userJson,
         diagnosticCount,
@@ -81,22 +84,25 @@ const userReport = async (_req, res) => {
     const userJson = users.toJSON();
 
     // Check if Diagnostics exists and has items, and if data.pdfUrls exists
-    const diagnosticCount = userJson.Diagnostics && 
-                            userJson.Diagnostics.length > 0 && 
-                            userJson.Diagnostics[0].data &&
-                            Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
-      ? userJson.Diagnostics[0].data.pdfUrls.length
-      : 0;
-    const discoveryCount = userJson.Discoveries && Array.isArray(userJson.Discoveries)
-      ? userJson.Discoveries.length
-      : 0;
-    
-    let pdf = userJson.Diagnostics && 
-              userJson.Diagnostics.length > 0 && 
-              userJson.Diagnostics[0].data &&
-              Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
-      ? userJson.Diagnostics[0].data.pdfUrls
-      : null;
+    const diagnosticCount =
+      userJson.Diagnostics &&
+      userJson.Diagnostics.length > 0 &&
+      userJson.Diagnostics[0].data &&
+      Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+        ? userJson.Diagnostics[0].data.pdfUrls.length
+        : 0;
+    const discoveryCount =
+      userJson.Discoveries && Array.isArray(userJson.Discoveries)
+        ? userJson.Discoveries.length
+        : 0;
+
+    let pdf =
+      userJson.Diagnostics &&
+      userJson.Diagnostics.length > 0 &&
+      userJson.Diagnostics[0].data &&
+      Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+        ? userJson.Diagnostics[0].data.pdfUrls
+        : null;
     return successResponse(res, "Users fetched", {
       diagnosticCount,
       pdf,
@@ -133,5 +139,89 @@ const getMe = async (req, res) => {
 
   return successResponse(res, "User fetched", user);
 };
+/**
+ * Updates user's club membership status in the database
+ * Calls buildKajabiDiagnosticContext once and saves the membership info
+ * Returns all the data from buildKajabiDiagnosticContext for reuse
+ */
+const updateUserClubMembership = async ({
+  email,
+  name,
+  assessmentIds = [],
+}) => {
+  // Find or create user first
+  const user = await findOrCreateCreatorUser({ email, name });
+  console.log("using kajabi in ", updateUserClubMembership);
 
-module.exports = { listUsers, createUser, getMe, userReport };
+  // Get Kajabi context to check membership (this is the only call to buildKajabiDiagnosticContext)
+  const {
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
+  } = await buildKajabiDiagnosticContext({
+    email,
+    assessmentIds,
+  });
+
+  // Check if user is Creator Club member
+  const isCreatorClub = isCreatorClubMember(diagnosticContext);
+
+  // Update user membership column with club membership info
+  const membership = {
+    isCreatorClub,
+    lastUpdated: new Date().toISOString(),
+    products: diagnosticContext.products || [],
+    offers: diagnosticContext.offers || [],
+  };
+
+  await user.update({ membership });
+
+  return {
+    user,
+    isCreatorClub,
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
+  };
+};
+const isCreatorClubMember = (context = {}) => {
+  const hasProduct = (context.products || []).some((p) =>
+    (p.title || "").toLowerCase().includes("creator club")
+  );
+  const hasOffer = (context.offers || []).some((o) =>
+    (o.title || "").toLowerCase().includes("creator club")
+  );
+  return hasProduct || hasOffer;
+};
+const findOrCreateCreatorUser = async ({ email, name }) => {
+  let user = await User.findOne({ where: { email } });
+
+  if (!user) {
+    user = await User.create({
+      email,
+      name,
+    });
+  }
+
+  return user;
+};
+
+module.exports = {
+  listUsers,
+  createUser,
+  getMe,
+  userReport,
+  updateUserClubMembership,
+};

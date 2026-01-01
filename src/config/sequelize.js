@@ -88,6 +88,41 @@ const initDb = async () => {
   const models = require("../models");
   models.applyAssociations();
 
+  // Handle membership column type conversion if needed
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        -- Check if membership column exists
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'membership'
+        ) THEN
+          -- Check if it's not already JSONB
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'users' 
+            AND column_name = 'membership' 
+            AND data_type != 'jsonb'
+          ) THEN
+            -- Convert membership column to JSONB with proper casting
+            ALTER TABLE "users" 
+            ALTER COLUMN "membership" TYPE JSONB 
+            USING CASE 
+              WHEN "membership" IS NULL THEN NULL::jsonb
+              WHEN "membership"::text = '' THEN NULL::jsonb
+              ELSE "membership"::text::jsonb
+            END;
+          END IF;
+        END IF;
+      END $$;
+    `);
+  } catch (err) {
+    // If column doesn't exist or conversion fails, that's fine - sync will handle it
+    console.log("Membership column migration:", err.message);
+  }
+
   // Sync all models together to respect FK dependencies (e.g., users before diagnostics)
   await sequelize.sync({ alter: true });
 

@@ -6,34 +6,29 @@ const diagnosticController = require("../controllers/diagnosticController");
 
 const router = express.Router();
 
+// Specific routes must come before parameterized routes
 router.get(
   "/admin",
   auth,
   requireRole(["admin"]),
   asyncHandler(diagnosticController.listAll)
 );
-router.post("/", asyncHandler(diagnosticController.listMine));
-router.get("/:id", auth, asyncHandler(diagnosticController.getById));
 
 router.post(
   "/chatbot-freeform",
   asyncHandler(diagnosticController.chatbotDiagnosticFreeform)
 );
 
-router.get(
-  "/pdf-urls",
-  asyncHandler(diagnosticController.getAllPdfUrls)
-);
+router.get("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
 
-router.post(
-  "/pdf-urls",
-  asyncHandler(diagnosticController.getAllPdfUrls)
-);
+router.post("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
 
-router.get(
-  "/:id/metrics",
-  auth,
-  asyncHandler(diagnosticController.getMetrics)
-);
+// Parameterized routes come last
+router.get("/:id/metrics", asyncHandler(diagnosticController.getMetrics));
+router.get("/:id", asyncHandler(diagnosticController.getById));
+
+// Root routes
+router.post("/", asyncHandler(diagnosticController.listMine));
+router.get("/", asyncHandler(diagnosticController.listMine));
 
 module.exports = router;

@@ -128,3 +128,5 @@ PromptHistory.belongsTo(Prompt, { foreignKey: "promptId" });
 
 module.exports = { Prompt, PromptHistory };
 
+
+

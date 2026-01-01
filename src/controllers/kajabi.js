@@ -1,17 +1,6 @@
 // import { kajabi } from "../config/kajabi.js";
-import { getKajabiAccessToken, createKajabiClient } from "../config/kajabi.js";
-// export async function getAllMembers() {
-//   try {
-//     console.log("here");
+import { createKajabiClient } from "../config/kajabi.js";
 
-//     const res = await kajabi.get("/site_members");
-
-//     return res.data;
-//   } catch (err) {
-//     console.error("Error fetching Kajabi members:", err.response?.data || err);
-//     throw err;
-//   }
-// }
 export async function getCustomerByEmail(email) {
   try {
     const kajabi = await createKajabiClient();
@@ -277,5 +266,293 @@ export async function getAssessmentProgressForCustomer(
     completionPercentage: assessments.length
       ? Math.round((completed.length / assessments.length) * 100)
       : 0,
+  };
+}
+const normalizeKajabiOffer = (o) => {
+  const data = o?.data;
+  const attributes = data?.attributes || {};
+  return {
+    id: data?.id,
+    title: attributes.title,
+    price: attributes.price,
+    createdAt: attributes.created_at,
+  };
+};
+
+const normalizeKajabiProduct = (p) => {
+  const data = p?.data;
+  const attributes = data?.attributes || {};
+  const links = p?.links || {};
+  return {
+    id: data?.id,
+    title: attributes.title,
+    type: attributes.product_type_name,
+    status: attributes.status,
+    publishStatus: attributes.publish_status,
+    createdAt: attributes.created_at,
+    url: attributes.url,
+    thumbnailUrl: attributes.thumbnail_url,
+    membersCount: attributes.members_aggregate_count,
+    apiSelf: links.self,
+  };
+};
+
+const normalizeKajabiSite = (s) => {
+  const data = s?.data;
+  const attributes = data?.attributes || {};
+  return {
+    id: data?.id,
+    name: attributes.name,
+    subdomain: attributes.subdomain,
+  };
+};
+
+const normalizeKajabiContact = (c) => {
+  const data = c?.data;
+  const attributes = data?.attributes || {};
+  return {
+    id: data?.id,
+    ...pick(attributes, ["first_name", "last_name", "email", "phone_number"]),
+  };
+};
+
+const pick = (obj, keys) =>
+  keys.reduce((acc, k) => {
+    if (obj && obj[k] !== undefined) acc[k] = obj[k];
+    return acc;
+  }, {});
+const computeDiagnosticMetrics = ({
+  signInCount = 0,
+  netRevenue = 0,
+  products = [],
+  offers = [],
+  courseAssessments = [],
+}) => {
+  const safeSignIns = Number(signInCount || 0);
+  const safeRevenue = Number(netRevenue || 0);
+
+  const productTypeCounts = (Array.isArray(products) ? products : []).reduce(
+    (acc, p) => {
+      const type = p?.type || "Unknown";
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    },
+    {}
+  );
+
+  const assessmentSummary = summarizeCourseAssessments(courseAssessments);
+
+  // Reduced weight on engagement (log-ins) - focus more on life experience
+  const engagementScore = clamp(Math.round(safeSignIns * 4), 0, 100); // Reduced from 6.25 to 4
+  const learningScore = clamp(assessmentSummary.completionPercentage, 0, 100);
+  const commitmentScore = clamp(
+    Math.round(
+      Math.min(100, safeRevenue / 10) +
+        (Array.isArray(products) ? products.length : 0) * 8
+    ),
+    0,
+    100
+  );
+
+  // Adjusted weights: less on engagement, more on learning and commitment (life results)
+  const signalOutput = clamp(
+    Math.round(
+      0.3 * engagementScore + 0.4 * learningScore + 0.3 * commitmentScore
+    ),
+    0,
+    100
+  );
+
+  const signalCoherence = clamp(
+    Math.round(100 - Math.abs(engagementScore - learningScore) * 0.75),
+    0,
+    100
+  );
+
+  const gravity = clamp(100 - signalOutput, 0, 100);
+
+  const consciousnessLevel = Number(
+    (1 + (4 * (0.6 * learningScore + 0.4 * signalCoherence)) / 100).toFixed(1)
+  ); // 1.0 - 5.0 proxy index
+
+  const qgcActivation = clamp(
+    Math.round(
+      0.4 * commitmentScore + 0.35 * signalCoherence + 0.25 * learningScore
+    ),
+    0,
+    100
+  );
+
+  return {
+    engagementScore,
+    learningScore,
+    commitmentScore,
+    gravity,
+    signalOutput,
+    signalCoherence,
+    consciousnessLevel,
+    qgcActivation,
+    counts: {
+      signInCount: safeSignIns,
+      netRevenue: safeRevenue,
+      productCount: Array.isArray(products) ? products.length : 0,
+      offerCount: Array.isArray(offers) ? offers.length : 0,
+      productTypeCounts,
+    },
+    assessments: assessmentSummary,
+  };
+};
+const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+
+const summarizeCourseAssessments = (courseAssessments) => {
+  const courses = Array.isArray(courseAssessments) ? courseAssessments : [];
+
+  const totals = courses.reduce(
+    (acc, c) => {
+      acc.totalAssessments += Number(c.total || 0);
+      acc.completed += Array.isArray(c.completed) ? c.completed.length : 0;
+      acc.passed += Array.isArray(c.passed) ? c.passed.length : 0;
+      acc.failed += Array.isArray(c.failed) ? c.failed.length : 0;
+      acc.pending += Array.isArray(c.pending) ? c.pending.length : 0;
+      return acc;
+    },
+    { totalAssessments: 0, completed: 0, passed: 0, failed: 0, pending: 0 }
+  );
+
+  const completionPercentage = totals.totalAssessments
+    ? Math.round((totals.completed / totals.totalAssessments) * 100)
+    : 0;
+
+  const passRate = totals.completed
+    ? Math.round((totals.passed / totals.completed) * 100)
+    : 0;
+
+  return {
+    ...totals,
+    completionPercentage,
+    passRate,
+    coursesCount: courses.length,
+  };
+};
+
+// this function gives the full kajabi context for a given customer email
+
+export async function buildKajabiDiagnosticContext({
+  email,
+  assessmentIds = [],
+}) {
+  const customerInfo = await getCustomerByEmail(email);
+  const customerDetails = await getCustomerFullDetails(customerInfo.id);
+
+  const customerData = customerDetails.data;
+  const attributes = customerData.attributes;
+  const rel = customerData.relationships;
+
+  // Resolve relations
+  const siteId = rel.site?.data?.id;
+  const contactId = rel.contact?.data?.id;
+
+  const offerIds = rel.offers?.data?.map((o) => o.id) || [];
+  const productIds = rel.products?.data?.map((p) => p.id) || [];
+
+  const site = siteId ? await getSiteById(siteId) : null;
+  const contact = contactId ? await getContactById(contactId) : null;
+  const offers = await Promise.all(offerIds.map((id) => getOfferById(id)));
+  const products = await Promise.all(
+    productIds.map((id) => getProductWithCourse(id))
+  );
+
+  const courseAssessments = [];
+
+  for (const product of products) {
+    const productData = product?.data;
+    const productType = productData?.attributes?.product_type_name;
+
+    // Only process COURSE products
+    if (productType !== "Course") {
+      console.log(
+        `⏭ Skipping non-course product: ${productData?.attributes?.title}`
+      );
+      continue;
+    }
+
+    // Extract linked course ID
+    const courseId = extractCourseIdFromProduct(product);
+
+    if (!courseId) {
+      console.log(
+        `⚠️ No course linked to product: ${productData?.attributes?.title}`
+      );
+      continue;
+    }
+
+    console.log(
+      `📘 Fetching course ${courseId} for product ${productData.attributes.title}`
+    );
+
+    // Fetch course with posts
+    const courseData = await getCourseWithPosts(courseId);
+
+    // Extract assessments from posts
+    const assessments = extractAssessmentsFromCourse(courseData);
+
+    if (!assessments.length) {
+      console.log(`ℹ️ No assessments found in course ${courseId}`);
+      continue;
+    }
+
+    // Get customer progress (completed / passed / failed)
+    const progress = await getAssessmentProgressForCustomer(
+      customerData.id,
+      assessments
+    );
+
+    courseAssessments.push({
+      courseId,
+      courseTitle: productData.attributes.title,
+      assessmentCount: assessments.length,
+      ...progress,
+    });
+  }
+
+  const normalizedProducts = products.map(normalizeKajabiProduct);
+  const normalizedOffers = offers.map(normalizeKajabiOffer);
+  const metrics = computeDiagnosticMetrics({
+    signInCount: attributes.sign_in_count,
+    netRevenue: attributes.net_revenue,
+    products: normalizedProducts,
+    offers: normalizedOffers,
+    courseAssessments,
+  });
+
+  const diagnosticContext = {
+    customer: {
+      id: customerData.id,
+      name: attributes.name,
+      email: attributes.email,
+      signInCount: attributes.sign_in_count,
+      netRevenue: attributes.net_revenue,
+      memberSince: attributes.created_at,
+    },
+    site: normalizeKajabiSite(site),
+    contact: normalizeKajabiContact(contact),
+    offers: normalizedOffers,
+    products: normalizedProducts,
+    courseAssessments,
+    metrics,
+  };
+
+  return {
+    diagnosticContext,
+    courseAssessments,
+    normalizedProducts,
+    normalizedOffers,
+    metrics,
+    site,
+    contact,
+    customerData,
+    attributes,
+    contactId,
+    siteId,
   };
 }

@@ -6,7 +6,6 @@ import validate from "../helpers/validate.js";
 import openai from "../config/openai.js";
 
 import {
-  EUPHORIAM_V3_SYSTEM_PROMPT,
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
@@ -31,11 +30,9 @@ import {
 import { generateDiagnosticPdf } from "../utils/diagnosticPdf.js";
 import { uploadBufferToSupabase } from "../utils/storage.js";
 import { sendEmail, sendEmailBasic } from "../utils/email.js";
-import {
-  diagnosticReportEmail,
-} from "../utils/emailTemplate/initialDignosticReport.js";
+import { diagnosticReportEmail } from "../utils/emailTemplate/initialDignosticReport.js";
 import { discoveryReportEmail } from "../utils/emailTemplate/initialDiscoveryReport.js";
-import { buildKajabiDiagnosticContext } from "../controllers/diagnosticController.js";
+import { buildKajabiDiagnosticContext } from "../controllers/kajabi.js";
 
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const isAnswerLike = (text = "") => {
@@ -181,10 +178,10 @@ export async function extractReportDate(diagnostic) {
 export async function handleOngoingChat(req, res, input, context) {
   const transcript = resolveTranscript(input.messages, context);
 
-  const kajabi = await buildKajabiDiagnosticContext({
-    email: input.email,
-    assessmentIds: input.assessmentIds,
-  });
+  // const kajabi = await buildKajabiDiagnosticContext({
+  //   email: input.email,
+  //   assessmentIds: input.assessmentIds,
+  // });
 
   const appUser = await findOrCreateCreatorUser({
     email: input.email,
@@ -195,7 +192,7 @@ export async function handleOngoingChat(req, res, input, context) {
     input,
     context,
     transcript,
-    kajabi,
+    // kajabi,
   });
 
   const aiResponse = await runChatCompletion(aiPayload);
@@ -215,7 +212,7 @@ export async function handleOngoingChat(req, res, input, context) {
       input,
       context,
       updatedState,
-      kajabi,
+      // kajabi,
       appUser,
     });
   }
@@ -287,7 +284,9 @@ Reply:`;
       temperature: 0,
       max_tokens: 3,
     });
-    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase().trim();
+    const txt = (resp?.choices?.[0]?.message?.content || "")
+      .toLowerCase()
+      .trim();
     return txt.includes("yes");
   } catch (err) {
     console.error("[detectUserWantsToEndOrGenerateReport] error", err);
@@ -334,7 +333,9 @@ Reply:`;
       temperature: 0,
       max_tokens: 3,
     });
-    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase().trim();
+    const txt = (resp?.choices?.[0]?.message?.content || "")
+      .toLowerCase()
+      .trim();
     return txt.includes("yes");
   } catch (err) {
     console.error("[detectBotSignaledEnd] error", err);
@@ -392,7 +393,9 @@ Reply:`;
       temperature: 0,
       max_tokens: 3,
     });
-    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase().trim();
+    const txt = (resp?.choices?.[0]?.message?.content || "")
+      .toLowerCase()
+      .trim();
     return txt.includes("yes");
   } catch (err) {
     console.error("[detectConversationComplete] error", err);

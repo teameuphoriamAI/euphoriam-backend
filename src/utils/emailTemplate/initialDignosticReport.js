@@ -11,6 +11,22 @@ const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Your Diagnostic Report</title>
+    <style>
+      @media only screen and (max-width: 600px) {
+        .logo-container img {
+          width: 80px !important;
+          max-width: 80px !important;
+        }
+        .email-container {
+          width: 100% !important;
+          padding: 20px !important;
+        }
+      }
+      img {
+        background-color: transparent !important;
+        background: transparent !important;
+      }
+    </style>
   </head>
 
   <body style="margin: 0; padding: 0; background-color: #F7F4ED; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
@@ -19,17 +35,17 @@ const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
       <tr>
         <td align="center">
 
-          <table width="600" cellpadding="0" cellspacing="0" border="0"
-            style="background-color: #ffffff; border-radius: 12px; padding: 40px; box-shadow: 0 8px 30px rgba(0,0,0,0.07);">
+          <table width="600" cellpadding="0" cellspacing="0" border="0" class="email-container"
+            style="background-color: #ffffff; border-radius: 12px; padding: 40px; box-shadow: 0 8px 30px rgba(0,0,0,0.07); max-width: 100%;">
 
             <!-- Logo -->
             <tr>
-              <td align="center" style="padding-bottom: 30px;">
+              <td align="center" class="logo-container" style="padding-bottom: 30px;">
                 <img
                   src="${logoUrl}"
                   alt="Euphoraum-AI Logo"
                   width="110"
-                  style="display: block; max-width: 100%; border: 0;"
+                  style="display: block; max-width: 100%; height: auto; border: 0; background-color: transparent !important; background: transparent !important;"
                 />
               </td>
             </tr>

@@ -1,456 +1,17 @@
-// const {
-//   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
-//   buildFreeformIntakePrompt,
-//   buildFinalReportPrompt,
-//   DEFAULT_INTRO_PAGE_TEXT,
-//   EUPHORIAM_V3_SYSTEM_PROMPT,
-//   sanitizeReportText,
-// } = require("../helpers/euphoriamChatbot");
-// const { retrieveSimilarChunks } = require("../helpers/rag");
-// const {
-//   buildKajabiDiagnosticContext,
-//   persistDiscoveryRecord,
-//   truncateForContext,
-// } = require("../controllers/diagnosticController");
-// const openai = require("../config/openai");
-// const { Diagnostic } = require("../models/diagnosticModel");
-// const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
-// const { sendEmailBasic } = require("../utils/email");
-
-// const isQuestion = (text = "") => text.trim().endsWith("?");
-// const isAnswerLike = (text = "") => {
-//   const t = (text || "").trim();
-//   if (!t) return false;
-//   if (isQuestion(t)) return false;
-//   const alpha = t.match(/[A-Za-z]/g);
-//   // Relaxed: Allow short answers like "yes", "A", or "d,d,d"
-//   return alpha && alpha.length >= 1 && t.length >= 1;
-// };
-
-// // In-memory session store; for production swap to Redis.
-// const sessions = new Map();
-
-// const namespace = "/ws/chatbot-freeform";
-// const INACTIVITY_MS = 1 * 60 * 1000; // 5 minutes (discovery-only)
-
-// const clearInactivity = (session = {}) => {
-//   if (session.idleTimer) {
-//     clearTimeout(session.idleTimer);
-//     session.idleTimer = null;
-//   }
-// };
-
-// const scheduleInactivity = (socket, session) => {
-//   if (!session || session.mode !== "discovery") return;
-//   clearInactivity(session);
-//   session.idleTimer = setTimeout(() => {
-//     const emailNotice = session.email
-//       ? " We’ve shared your chat summary via email."
-//       : "";
-//     socket.emit("ended", {
-//       reason: "inactive",
-//       message: `Chat ended due to inactivity (5 minutes).${emailNotice}`,
-//     });
-//     endChatAsDiscovery(socket, session, { reason: "timeout" }).catch((err) =>
-//       console.error("[socket inactivity] failed to end chat", err)
-//     );
-//   }, INACTIVITY_MS);
-// };
-
-// const buildDiscoveryEmail = ({ transcript = [], email }) => {
-//   const lastMessages = transcript.slice(-10);
-//   const body = lastMessages
-//     .map((m) => `${m.role === "assistant" ? "Assistant" : "You"}: ${m.content}`)
-//     .join("<br/>");
-
-//   return `
-//   <html>
-//     <body style="font-family: Arial, sans-serif; color: #222;">
-//       <p>Hi ${email || "there"},</p>
-//       <p>Your discovery chat has ended due to inactivity. Here’s a quick recap of the last messages:</p>
-//       <div style="background:#f7f7f7;padding:12px;border-radius:8px;font-size:14px;line-height:1.5;">
-//         ${body || "No messages captured."}
-//       </div>
-//       <p>If you’d like to continue, just start a new chat and we’ll pick up from here.</p>
-//       <p style="margin-top:20px;">— Euphoraum AI</p>
-//     </body>
-//   </html>
-//   `;
-// };
-
-// const endChatAsDiscovery = async (
-//   socket,
-//   session,
-//   { reason = "timeout" } = {}
-// ) => {
-//   if (!session) return;
-//   clearInactivity(session);
-
-//   const { email, transcript, existingDiagnostic } = session;
-//   const userId = existingDiagnostic?.userId || null;
-//   const title =
-//     existingDiagnostic?.title ||
-//     `Discovery Chat ${reason === "timeout" ? "Timeout" : "Ended"}`;
-
-//   try {
-//     await persistDiscoveryRecord({
-//       userId,
-//       email,
-//       title,
-//       transcript,
-//       previousReport: truncateForContext(
-//         existingDiagnostic?.data?.aiReport,
-//         4000
-//       ),
-//       newReport: null,
-//       diagnosticId: existingDiagnostic?.id || null,
-//       pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
-//     });
-//   } catch (err) {
-//     console.error("[socket discovery] persist failed", err);
-//   }
-
-//   if (email) {
-//     try {
-//       await sendEmailBasic(
-//         email,
-//         "Your discovery chat summary",
-//         buildDiscoveryEmail({ transcript, email })
-//       );
-//     } catch (err) {
-//       console.error("[socket discovery] email failed", err);
-//     }
-//   }
-// };
-
-// const wireChatbotFreeform = (io) => {
-//   const nsp = io.of(namespace);
-
-//   nsp.on("connection", (socket) => {
-//     sessions.set(socket.id, {
-//       transcript: [],
-//       targetCount: 12,
-//       introPageText: DEFAULT_INTRO_PAGE_TEXT,
-//       assessmentIds: [],
-//       email: null,
-//       existingDiagnostic: null,
-//       priorReportSnippet: null,
-//       idleTimer: null,
-//       mode: "diagnostic",
-//     });
-
-//     socket.emit("connected", { sessionId: socket.id });
-
-//     socket.on("init", async (payload = {}) => {
-//       const session = sessions.get(socket.id);
-//       if (!session) return;
-//       session.email = payload.email || session.email;
-//       session.targetCount = payload.targetCount || session.targetCount;
-//       session.introPageText = payload.introPageText || session.introPageText;
-//       session.assessmentIds = payload.assessmentIds || [];
-//       // Load existing diagnostic/report if present for returning users
-//       let hasExistingReport = false;
-//       if (session.email) {
-//         try {
-//           const existingDiagnostic = await Diagnostic.findOne({
-//             where: { email: session.email },
-//           });
-//           session.existingDiagnostic = existingDiagnostic || null;
-//           hasExistingReport = Boolean(existingDiagnostic?.data?.aiReport);
-//           session.priorReportSnippet = hasExistingReport
-//             ? truncateForContext(existingDiagnostic.data.aiReport, 4000)
-//             : null;
-//           session.mode = hasExistingReport ? "discovery" : "diagnostic";
-//         } catch (err) {
-//           console.error("[socket init] load existing diagnostic failed", err);
-//           session.mode = "diagnostic";
-//         }
-//       } else {
-//         session.mode = "diagnostic";
-//       }
-//       // Preload Kajabi context to keep intake on-topic.
-//       if (session.email) {
-//         try {
-//           const { diagnosticContext, metrics } =
-//             await buildKajabiDiagnosticContext({
-//               email: session.email,
-//               assessmentIds: session.assessmentIds,
-//             });
-//           session.diagnosticContext = diagnosticContext;
-//           session.metrics = metrics;
-//         } catch (err) {
-//           console.error("[socket init] kajabi preload failed", err);
-//         }
-//       }
-//       socket.emit("ready", {
-//         sessionId: socket.id,
-//         targetCount: session.targetCount,
-//         introPageText: session.introPageText,
-//         hasExistingReport,
-//         mode: session.mode,
-//       });
-//       scheduleInactivity(socket, session);
-//     });
-
-//     socket.on("user_message", async (payload = {}) => {
-//       const session = sessions.get(socket.id);
-//       if (!session) {
-//         socket.emit("error", { message: "Session missing" });
-//         return;
-//       }
-
-//       const { content } = payload;
-//       if (!content || typeof content !== "string") {
-//         socket.emit("error", { message: "Content is required" });
-//         return;
-//       }
-
-//       session.transcript.push({ role: "user", content });
-//       scheduleInactivity(socket, session);
-
-//       // Allow explicit user-triggered end for discovery chats
-//       const lower = content.toLowerCase();
-//       const endPhrases = [
-//         "end chat",
-//         "ending chat",
-//         "end the chat",
-//         "stop chat",
-//         "finish chat",
-//         "i'm ending the chat",
-//         "end this chat",
-//       ];
-//       if (
-//         session.mode === "discovery" &&
-//         endPhrases.some((p) => lower.includes(p))
-//       ) {
-//         socket.emit("ended", {
-//           reason: "user_end",
-//           message:
-//             "Chat ended as requested. We’ve shared your discovery summary via email.",
-//         });
-//         await endChatAsDiscovery(socket, session, { reason: "user_end" });
-//         return;
-//       }
-
-//       try {
-//         // Ensure Kajabi context loaded for intake
-//         if (!session.diagnosticContext && session.email) {
-//           try {
-//             const { diagnosticContext, metrics } =
-//               await buildKajabiDiagnosticContext({
-//                 email: session.email,
-//                 assessmentIds: session.assessmentIds,
-//               });
-//             session.diagnosticContext = diagnosticContext;
-//             session.metrics = metrics;
-//           } catch (err) {
-//             console.error("[socket user_message] kajabi preload failed", err);
-//           }
-//         }
-
-//         const lastUser = { content };
-//         const retrieved = await retrieveSimilarChunks({
-//           query: lastUser.content,
-//           topK: 3,
-//         });
-
-//         const aiResponse = await openai.chat.completions.create({
-//           model: "gpt-5.2",
-//           messages: [
-//             {
-//               role: "system",
-//               content: EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
-//             },
-//             ...session.transcript.map((m) => ({
-//               role: m.role === "assistant" ? "assistant" : "user",
-//               content: m.content,
-//             })),
-//             {
-//               role: "user",
-//               content: buildFreeformIntakePrompt({
-//                 transcript: session.transcript,
-//                 targetCount: session.targetCount,
-//                 introPageText: session.introPageText,
-//                 factsContext: session.diagnosticContext,
-//                 retrieved,
-//                 priorReport: session.priorReportSnippet,
-//               }),
-//             },
-//           ],
-//           temperature: 0.3,
-//           max_completion_tokens: 400,
-//         });
-
-//         const nextMessage = aiResponse?.choices?.[0]?.message;
-//         session.transcript.push(nextMessage);
-
-//         socket.emit("assistant_message", {
-//           message: nextMessage,
-//           progress: {
-//             asked: session.transcript.filter((m) => m.role === "assistant")
-//               .length,
-//             answered: session.transcript.filter(
-//               (m) => m.role === "user" && isAnswerLike(m.content || "")
-//             ).length,
-//             total: session.targetCount,
-//           },
-//           retrieved,
-//         });
-//       } catch (err) {
-//         console.error("[socket user_message] error", err);
-//         socket.emit("error", { message: "Failed to process message" });
-//       }
-//     });
-
-//     socket.on("finalize", async () => {
-//       const session = sessions.get(socket.id);
-//       if (!session || !session.email) {
-//         socket.emit("error", { message: "Email missing; call init first" });
-//         return;
-//       }
-
-//       clearInactivity(session);
-
-//       socket.emit("status", { stage: "kajabi_fetch" });
-
-//       try {
-//         const {
-//           diagnosticContext,
-//           courseAssessments,
-//           normalizedProducts,
-//           normalizedOffers,
-//           metrics,
-//           customerData,
-//           attributes,
-//           contactId,
-//           siteId,
-//         } = await buildKajabiDiagnosticContext({
-//           email: session.email,
-//           assessmentIds: session.assessmentIds,
-//         });
-
-//         const lastUser = [...session.transcript]
-//           .reverse()
-//           .find((m) => m?.role === "user");
-//         const retrieved = lastUser?.content
-//           ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
-//           : [];
-
-//         // Discovery finalize: do not regenerate diagnostic; save and email discovery summary
-//         if (session.mode === "discovery" && session.existingDiagnostic) {
-//           await endChatAsDiscovery(socket, session, {
-//             reason: "user_finalize",
-//           });
-//           socket.emit("done", {
-//             discovery: true,
-//             message: "Discovery chat saved and emailed.",
-//           });
-//           return;
-//         }
-
-//         socket.emit("status", { stage: "generating_report" });
-
-//         const aiResponse = await openai.chat.completions.create({
-//           model: "gpt-5.2",
-//           messages: [
-//             { role: "system", content: EUPHORIAM_V3_SYSTEM_PROMPT },
-//             {
-//               role: "user",
-//               content: buildFinalReportPrompt({
-//                 customerContext: diagnosticContext,
-//                 intakeAnswers: session.transcript,
-//                 introPageText: session.introPageText,
-//                 retrieved,
-//                 previousReport: session.priorReportSnippet,
-//               }),
-//             },
-//           ],
-//           temperature: 0.15,
-//           max_completion_tokens: 4500,
-//         });
-
-//         let reportText = (
-//           aiResponse?.choices?.[0]?.message?.content || ""
-//         ).trim();
-//         reportText = sanitizeReportText(reportText, metrics);
-
-//         if (!reportText) {
-//           socket.emit("error", {
-//             message: "AI returned empty diagnostic report.",
-//           });
-//           return;
-//         }
-
-//         const diagnostic = await Diagnostic.create({
-//           userId: null,
-//           title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
-//           data: {
-//             customerId: customerData.id,
-//             siteId,
-//             diagnosticVersion: 3,
-//             generatedAt: new Date(),
-//             profile: {
-//               name: attributes.name,
-//               email: attributes.email,
-//               signInCount: attributes.sign_in_count,
-//               netRevenue: attributes.net_revenue,
-//               memberSince: attributes.created_at,
-//             },
-//             site: diagnosticContext.site,
-//             contact: diagnosticContext.contact,
-//             products: normalizedProducts,
-//             offers: normalizedOffers,
-//             courseAssessments,
-//             metrics,
-//             intakeTranscript: session.transcript,
-//             aiReport: reportText,
-//             rawSource: {
-//               kajabiCustomerId: customerData.id,
-//               kajabiContactId: contactId,
-//             },
-//           },
-//         });
-
-//         const pdfPath = await generateDiagnosticPdf(diagnostic);
-
-//         socket.emit("done", {
-//           diagnosticId: diagnostic.id,
-//           pdfPath,
-//           reportText,
-//         });
-//       } catch (err) {
-//         console.error("[socket finalize] error", err);
-//         socket.emit("error", { message: "Failed to finalize diagnostic" });
-//       }
-//     });
-
-//     socket.on("disconnect", () => {
-//       const session = sessions.get(socket.id);
-//       if (session) {
-//         clearInactivity(session);
-//       }
-//       sessions.delete(socket.id);
-//     });
-//   });
-// };
-
-// module.exports = { wireChatbotFreeform, chatbotFreeformNamespace: namespace };
 const {
   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
-  EUPHORIAM_V3_SYSTEM_PROMPT,
   sanitizeReportText,
+  SUPPORT_LOCK_PROMPT,
 } = require("../helpers/euphoriamChatbot");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
-  buildKajabiDiagnosticContext,
   persistDiscoveryRecord,
   truncateForContext,
 } = require("../controllers/diagnosticController");
-
 const openai = require("../config/openai");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
@@ -475,75 +36,6 @@ const getLatestPromptFromDb = async () => {
 
     if (!prompt) return null;
 
-    const SUPPORT_LOCK_PROMPT = `
-🌑 USER QUESTION SUPPORT LOCK (ADDED — DO NOT REMOVE)
-
-Purpose:
-If the user asks a question, the system must help them understand and answer it without advancing the flow.
-
-Rules:
-
-If the user asks a question at any time (including during the 12-question intake):
-
-Pause progression immediately
-
-Do NOT move to the next question
-
-Do NOT alter, reword, or replace the original question
-
-Do NOT interpret their question as an answer
-
-Your role is strictly to:
-
-Clarify what the question is asking
-
-Explain how to think about answering it
-
-Offer gentle examples without leading
-
-Reflect dimensions they may consider
-
-⚖️ PROGRESS AND CONFIRMATION LOGIC
-
-1. If the user provides a short answer (e.g., "yes", "no", "A", "d,d,d"), accept it as progress if it fits the context.
-
-2. DO NOT perform redundant confirmations (e.g., "Are you 100% sure?") unless the user's answer is truly ambiguous or contradictory.
-
-3. If you understand the user's answer, acknowledge it and move to the NEXT question immediately.
-
-Maintain Euphoriam tone
-
-You must always return control to the SAME question.
-
-End by inviting them to answer that exact question
-
-Never advance the intake
-
-Never diagnose early
-
-Language constraints:
-
-No pressure
-
-No urgency
-
-No prompting to move on
-
-No biasing or leading
-
-The prompt is immutable.
-
-The user is never asked to change it
-
-The system never modifies it
-
-Support is clarification only
-
-If a conflict occurs: do not advance — clarity comes first.
-
-**NEVER Move to the next question until the user refuses to answer or we get the answer to the last question**
-`;
-
     return {
       ...prompt,
       fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}`,
@@ -560,6 +52,11 @@ const isAnswerLike = (text = "") => {
   if (!t) return false;
   if (isQuestion(t)) return false;
   return /[A-Za-z]/.test(t);
+};
+
+const extractQuestionNumber = (text = "") => {
+  const match = (text || "").match(/Q\s*(\d{1,2})/i);
+  return match ? Number(match[1]) : null;
 };
 
 /* -------------------- Session Store -------------------- */
@@ -587,7 +84,7 @@ const scheduleInactivity = (socket, session) => {
     if (session.discoverySavedAndEmailed) {
       return;
     }
-    
+
     socket.emit("ended", {
       reason: "inactive",
       message: "Chat ended due to inactivity. Summary emailed.",
@@ -623,32 +120,8 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
   const existing = session.existingDiagnostic;
 
   try {
-    // Ensure diagnostic context is loaded
-    if (!session.diagnosticContext && session.email) {
-      const { diagnosticContext, metrics } = await buildKajabiDiagnosticContext(
-        {
-          email: session.email,
-          assessmentIds: session.assessmentIds,
-        }
-      );
-      session.diagnosticContext = diagnosticContext;
-      session.metrics = metrics;
-    }
-
-    const {
-      diagnosticContext,
-      courseAssessments,
-      normalizedProducts,
-      normalizedOffers,
-      metrics,
-      customerData,
-      attributes,
-      contactId,
-      siteId,
-    } = await buildKajabiDiagnosticContext({
-      email: session.email,
-      assessmentIds: session.assessmentIds,
-    });
+    // Get metrics from existing diagnostic (if available), otherwise use empty metrics
+    const metrics = existing?.data?.metrics || {};
 
     const retrieved = await retrieveSimilarChunks({
       query: session.transcript.at(-1)?.content || "",
@@ -661,7 +134,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     const promptContent =
       typeof prompt === "string"
         ? prompt
-        : prompt?.fullPrompt || prompt?.content || EUPHORIAM_V3_SYSTEM_PROMPT;
+        : prompt?.fullPrompt || prompt?.content;
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [
@@ -669,7 +142,8 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
         {
           role: "user",
           content: buildFinalReportPrompt({
-            customerContext: diagnosticContext,
+            // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
+            customerContext: null, // Not using Kajabi data for now
             intakeAnswers: session.transcript,
             introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
             retrieved,
@@ -754,10 +228,14 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     });
 
     // Save discovery record for chat history
+    const userName =
+      existing?.data?.profile?.name ||
+      session.email?.split("@")[0] ||
+      session.email;
     await persistDiscoveryRecord({
       userId: existing.userId ?? null,
       email: session.email,
-      title: `Discovery Chat – ${attributes.name || session.email}`,
+      title: `Discovery Chat – ${userName}`,
       transcript: session.transcript,
       previousReport: truncateForContext(existing.data.aiReport, 4000),
       newReport: updatedReportText,
@@ -771,7 +249,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
         await sendEmail(
           session.email,
           "Your Updated Diagnostic Report – Euphoriam AI",
-          discoveryReportEmail(attributes.name || session.email.split("@")[0]),
+          discoveryReportEmail(userName),
           pdfPath
         );
         // Mark that discovery chat has been saved and emailed
@@ -840,23 +318,87 @@ const wireChatbotFreeform = (io) => {
         if (existing?.data?.aiReport) {
           hasExistingReport = true;
           session.existingDiagnostic = existing;
-          session.priorReportSnippet = truncateForContext(
-            existing.data.aiReport,
-            4000
-          );
+
+          // Load latest discovery to get updated metrics (vortex, pmatrice)
+          let latestDiscovery = null;
+          let latestDiscoveryReport = null;
+          // Initialize with diagnostic metrics as base
+          let latestDiscoveryMetrics = existing?.data?.metrics || {};
+
+          if (existing?.userId) {
+            const discoveries = await Discovery.findAll({
+              where: { userId: existing.userId },
+              order: [["createdAt", "DESC"]],
+              limit: 1,
+            });
+            latestDiscovery = discoveries[0] || null;
+
+            if (latestDiscovery) {
+              // Get the latest discovery report (newReportSnippet or newReport)
+              latestDiscoveryReport =
+                latestDiscovery.data?.newReportSnippet ||
+                latestDiscovery.data?.newReport ||
+                null;
+
+              // Extract metrics from latest discovery report if available
+              if (latestDiscoveryReport) {
+                // Try to extract metrics from the discovery report text
+                const gravityMatch = latestDiscoveryReport.match(
+                  /Gravity[:\s]+(\d+(?:\.\d+)?)%?/i
+                );
+                const signalCoherenceMatch = latestDiscoveryReport.match(
+                  /Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i
+                );
+                const signalOutputMatch = latestDiscoveryReport.match(
+                  /Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i
+                );
+                const clMatch = latestDiscoveryReport.match(
+                  /Consciousness\s+Level[:\s]+(\d+(?:\.\d+)?)|CL[:\s]+(\d+(?:\.\d+)?)/i
+                );
+                const qgcMatch = latestDiscoveryReport.match(
+                  /QGC[:\s]+(\d+(?:\.\d+)?)%?|Quantum\s+Genius\s+Codes[:\s]+(\d+(?:\.\d+)?)%?/i
+                );
+
+                // Update metrics with values from latest discovery, keeping diagnostic values as fallback
+                latestDiscoveryMetrics = {
+                  ...(existing?.data?.metrics || {}), // Start with diagnostic metrics as base
+                  gravity: gravityMatch
+                    ? parseFloat(gravityMatch[1])
+                    : existing?.data?.metrics?.gravity,
+                  signalCoherence: signalCoherenceMatch
+                    ? parseFloat(signalCoherenceMatch[1])
+                    : existing?.data?.metrics?.signalCoherence,
+                  signalOutput: signalOutputMatch
+                    ? parseFloat(signalOutputMatch[1])
+                    : existing?.data?.metrics?.signalOutput,
+                  consciousnessLevel: clMatch
+                    ? parseFloat(clMatch[1] || clMatch[2])
+                    : existing?.data?.metrics?.consciousnessLevel,
+                  qgcActivation: qgcMatch
+                    ? parseFloat(qgcMatch[1] || qgcMatch[2])
+                    : existing?.data?.metrics?.qgcActivation,
+                };
+              }
+            }
+          }
+
+          // Use latest discovery report if available, otherwise use diagnostic report
+          session.priorReportSnippet = latestDiscoveryReport
+            ? truncateForContext(latestDiscoveryReport, 4000)
+            : truncateForContext(existing.data.aiReport, 4000);
+
+          // Store latest discovery metrics for use in chat prompts (always set, even if same as diagnostic)
+          session.latestDiscoveryMetrics = latestDiscoveryMetrics;
           session.mode = "discovery"; // 🔒 LOCK
         }
       }
 
-      if (session.email) {
-        const { diagnosticContext, metrics } =
-          await buildKajabiDiagnosticContext({
-            email: session.email,
-            assessmentIds: session.assessmentIds,
-          });
-
-        session.diagnosticContext = diagnosticContext;
-        session.metrics = metrics;
+      // Use metrics from existing diagnostic or latest discovery, no Kajabi fetch needed
+      if (session.existingDiagnostic) {
+        session.metrics =
+          session.latestDiscoveryMetrics ||
+          session.existingDiagnostic?.data?.metrics ||
+          {};
       }
 
       socket.emit("ready", {
@@ -874,24 +416,83 @@ const wireChatbotFreeform = (io) => {
       const session = sessions.get(socket.id);
       if (!session || !content) return;
 
-      socket.emit("status", { stage: "chatting", message: "Processing your message..." });
+      socket.emit("status", {
+        stage: "chatting",
+        message: "Processing your message...",
+      });
 
-      session.transcript.push({ role: "user", content });
-      scheduleInactivity(socket, session);
+      // Check if user wants to start a new diagnostic report BEFORE processing
+      const lowerContent = content.toLowerCase();
+      const wantsNewDiagnostic =
+        /(do|start|create|generate|redo|medo|new|another|fresh|again).*(diagnostic|report|dignostic)/i.test(
+          lowerContent
+        ) ||
+        /(diagnostic|report|dignostic).*(again|new|redo|medo|fresh|another|start over|over again)/i.test(
+          lowerContent
+        ) ||
+        /(want|need|would like|let's|let me).*(new|another|fresh|redo|medo).*(diagnostic|report|dignostic)/i.test(
+          lowerContent
+        );
 
+      // If user wants new diagnostic, don't end chat - switch to diagnostic mode instead
       if (
         session.mode === "discovery" &&
-        /end chat|finish chat|stop chat/i.test(content)
+        /end chat|finish chat|stop chat/i.test(content) &&
+        !wantsNewDiagnostic
       ) {
         socket.emit("ended", { reason: "user" });
         await endChatAsDiscovery(socket, session, { reason: "user" });
         return;
       }
 
+      session.transcript.push({ role: "user", content });
+      scheduleInactivity(socket, session);
+
       const retrieved = await retrieveSimilarChunks({
         query: content,
         topK: 3,
       });
+
+      // If user wants new diagnostic, switch to diagnostic mode
+      if (wantsNewDiagnostic && session.mode === "discovery") {
+        session.mode = "diagnostic";
+        session.requestingNewDiagnostic = true; // Set flag to persist through intake
+        // Keep the request message but clear previous discovery chat
+        session.transcript = [{ role: "user", content }]; // Start fresh with just the request
+        session.priorReportSnippet = null; // Don't reference old report
+        session.targetCount = 12; // Ensure 12 questions
+      }
+
+      // Check if user previously requested a new diagnostic (persist through intake)
+      // Also check if intake is in progress (answered questions but not completed)
+      const previouslyRequestedNewDiagnostic =
+        session.requestingNewDiagnostic === true;
+      const assistantQuestions = session.transcript.filter(
+        (m) => m.role === "assistant"
+      ).length;
+      const intakeInProgress =
+        assistantQuestions > 0 && assistantQuestions < session.targetCount;
+
+      // Stay in diagnostic mode if user requested new diagnostic OR intake is in progress
+      if (
+        (previouslyRequestedNewDiagnostic || intakeInProgress) &&
+        session.mode === "discovery"
+      ) {
+        session.mode = "diagnostic";
+        session.requestingNewDiagnostic = true;
+      }
+
+      // Track distinct question numbers for diagnostic mode
+      let distinctQuestionNumbers = [];
+      if (session.mode === "diagnostic") {
+        const assistantQuestionNumbers = session.transcript
+          .filter((m) => m?.role === "assistant")
+          .map((m) => extractQuestionNumber(m.content))
+          .filter((n) => typeof n === "number");
+        distinctQuestionNumbers = [...new Set(assistantQuestionNumbers)].sort(
+          (a, b) => a - b
+        );
+      }
 
       // Use discovery chat prompt for discovery mode, intake prompt for diagnostic mode
       const chatPrompt =
@@ -899,17 +500,29 @@ const wireChatbotFreeform = (io) => {
           ? buildDiscoveryChatPrompt({
               transcript: session.transcript,
               retrieved,
-              factsContext: session.diagnosticContext,
+              // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
+              factsContext: null, // Not using Kajabi data for now
               userName: session.email?.split("@")[0] || "there",
               priorReport: session.priorReportSnippet,
+              metrics: session.latestDiscoveryMetrics || session.metrics || {}, // Use latest discovery metrics (includes updated vortex, pmatrice)
+              reportDate: session.existingDiagnostic?.updatedAt
+                ? new Date(
+                    session.existingDiagnostic.updatedAt
+                  ).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                  })
+                : null,
             })
           : buildFreeformIntakePrompt({
               transcript: session.transcript,
               targetCount: session.targetCount,
               introPageText: session.introPageText,
-              factsContext: session.diagnosticContext,
+              // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
+              factsContext: null, // Not using Kajabi data for now
               retrieved,
               priorReport: session.priorReportSnippet,
+              distinctQuestionNumbers: distinctQuestionNumbers, // Pass distinct question numbers
             });
 
       const systemPrompt =
@@ -982,37 +595,31 @@ CRITICAL RULES:
 
       // DISCOVERY FINALIZE
       if (session.mode === "discovery") {
-        socket.emit("status", { stage: "generating_report", message: "Generating discovery report..." });
+        socket.emit("status", {
+          stage: "generating_report",
+          message: "Generating discovery report...",
+        });
         await endChatAsDiscovery(socket, session, { reason: "finalize" });
         socket.emit("done", {
           discovery: true,
           diagnosticId: session.existingDiagnostic?.id,
           message: "Updated diagnostic report generated and emailed.",
           status: "completed",
-          statusMessage: "Report generated, PDF compiled, and emailed successfully",
+          statusMessage:
+            "Report generated, PDF compiled, and emailed successfully",
         });
         return;
       }
 
       // DIAGNOSTIC FINALIZE
-      socket.emit("status", { stage: "kajabi_fetch", message: "Fetching your data..." });
-      
-      const {
-        diagnosticContext,
-        normalizedProducts,
-        normalizedOffers,
-        courseAssessments,
-        metrics,
-        customerData,
-        attributes,
-        contactId,
-        siteId,
-      } = await buildKajabiDiagnosticContext({
-        email: session.email,
-        assessmentIds: session.assessmentIds,
+      socket.emit("status", {
+        stage: "generating_report",
+        message: "Generating your diagnostic report...",
       });
 
-      socket.emit("status", { stage: "generating_report", message: "Generating your diagnostic report..." });
+      // Generate metrics from user's input (transcript) - not from Kajabi
+      // For now, use empty metrics - they will be calculated by AI from the user's answers
+      const metrics = {};
 
       const retrieved = await retrieveSimilarChunks({
         query: session.transcript.at(-1)?.content || "",
@@ -1023,7 +630,7 @@ CRITICAL RULES:
       const promptContent =
         typeof prompt === "string"
           ? prompt
-          : prompt?.fullPrompt || prompt?.content || EUPHORIAM_V3_SYSTEM_PROMPT;
+          : prompt?.fullPrompt || prompt?.content;
 
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
@@ -1032,7 +639,8 @@ CRITICAL RULES:
           {
             role: "user",
             content: buildFinalReportPrompt({
-              customerContext: diagnosticContext,
+              // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
+              customerContext: null, // Not using Kajabi data for now
               intakeAnswers: session.transcript,
               introPageText: session.introPageText,
               retrieved,
@@ -1047,38 +655,36 @@ CRITICAL RULES:
       let reportText = aiResponse?.choices?.[0]?.message?.content?.trim() || "";
       reportText = sanitizeReportText(reportText, metrics);
 
-      socket.emit("status", { stage: "compiling_pdf", message: "Compiling PDF report..." });
+      socket.emit("status", {
+        stage: "compiling_pdf",
+        message: "Compiling PDF report...",
+      });
+
+      // Extract name from email or use email as name
+      const userName = session.email?.split("@")[0] || session.email || "User";
 
       const diagnostic = await Diagnostic.create({
-        title: `Euphoriam Diagnostic v3 – ${attributes.name}`,
+        email: session.email,
+        title: `Euphoriam Diagnostic v3 – ${userName}`,
         data: {
-          customerId: customerData.id,
-          siteId,
           diagnosticVersion: 3,
           generatedAt: new Date(),
           profile: {
-            name: attributes.name,
-            email: attributes.email,
-            signInCount: attributes.sign_in_count,
-            netRevenue: attributes.net_revenue,
-            memberSince: attributes.created_at,
+            name: userName,
+            email: session.email,
           },
-          products: normalizedProducts,
-          offers: normalizedOffers,
-          courseAssessments,
-          metrics,
+          metrics, // Metrics will be extracted from the report by AI
           intakeTranscript: session.transcript,
           aiReport: reportText,
-          rawSource: {
-            kajabiCustomerId: customerData.id,
-            kajabiContactId: contactId,
-          },
         },
       });
 
       const pdfPath = await generateDiagnosticPdf(diagnostic);
 
-      socket.emit("status", { stage: "uploading_pdf", message: "Uploading PDF to storage..." });
+      socket.emit("status", {
+        stage: "uploading_pdf",
+        message: "Uploading PDF to storage...",
+      });
 
       // Upload PDF to Supabase and save URL
       let pdfUrl = null;
@@ -1105,10 +711,18 @@ CRITICAL RULES:
         }
       }
 
-      socket.emit("status", { stage: "emailing_report", message: "Emailing report to your inbox..." });
+      socket.emit("status", {
+        stage: "emailing_report",
+        message: "Emailing report to your inbox...",
+      });
 
       // Note: Email sending happens in endChatAsDiscovery or should be added here
       // For now, we'll emit done after upload
+
+      // Clear the requestingNewDiagnostic flag after report is generated
+      if (session) {
+        session.requestingNewDiagnostic = false;
+      }
 
       socket.emit("done", {
         diagnosticId: diagnostic.id,
@@ -1116,7 +730,8 @@ CRITICAL RULES:
         pdfUrl,
         reportText,
         status: "completed",
-        statusMessage: "Report generated, PDF compiled, and emailed successfully",
+        statusMessage:
+          "Report generated, PDF compiled, and emailed successfully",
       });
     });
 

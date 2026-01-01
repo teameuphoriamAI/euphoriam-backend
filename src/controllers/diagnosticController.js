@@ -5,30 +5,30 @@ const { Prompt } = require("../models/promptModel");
 const { User } = require("../models/userModel");
 const validate = require("../helpers/validate");
 const openai = require("../config/openai");
+const {
+  discoveryReportEmail,
+} = require("../utils/emailTemplate/initialDiscoveryReport");
 
 const {
-  EUPHORIAM_V3_SYSTEM_PROMPT,
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
-  EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
-  buildFreeformIntakePrompt,
-  buildDiscoveryChatPrompt,
-  sanitizeReportText,
+  // Helper functions
+  loadDiagnosticState,
+  loadLatestDiscoveryMetrics,
+  extractReportDate,
+  preparePreviousReports,
+  checkWantsNewDiagnostic,
+  determineChatMode,
+  prepareTranscript,
+  trackQuestionNumbers,
+  buildChatPrompts,
+  extractQuestionNumber,
+  validateChatbotRequest,
+  SUPPORT_LOCK_PROMPT,
 } = require("../helpers/euphoriamChatbot");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const { successResponse, errorResponse } = require("../utils/response");
-const {
-  getCustomerByEmail,
-  getCustomerFullDetails,
-  getSiteById,
-  getContactById,
-  getOfferById,
-  getAssessmentProgressForCustomer,
-  getCourseWithPosts,
-  extractAssessmentsFromCourse,
-  getProductWithCourse,
-  extractCourseIdFromProduct,
-} = require("./kajabi");
+const { buildKajabiDiagnosticContext } = require("./kajabi");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const { sendEmail, sendEmailBasic } = require("../utils/email");
@@ -37,20 +37,6 @@ const {
 } = require("../utils/emailTemplate/initialDignosticReport");
 
 const isQuestion = (text = "") => text.trim().endsWith("?");
-const isAnswerLike = (text = "") => {
-  const t = (text || "").trim();
-  if (!t) return false;
-  if (isQuestion(t)) return false;
-  const alpha = t.match(/[A-Za-z]/g);
-  // Relaxed: Allow short answers like "yes", "A", or "d,d,d"
-  return alpha && alpha.length >= 1 && t.length >= 1;
-};
-
-// Extracts "Q<number>" from an assistant message to track distinct intake topics.
-const extractQuestionNumber = (text = "") => {
-  const match = (text || "").match(/Q\s*(\d{1,2})/i);
-  return match ? Number(match[1]) : null;
-};
 
 const isCreatorClubMember = (context = {}) => {
   const hasProduct = (context.products || []).some((p) =>
@@ -61,14 +47,45 @@ const isCreatorClubMember = (context = {}) => {
   );
   return hasProduct || hasOffer;
 };
-const findOrCreateCreatorUser = async ({ email, name }) => {
+
+/**
+ * Finds or creates a user and checks/updates their Creator Club membership status
+ * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
+ * Always checks latest status from Kajabi and updates the database
+ */
+const findOrCreateCreatorUser = async ({ email, name, assessmentIds = [] }) => {
   let user = await User.findOne({ where: { email } });
 
   if (!user) {
-    user = await User.create({
-      email,
-      name,
-    });
+    user = await User.create({ email, name });
+  }
+
+  // If membership is missing or user is not a Creator Club member
+  if (!user.membership?.isCreatorClub) {
+    try {
+      const { diagnosticContext } = await buildKajabiDiagnosticContext({
+        email,
+        assessmentIds,
+      });
+
+      const isCreatorClub = isCreatorClubMember(diagnosticContext);
+
+      const membership = {
+        isCreatorClub,
+        lastUpdated: new Date().toISOString(),
+        products: diagnosticContext.products || [],
+        offers: diagnosticContext.offers || [],
+      };
+
+      await user.update({ membership });
+      user = await user.reload(); // Reload to get updated data
+    } catch (err) {
+      console.error(
+        "[findOrCreateCreatorUser] Failed to check membership:",
+        err
+      );
+      // Continue even if membership check fails
+    }
   }
 
   return user;
@@ -119,121 +136,6 @@ Rules:
     console.error("[isAiLikelyAnswer] fallback to heuristic", err);
     return false;
   }
-};
-
-const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
-
-const summarizeCourseAssessments = (courseAssessments) => {
-  const courses = Array.isArray(courseAssessments) ? courseAssessments : [];
-
-  const totals = courses.reduce(
-    (acc, c) => {
-      acc.totalAssessments += Number(c.total || 0);
-      acc.completed += Array.isArray(c.completed) ? c.completed.length : 0;
-      acc.passed += Array.isArray(c.passed) ? c.passed.length : 0;
-      acc.failed += Array.isArray(c.failed) ? c.failed.length : 0;
-      acc.pending += Array.isArray(c.pending) ? c.pending.length : 0;
-      return acc;
-    },
-    { totalAssessments: 0, completed: 0, passed: 0, failed: 0, pending: 0 }
-  );
-
-  const completionPercentage = totals.totalAssessments
-    ? Math.round((totals.completed / totals.totalAssessments) * 100)
-    : 0;
-
-  const passRate = totals.completed
-    ? Math.round((totals.passed / totals.completed) * 100)
-    : 0;
-
-  return {
-    ...totals,
-    completionPercentage,
-    passRate,
-    coursesCount: courses.length,
-  };
-};
-
-const computeDiagnosticMetrics = ({
-  signInCount = 0,
-  netRevenue = 0,
-  products = [],
-  offers = [],
-  courseAssessments = [],
-}) => {
-  const safeSignIns = Number(signInCount || 0);
-  const safeRevenue = Number(netRevenue || 0);
-
-  const productTypeCounts = (Array.isArray(products) ? products : []).reduce(
-    (acc, p) => {
-      const type = p?.type || "Unknown";
-      acc[type] = (acc[type] || 0) + 1;
-      return acc;
-    },
-    {}
-  );
-
-  const assessmentSummary = summarizeCourseAssessments(courseAssessments);
-
-  // Reduced weight on engagement (log-ins) - focus more on life experience
-  const engagementScore = clamp(Math.round(safeSignIns * 4), 0, 100); // Reduced from 6.25 to 4
-  const learningScore = clamp(assessmentSummary.completionPercentage, 0, 100);
-  const commitmentScore = clamp(
-    Math.round(
-      Math.min(100, safeRevenue / 10) +
-        (Array.isArray(products) ? products.length : 0) * 8
-    ),
-    0,
-    100
-  );
-
-  // Adjusted weights: less on engagement, more on learning and commitment (life results)
-  const signalOutput = clamp(
-    Math.round(
-      0.3 * engagementScore + 0.4 * learningScore + 0.3 * commitmentScore
-    ),
-    0,
-    100
-  );
-
-  const signalCoherence = clamp(
-    Math.round(100 - Math.abs(engagementScore - learningScore) * 0.75),
-    0,
-    100
-  );
-
-  const gravity = clamp(100 - signalOutput, 0, 100);
-
-  const consciousnessLevel = Number(
-    (1 + (4 * (0.6 * learningScore + 0.4 * signalCoherence)) / 100).toFixed(1)
-  ); // 1.0 - 5.0 proxy index
-
-  const qgcActivation = clamp(
-    Math.round(
-      0.4 * commitmentScore + 0.35 * signalCoherence + 0.25 * learningScore
-    ),
-    0,
-    100
-  );
-
-  return {
-    engagementScore,
-    learningScore,
-    commitmentScore,
-    gravity,
-    signalOutput,
-    signalCoherence,
-    consciousnessLevel,
-    qgcActivation,
-    counts: {
-      signInCount: safeSignIns,
-      netRevenue: safeRevenue,
-      productCount: Array.isArray(products) ? products.length : 0,
-      offerCount: Array.isArray(offers) ? offers.length : 0,
-      productTypeCounts,
-    },
-    assessments: assessmentSummary,
-  };
 };
 
 const truncateForContext = (text = "", max = 6000) => {
@@ -305,12 +207,6 @@ const persistDiscoveryRecord = async ({
   }
 };
 
-const pick = (obj, keys) =>
-  keys.reduce((acc, k) => {
-    if (obj && obj[k] !== undefined) acc[k] = obj[k];
-    return acc;
-  }, {});
-
 // Helper function to render metrics gauge for discovery reports
 const renderGauge = (value) => {
   const v = Math.max(0, Math.min(100, Number(value || 0)));
@@ -320,171 +216,6 @@ const renderGauge = (value) => {
   const filledBlock = "█".repeat(filled);
   const emptyBlock = "░".repeat(empty);
   return `${filledBlock}${emptyBlock} ${v}%`;
-};
-
-const normalizeKajabiOffer = (o) => {
-  const data = o?.data;
-  const attributes = data?.attributes || {};
-  return {
-    id: data?.id,
-    title: attributes.title,
-    price: attributes.price,
-    createdAt: attributes.created_at,
-  };
-};
-
-const normalizeKajabiProduct = (p) => {
-  const data = p?.data;
-  const attributes = data?.attributes || {};
-  const links = p?.links || {};
-  return {
-    id: data?.id,
-    title: attributes.title,
-    type: attributes.product_type_name,
-    status: attributes.status,
-    publishStatus: attributes.publish_status,
-    createdAt: attributes.created_at,
-    url: attributes.url,
-    thumbnailUrl: attributes.thumbnail_url,
-    membersCount: attributes.members_aggregate_count,
-    apiSelf: links.self,
-  };
-};
-
-const normalizeKajabiSite = (s) => {
-  const data = s?.data;
-  const attributes = data?.attributes || {};
-  return {
-    id: data?.id,
-    name: attributes.name,
-    subdomain: attributes.subdomain,
-  };
-};
-
-const normalizeKajabiContact = (c) => {
-  const data = c?.data;
-  const attributes = data?.attributes || {};
-  return {
-    id: data?.id,
-    ...pick(attributes, ["first_name", "last_name", "email", "phone_number"]),
-  };
-};
-// this function gives the full kajabi context for a given customer email
-const buildKajabiDiagnosticContext = async ({ email, assessmentIds = [] }) => {
-  const customerInfo = await getCustomerByEmail(email);
-  const customerDetails = await getCustomerFullDetails(customerInfo.id);
-
-  const customerData = customerDetails.data;
-  const attributes = customerData.attributes;
-  const rel = customerData.relationships;
-
-  // Resolve relations
-  const siteId = rel.site?.data?.id;
-  const contactId = rel.contact?.data?.id;
-
-  const offerIds = rel.offers?.data?.map((o) => o.id) || [];
-  const productIds = rel.products?.data?.map((p) => p.id) || [];
-
-  const site = siteId ? await getSiteById(siteId) : null;
-  const contact = contactId ? await getContactById(contactId) : null;
-  const offers = await Promise.all(offerIds.map((id) => getOfferById(id)));
-  const products = await Promise.all(
-    productIds.map((id) => getProductWithCourse(id))
-  );
-
-  const courseAssessments = [];
-
-  for (const product of products) {
-    const productData = product?.data;
-    const productType = productData?.attributes?.product_type_name;
-
-    // Only process COURSE products
-    if (productType !== "Course") {
-      console.log(
-        `⏭ Skipping non-course product: ${productData?.attributes?.title}`
-      );
-      continue;
-    }
-
-    // Extract linked course ID
-    const courseId = extractCourseIdFromProduct(product);
-
-    if (!courseId) {
-      console.log(
-        `⚠️ No course linked to product: ${productData?.attributes?.title}`
-      );
-      continue;
-    }
-
-    console.log(
-      `📘 Fetching course ${courseId} for product ${productData.attributes.title}`
-    );
-
-    // Fetch course with posts
-    const courseData = await getCourseWithPosts(courseId);
-
-    // Extract assessments from posts
-    const assessments = extractAssessmentsFromCourse(courseData);
-
-    if (!assessments.length) {
-      console.log(`ℹ️ No assessments found in course ${courseId}`);
-      continue;
-    }
-
-    // Get customer progress (completed / passed / failed)
-    const progress = await getAssessmentProgressForCustomer(
-      customerData.id,
-      assessments
-    );
-
-    courseAssessments.push({
-      courseId,
-      courseTitle: productData.attributes.title,
-      assessmentCount: assessments.length,
-      ...progress,
-    });
-  }
-
-  const normalizedProducts = products.map(normalizeKajabiProduct);
-  const normalizedOffers = offers.map(normalizeKajabiOffer);
-  const metrics = computeDiagnosticMetrics({
-    signInCount: attributes.sign_in_count,
-    netRevenue: attributes.net_revenue,
-    products: normalizedProducts,
-    offers: normalizedOffers,
-    courseAssessments,
-  });
-
-  const diagnosticContext = {
-    customer: {
-      id: customerData.id,
-      name: attributes.name,
-      email: attributes.email,
-      signInCount: attributes.sign_in_count,
-      netRevenue: attributes.net_revenue,
-      memberSince: attributes.created_at,
-    },
-    site: normalizeKajabiSite(site),
-    contact: normalizeKajabiContact(contact),
-    offers: normalizedOffers,
-    products: normalizedProducts,
-    courseAssessments,
-    metrics,
-  };
-
-  return {
-    diagnosticContext,
-    courseAssessments,
-    normalizedProducts,
-    normalizedOffers,
-    metrics,
-    site,
-    contact,
-    customerData,
-    attributes,
-    contactId,
-    siteId,
-  };
 };
 //get latest promt from db
 const getLatestPromptFromDb = async () => {
@@ -496,75 +227,6 @@ const getLatestPromptFromDb = async () => {
     });
 
     if (!prompt) return null;
-
-    const SUPPORT_LOCK_PROMPT = `
-🌑 USER QUESTION SUPPORT LOCK (ADDED — DO NOT REMOVE)
-
-Purpose:
-If the user asks a question, the system must help them understand and answer it without advancing the flow.
-
-Rules:
-
-If the user asks a question at any time (including during the 12-question intake):
-
-Pause progression immediately
-
-Do NOT move to the next question
-
-Do NOT alter, reword, or replace the original question
-
-Do NOT interpret their question as an answer
-
-Your role is strictly to:
-
-Clarify what the question is asking
-
-Explain how to think about answering it
-
-Offer gentle examples without leading
-
-Reflect dimensions they may consider
-
-⚖️ PROGRESS AND CONFIRMATION LOGIC
-
-1. If the user provides a short answer (e.g., "yes", "no", "A", "d,d,d"), accept it as progress if it fits the context.
-
-2. DO NOT perform redundant confirmations (e.g., "Are you 100% sure?") unless the user's answer is truly ambiguous or contradictory.
-
-3. If you understand the user's answer, acknowledge it and move to the NEXT question immediately.
-
-Maintain Euphoriam tone
-
-You must always return control to the SAME question.
-
-End by inviting them to answer that exact question
-
-Never advance the intake
-
-Never diagnose early
-
-Language constraints:
-
-No pressure
-
-No urgency
-
-No prompting to move on
-
-No biasing or leading
-
-The prompt is immutable.
-
-The user is never asked to change it
-
-The system never modifies it
-
-Support is clarification only
-
-If a conflict occurs: do not advance — clarity comes first.
-
-**NEVER Move to the next question until the user refuses to answer or we get the answer to the last question**
-`;
 
     return {
       ...prompt,
@@ -587,105 +249,43 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     targetCount = 12,
   } = req.body || {};
 
-  if (!email) {
-    return errorResponse(res, "Email is required", 400);
+  // Validate request
+  const validation = validateChatbotRequest(req);
+  if (!validation.valid) {
+    return errorResponse(res, validation.error, validation.statusCode);
   }
-  if (!name) {
-    return errorResponse(res, "Name is required", 400);
-  }
+  // Find or create user and check/update Creator Club membership
+  const appUser = await findOrCreateCreatorUser({
+    email,
+    name,
+    assessmentIds,
+  });
+  // Load diagnostic state
+  const {
+    existingDiagnostic,
+    existingState,
+    existingReport,
+    diagnosticMetrics,
+  } = await loadDiagnosticState(email);
 
-  // Load any existing diagnostic/intake state for this email to support resume.
-  const existingDiagnostic = await Diagnostic.findOne({ where: { email } });
-  const existingState = existingDiagnostic?.data?.intakeState || {};
-  const existingReport = existingDiagnostic?.data?.aiReport;
-  // Extract metrics from diagnostic data
-  const diagnosticMetrics = existingDiagnostic?.data?.metrics || {};
-  
-  // Load latest discovery to get updated metrics (vortex, pmatrice)
-  let latestDiscovery = null;
-  let latestDiscoveryReport = null;
-  let latestDiscoveryMetrics = diagnosticMetrics; // Default to diagnostic metrics
-  
-  if (existingDiagnostic?.userId) {
-    const discoveries = await Discovery.findAll({
-      where: { userId: existingDiagnostic.userId },
-      order: [["createdAt", "DESC"]],
-      limit: 1,
-    });
-    latestDiscovery = discoveries[0] || null;
-    
-    if (latestDiscovery) {
-      // Get the latest discovery report (newReportSnippet or newReport)
-      latestDiscoveryReport = latestDiscovery.data?.newReportSnippet || 
-                              latestDiscovery.data?.newReport || 
-                              null;
-      
-      // Extract metrics from latest discovery report if available
-      if (latestDiscoveryReport) {
-        // Try to extract metrics from the discovery report text
-        const gravityMatch = latestDiscoveryReport.match(/Gravity[:\s]+(\d+(?:\.\d+)?)%?/i);
-        const signalCoherenceMatch = latestDiscoveryReport.match(/Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i);
-        const signalOutputMatch = latestDiscoveryReport.match(/Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i);
-        const clMatch = latestDiscoveryReport.match(/Consciousness\s+Level[:\s]+(\d+(?:\.\d+)?)|CL[:\s]+(\d+(?:\.\d+)?)/i);
-        const qgcMatch = latestDiscoveryReport.match(/QGC[:\s]+(\d+(?:\.\d+)?)%?|Quantum\s+Genius\s+Codes[:\s]+(\d+(?:\.\d+)?)%?/i);
-        
-        latestDiscoveryMetrics = {
-          ...diagnosticMetrics, // Start with diagnostic metrics as base
-          gravity: gravityMatch ? parseFloat(gravityMatch[1]) : diagnosticMetrics.gravity,
-          signalCoherence: signalCoherenceMatch ? parseFloat(signalCoherenceMatch[1]) : diagnosticMetrics.signalCoherence,
-          signalOutput: signalOutputMatch ? parseFloat(signalOutputMatch[1]) : diagnosticMetrics.signalOutput,
-          consciousnessLevel: clMatch ? parseFloat(clMatch[1] || clMatch[2]) : diagnosticMetrics.consciousnessLevel,
-          qgcActivation: qgcMatch ? parseFloat(qgcMatch[1] || qgcMatch[2]) : diagnosticMetrics.qgcActivation,
-        };
-      }
-    }
-  }
-  
-  // Extract report date - prefer latest discovery date, then diagnostic date
-  const reportDate = latestDiscovery?.createdAt
-    ? new Date(latestDiscovery.createdAt).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      })
-    : existingDiagnostic?.data?.generatedAt
-    ? new Date(existingDiagnostic.data.generatedAt).toLocaleDateString(
-        "en-US",
-        { month: "short", day: "numeric" }
-      )
-    : existingDiagnostic?.updatedAt
-    ? new Date(existingDiagnostic.updatedAt).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      })
-    : null;
-  
-  // Use latest discovery report if available, otherwise use diagnostic report
-  // Use larger limit to ensure full report is available for discovery conversations
+  // Load latest discovery metrics
+  const { latestDiscovery, latestDiscoveryReport, latestDiscoveryMetrics } =
+    await loadLatestDiscoveryMetrics(existingDiagnostic, diagnosticMetrics);
+
+  // Extract report date
+  const reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
+
+  // Prepare prior report snippet
   const priorReportSnippet = latestDiscoveryReport
     ? truncateForContext(latestDiscoveryReport, 12000)
     : truncateForContext(existingReport, 12000);
-  const existingPreviousReports = Array.isArray(
-    existingDiagnostic?.data?.previousReports
-  )
-    ? existingDiagnostic.data.previousReports
-    : [];
-  const previousReportEntry =
-    existingReport &&
-    !existingPreviousReports.some(
-      (pr) => pr?.aiReport && pr.aiReport === existingReport
-    )
-      ? {
-          aiReport: existingReport,
-          savedAt:
-            existingDiagnostic?.data?.intakeState?.finalizedAt ||
-            existingDiagnostic?.updatedAt ||
-            new Date().toISOString(),
-          pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
-        }
-      : null;
-  const previousReports = previousReportEntry
-    ? [...existingPreviousReports, previousReportEntry]
-    : existingPreviousReports;
+
+  // Prepare previous reports
+  const previousReports = preparePreviousReports(
+    existingDiagnostic,
+    existingReport
+  );
+
   const hasExistingReport = Boolean(existingReport);
 
   // If a full report already exists and this is a finalize attempt without new data, short-circuit to avoid duplicate emails.
@@ -698,58 +298,28 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     });
   }
 
-  // Prefer request transcript; fall back to stored state if request is empty.
-  // For completed diagnostics, start a fresh discovery transcript instead of reusing the intake transcript.
-  const useExistingTranscript =
-    !hasExistingReport &&
-    Array.isArray(existingState.transcript) &&
-    existingState.transcript.length;
-  const transcript =
-    Array.isArray(messages) && messages.length
-      ? messages
-      : useExistingTranscript
-      ? existingState.transcript
-      : [];
+  // Prepare transcript
+  const transcript = prepareTranscript(
+    messages,
+    existingState,
+    hasExistingReport,
+    false
+  );
   const lastTurn = transcript[transcript.length - 1];
   const lastTurnAssistant = lastTurn?.role === "assistant";
+
   // Show resume notice when resuming after an assistant turn (only for diagnostic mode, not discovery).
-  const baseResumeNotice =
+  const resumeNotice =
     !hasExistingReport && transcript.length > 0 && lastTurnAssistant
       ? `Welcome back ${name}, let's continue where we left off.`
       : null;
-  // Don't set returningReportNotice for discovery mode - let the discovery chat prompt handle the greeting naturally
-  const resumeNotice = baseResumeNotice;
 
-  const answered = transcript.filter(
-    (m) => m?.role === "user" && isAnswerLike(m.content || "")
-  ).length;
-  const asked = transcript.filter((m) => m?.role === "assistant").length;
   const introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
   const targetCountForRun = hasExistingReport
     ? Math.min(targetCount, 6)
     : targetCount;
 
   if (!finalize) {
-    // Pull Kajabi context even during intake to keep questions on-topic.
-    const { diagnosticContext, metrics } = await buildKajabiDiagnosticContext({
-      email,
-      assessmentIds,
-    });
-
-    // Membership gate: require Creator Club
-    if (!isCreatorClubMember(diagnosticContext)) {
-      return errorResponse(
-        res,
-        "You are not a Creator Club member. Please subscribe or purchase to use the chatbot.",
-        403
-      );
-    }
-
-    const appUser = await findOrCreateCreatorUser({
-      email,
-      name,
-    });
-
     const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
     const retrieved = lastUser?.content
       ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
@@ -768,154 +338,55 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           })
         : false;
 
-    // Track distinct question numbers asked so far to avoid skipping numbers on rephrases.
-    const assistantQuestionNumbers = transcript
-      .filter((m) => m?.role === "assistant")
-      .map((m) => extractQuestionNumber(m.content))
-      .filter((n) => typeof n === "number");
-    const maxQuestionNumber =
-      assistantQuestionNumbers.length > 0
-        ? Math.max(...assistantQuestionNumbers)
-        : 0;
+    // Track question numbers
+    const {
+      distinctQuestionNumbers,
+      maxQuestionNumber,
+      distinctQuestionsAnswered,
+    } = trackQuestionNumbers(transcript);
 
     // Determine if the last user turn actually answered the last assistant question.
     const pendingQuestion = hasAssistantTurn && !aiAnswered;
 
-    // Use discovery chat prompt for returning users with existing reports
-    const isDiscoveryMode = hasExistingReport;
+    // Check if user wants a new diagnostic
+    const { wantsNewDiagnostic, intakeInProgress } = checkWantsNewDiagnostic(
+      transcript,
+      existingState
+    );
 
-    let userPrompt;
-    let systemPrompt;
+    // Determine chat mode
+    const isDiscoveryMode = determineChatMode(
+      hasExistingReport,
+      wantsNewDiagnostic,
+      intakeInProgress
+    );
 
-    if (isDiscoveryMode) {
-      // Discovery mode: freeform conversational chat
-      // Determine discovery type from request or default to integrated
-      const discoveryType = req.body.discoveryType || null; // 'alignment', 'freedom', 'prosperity', or null for integrated
+    // Check if intake has started
+    const intakeHasStarted = transcript.some(
+      (m) => m.role === "assistant" && /Q\d+/i.test(m.content)
+    );
 
-      userPrompt = buildDiscoveryChatPrompt({
-        transcript,
-        retrieved,
-        factsContext: diagnosticContext,
-        userName: name,
-        priorReport: priorReportSnippet,
-        discoveryType,
-        metrics: latestDiscoveryMetrics, // Use latest discovery metrics (includes updated vortex, pmatrice)
-        reportDate: reportDate, // Pass report date
-      });
+    // Build prompts
+    const discoveryType = req.body.discoveryType || null;
+    const { userPrompt, systemPrompt } = await buildChatPrompts({
+      isDiscoveryMode,
+      transcript,
+      targetCount: targetCountForRun,
+      introText,
+      name,
+      retrieved,
+      priorReportSnippet,
+      lastTurnAssistant,
+      resumeNotice,
+      wantsNewDiagnostic,
+      intakeHasStarted,
+      distinctQuestionNumbers,
+      discoveryType,
+      latestDiscoveryMetrics,
+      reportDate,
+    });
 
-      systemPrompt = `You are Euphoriam AI working with structure-aware precision. This is discovery mode - working with their existing diagnostic.
-
-🚨 ABSOLUTE RULE: NEVER output placeholder text like "[Extract metrics...]", "[Extract the key sentence...]", "[Ask ONE specific question...]", or any text in square brackets. Always use actual values, actual sentences, and actual questions.
-
-🌑 CRITICAL APPROACH (Structure-Aware Discovery):
-
-1. FIRST MESSAGE (if transcript is empty):
-   - CRITICAL: You MUST start with structure reflection, NOT generic greetings
-   - NEVER start with "I'm here" or "What would you like to explore today?"
-   - NEVER output placeholder text in square brackets - always use actual values
-   - ALWAYS start with: "Welcome back. I've loaded your last report."
-   - Then: "I want to reflect it back to you first — simply and cleanly — before we move anywhere."
-   - Use the ACTUAL metrics values provided in the user prompt (they are formatted and ready to use)
-   - Extract and display: Gravity %, Signal Coherence %, Signal Output %, CL, QGC % with interpretations (use the actual numbers, not placeholders)
-   - Identify the key sentence/pattern from their report (use quote format with the actual sentence)
-   - State what their correction was about (what the report pointed to - use actual text, not placeholders)
-   - THEN ask ONE specific, targeted question about progress since the report (formulate the actual question, don't use "[Ask...]")
-   - Format: Use bullet points with bold metrics, quote the key sentence, then ask one question
-   - Do NOT ask generic questions like "What would you like to explore?" - be precise and specific
-   - DO NOT output any text in square brackets - always replace with actual content
-
-2. QUESTION STYLE:
-   - Ask ONE question at a time
-   - Very specific, targeted questions (not generic)
-   - Questions should check specific actions, sensations, or states
-   - Examples: "Have you crossed the threshold at all — even once — in the way we defined it (3 minutes, private, no performance)?" or "Does the idea of doing even that create any tightness in your body right now?"
-
-3. RESPONDING TO ANSWERS:
-   - "I don't know" is VALID DATA - treat it as information, not failure
-   - Acknowledge what "I don't know" means in their structure
-   - Never judge uncertainty
-   - Work with their resistance, don't push against it
-
-4. MICRO-CORRECTIONS:
-   - Give very small, specific actions (e.g., "open platform, close it, that's it")
-   - Not symbolic - neurological
-   - Explain why it works for their specific structure
-   - One correction at a time
-
-5. SOMATIC AWARENESS:
-   - Ask about body sensations (tightness, ease, etc.)
-   - Notice changes in sensation
-   - Body data is as important as cognitive data
-
-6. RESPECT RESISTANCE:
-   - If tightness/pushback appears, go smaller, not bigger
-   - Don't push entry if resistance is present
-   - Go "one layer earlier" - pre-threshold work
-   - Permission-based: allow the system to stay the same
-
-7. STRUCTURE-SPECIFIC LANGUAGE:
-   - Use their exact metrics and patterns
-   - Reference their specific correction from the report
-   - Explain why things work for THEIR structure (not generic)
-   - Use phrases like "in your system", "for your structure", "this tells me something specific about your structure"
-
-8. TONE:
-   - Precise, not vague
-   - Respectful of the structure
-   - No judgment, no pushing
-   - Acknowledge what IS, don't try to fix it
-   - Permission-based, not force-based
-
-9. STOPPING POINTS:
-   - Know when to stop ("This is enough for today")
-   - Let things land
-   - Don't overwork
-   - Set clear next check-in points
-
-10. KEY PRINCIPLES:
-    - High-Gravity systems unlock after safety is affirmed
-    - When the protector is not challenged, it loosens on its own
-    - Signal begins to move after permission, not before
-    - Work with the structure, not against it
-    - Precision over volume`;
-    } else {
-      // Diagnostic mode: structured intake
-      userPrompt = !hasAssistantTurn
-        ? buildFreeformIntakePrompt({
-            transcript,
-            targetCount: targetCountForRun,
-            introPageText: introText,
-            factsContext: diagnosticContext,
-            retrieved,
-            userName: name,
-            lastMessageFromAssistant: lastTurnAssistant,
-            resumeNotice,
-            priorReport: priorReportSnippet,
-          })
-        : aiAnswered
-        ? buildFreeformIntakePrompt({
-            transcript,
-            targetCount: targetCountForRun,
-            introPageText: introText,
-            factsContext: diagnosticContext,
-            retrieved,
-            userName: name,
-            lastMessageFromAssistant: lastTurnAssistant,
-            resumeNotice,
-            priorReport: priorReportSnippet,
-          })
-        : `The user has NOT answered the last question. Do NOT move to the next question. 
-Rephrase and clarify the SAME question only, briefly acknowledge their confusion, and invite them to answer that question now.
-
-Last question: "${lastAssistant?.content || ""}"
-User reply: "${lastUser?.content || ""}"
-
-Return only the clarified form of that same question (plus a short acknowledgment), nothing else. 
-Do NOT emit a new question number; stay on the same question.`;
-
-      systemPrompt = EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT;
-    }
-
+    // Build messages array for AI
     let messages = [{ role: "system", content: systemPrompt }];
 
     // Include prior report in system context for both modes (needed for discovery mode to answer questions about it)
@@ -1116,15 +587,46 @@ I'm having trouble generating the summary right now. Please try asking again, or
             const signalOutput = diagnosticMetrics.signalOutput;
             const consciousnessLevel = diagnosticMetrics.consciousnessLevel;
             const qgcActivation = diagnosticMetrics.qgcActivation;
-            
-            const metricsSection = gravity !== undefined && signalCoherence !== undefined && signalOutput !== undefined && consciousnessLevel !== undefined && qgcActivation !== undefined
-              ? `
-* **${gravity >= 80 ? 'Extremely high' : gravity >= 60 ? 'High' : gravity >= 40 ? 'Moderate' : 'Low'} Gravity (${gravity}%)** → ${gravity >= 80 ? 'the old identity has a powerful stabilising pull' : gravity >= 60 ? 'the old identity has a strong pull' : 'the old identity has some pull'}
-* **${signalCoherence >= 90 ? 'Perfect' : signalCoherence >= 70 ? 'High' : signalCoherence >= 50 ? 'Moderate' : 'Low'} Signal Coherence (${signalCoherence}%)** → ${signalCoherence >= 90 ? 'no fragmentation, no inner chaos' : signalCoherence >= 70 ? 'minimal fragmentation' : 'some fragmentation present'}
-* **${signalOutput <= 10 ? 'Very low' : signalOutput <= 30 ? 'Low' : signalOutput <= 50 ? 'Moderate' : 'High'} Signal Output (${signalOutput}%)** → ${signalOutput <= 10 ? 'not because of weakness, but because entry hadn\'t happened yet' : signalOutput <= 30 ? 'entry is beginning but not fully established' : 'signal is flowing'}
-* **CL ${consciousnessLevel}** → ${consciousnessLevel <= 2 ? 'early stabilisation phase, not expansion phase' : consciousnessLevel <= 3 ? 'stabilisation phase' : consciousnessLevel <= 4 ? 'expansion phase beginning' : 'expansion phase'}
-* **QGC ${qgcActivation}%** → ${qgcActivation >= 60 ? 'genuine creative intelligence fully activated' : qgcActivation >= 40 ? 'genuine creative intelligence present but contained' : 'creative intelligence present but not yet activated'}`
-              : `
+
+            // Helper function to create progress bar
+            const createProgressBar = (value, max = 100, length = 12) => {
+              const filled = Math.round((value / max) * length);
+              const empty = length - filled;
+              return "█".repeat(filled) + "░".repeat(empty);
+            };
+
+            const metricsSection =
+              gravity !== undefined &&
+              signalCoherence !== undefined &&
+              signalOutput !== undefined &&
+              consciousnessLevel !== undefined &&
+              qgcActivation !== undefined
+                ? `QGC Activation:
+${createProgressBar(qgcActivation)}
+${qgcActivation}%
+
+Consciousness Level:
+${createProgressBar((consciousnessLevel / 5) * 100)}
+${Math.round((consciousnessLevel / 5) * 100)}%
+
+Gravity:
+${createProgressBar(gravity)}
+${gravity}%
+
+Signal Coherence:
+${createProgressBar(signalCoherence)}
+${signalCoherence}%
+
+Signal Output:
+${createProgressBar(signalOutput)}
+${signalOutput}%
+
+* Extremely high Gravity (${gravity}%) → the old identity has a powerful stabilising pull
+* Perfect Signal Coherence (${signalCoherence}%) → no fragmentation, no inner chaos
+* Very low Signal Output (${signalOutput}%) → not because of weakness, but because entry hadn't happened yet
+* CL ${consciousnessLevel} → stabilisation phase
+* QGC ${qgcActivation}% → genuine creative intelligence present but contained`
+                : `
 * **[Extract Gravity % from report]** → [what it means]
 * **[Extract Signal Coherence % from report]** → [what it means]
 * **[Extract Signal Output % from report]** → [what it means]
@@ -1134,62 +636,124 @@ I'm having trouble generating the summary right now. Please try asking again, or
             // Try to extract key sentence and correction from report
             let keySentence = "";
             let correction = "";
-            
+
             if (priorReportSnippet) {
               // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
-              const keySentenceMatch = priorReportSnippet.match(
-                /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{10,150})["']/i
-              ) || priorReportSnippet.match(/["']([^"']{20,100}(?:will|must|can't|won't)[^"']{0,50})["']/i)
-              || priorReportSnippet.match(/(?:I will|I must|I can't|I won't)[^.\n]{10,80}/i);
-              
+              const keySentenceMatch =
+                priorReportSnippet.match(
+                  /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{10,150})["']/i
+                ) ||
+                priorReportSnippet.match(
+                  /["']([^"']{20,100}(?:will|must|can't|won't)[^"']{0,50})["']/i
+                ) ||
+                priorReportSnippet.match(
+                  /(?:I will|I must|I can't|I won't)[^.\n]{10,80}/i
+                );
+
               if (keySentenceMatch) {
                 keySentence = keySentenceMatch[1] || keySentenceMatch[0];
                 keySentence = keySentence.trim().substring(0, 120);
               }
-              
+
               // Look for correction section
-              const correctionMatch = priorReportSnippet.match(
-                /(?:First Correction|correction|recommendation)[\s\S]{0,300}(.{50,200})/i
-              ) || priorReportSnippet.match(/(?:gentle|repeatable|entry|threshold|micro-correction)[\s\S]{0,200}(.{30,150})/i);
-              
+              const correctionMatch =
+                priorReportSnippet.match(
+                  /(?:First Correction|correction|recommendation)[\s\S]{0,300}(.{50,200})/i
+                ) ||
+                priorReportSnippet.match(
+                  /(?:gentle|repeatable|entry|threshold|micro-correction)[\s\S]{0,200}(.{30,150})/i
+                );
+
               if (correctionMatch) {
                 correction = correctionMatch[1].trim().substring(0, 150);
               }
             }
-            
-            const keySentenceText = keySentence 
-              ? `> *"${keySentence}"*`
-              : `> *"[Extract the key sentence/pattern from the report]"*`;
-            
-            const correctionText = correction
-              ? `**${correction}**`
-              : `**[State what the report pointed to - their correction]**`;
-            
+
+            // If we can't extract key sentence, try to infer from report structure
+            let keySentenceText = "";
+            if (keySentence) {
+              keySentenceText = `> *"${keySentence}"*`;
+            } else if (priorReportSnippet) {
+              // Try to infer from report content - look for structural patterns
+              const structureMatch = priorReportSnippet.match(
+                /(?:structure|identity|pattern)[\s\S]{0,100}(.{30,100})/i
+              );
+              if (structureMatch) {
+                keySentenceText = `> *"${structureMatch[1]
+                  .trim()
+                  .substring(0, 100)}"*`;
+              } else {
+                // Skip key sentence section if we truly can't extract it
+                keySentenceText = "";
+              }
+            }
+
+            // If we can't extract correction, try to infer from report recommendations
+            let correctionText = "";
+            if (correction) {
+              correctionText = `**${correction}**`;
+            } else if (priorReportSnippet) {
+              // Try to infer from report - look for action items or focus areas
+              const actionMatch = priorReportSnippet.match(
+                /(?:focus|work on|action|next step)[\s\S]{0,100}(.{30,100})/i
+              );
+              if (actionMatch) {
+                correctionText = `**${actionMatch[1]
+                  .trim()
+                  .substring(0, 100)}**`;
+              } else {
+                // Use a generic but meaningful fallback
+                correctionText = `**structural alignment and entry threshold work**`;
+              }
+            }
+
             const questionText = correction
-              ? `Since this report (${reportDate || 'recently'}), have you made any progress on ${correction.substring(0, 50)}?`
-              : `Since this report (${reportDate || 'recently'}), what has changed or stayed the same?`;
-            
+              ? `Since this report (${
+                  reportDate || "recently"
+                }), have you made any progress on ${correction.substring(
+                  0,
+                  50
+                )}?`
+              : `Since this report (${
+                  reportDate || "recently"
+                }), what has changed or stayed the same?`;
+
             nextMessage = {
               role: "assistant",
-              content: `Welcome back. I've loaded your last report.
+              content: `WelcomesS back ${name}!. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
 Your structure at the last check-in was very clear:
 ${metricsSection}
 
-This is the key sentence from your map, distilled:
+${
+  keySentenceText
+    ? `This is the key sentence from your map, distilled:
 
 ${keySentenceText}
 
-${correction ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction.substring(0, 100)}.` : ''}
+`
+    : ""
+}${
+                correction
+                  ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction.substring(
+                      0,
+                      100
+                    )}.`
+                  : ""
+              }
 
-Your **entire correction** was about one thing only:
+${
+  correctionText
+    ? `Your **entire correction** was about one thing only:
 ${correctionText}
 
-Before I update anything, I need to check one thing — slowly.
+`
+    : ""
+}Before I update anything, I need to check one thing — slowly.
 
-**Since this report (${reportDate || 'recently'}):**
+**Since this report (${reportDate || "recently"}):**
 
 ${questionText}
 
@@ -1215,15 +779,46 @@ Just answer that.`,
           const signalOutput = diagnosticMetrics.signalOutput;
           const consciousnessLevel = diagnosticMetrics.consciousnessLevel;
           const qgcActivation = diagnosticMetrics.qgcActivation;
-          
-          const metricsSection = gravity !== undefined && signalCoherence !== undefined && signalOutput !== undefined && consciousnessLevel !== undefined && qgcActivation !== undefined
-            ? `
-* **${gravity >= 80 ? 'Extremely high' : gravity >= 60 ? 'High' : gravity >= 40 ? 'Moderate' : 'Low'} Gravity (${gravity}%)** → ${gravity >= 80 ? 'the old identity has a powerful stabilising pull' : gravity >= 60 ? 'the old identity has a strong pull' : 'the old identity has some pull'}
-* **${signalCoherence >= 90 ? 'Perfect' : signalCoherence >= 70 ? 'High' : signalCoherence >= 50 ? 'Moderate' : 'Low'} Signal Coherence (${signalCoherence}%)** → ${signalCoherence >= 90 ? 'no fragmentation, no inner chaos' : signalCoherence >= 70 ? 'minimal fragmentation' : 'some fragmentation present'}
-* **${signalOutput <= 10 ? 'Very low' : signalOutput <= 30 ? 'Low' : signalOutput <= 50 ? 'Moderate' : 'High'} Signal Output (${signalOutput}%)** → ${signalOutput <= 10 ? 'not because of weakness, but because entry hadn\'t happened yet' : signalOutput <= 30 ? 'entry is beginning but not fully established' : 'signal is flowing'}
-* **CL ${consciousnessLevel}** → ${consciousnessLevel <= 2 ? 'early stabilisation phase, not expansion phase' : consciousnessLevel <= 3 ? 'stabilisation phase' : consciousnessLevel <= 4 ? 'expansion phase beginning' : 'expansion phase'}
-* **QGC ${qgcActivation}%** → ${qgcActivation >= 60 ? 'genuine creative intelligence fully activated' : qgcActivation >= 40 ? 'genuine creative intelligence present but contained' : 'creative intelligence present but not yet activated'}`
-            : `
+
+          // Helper function to create progress bar
+          const createProgressBar = (value, max = 100, length = 12) => {
+            const filled = Math.round((value / max) * length);
+            const empty = length - filled;
+            return "█".repeat(filled) + "░".repeat(empty);
+          };
+
+          const metricsSection =
+            gravity !== undefined &&
+            signalCoherence !== undefined &&
+            signalOutput !== undefined &&
+            consciousnessLevel !== undefined &&
+            qgcActivation !== undefined
+              ? `QGC Activation:
+${createProgressBar(qgcActivation)}
+${qgcActivation}%
+
+Consciousness Level:
+${createProgressBar((consciousnessLevel / 5) * 100)}
+${Math.round((consciousnessLevel / 5) * 100)}%
+
+Gravity:
+${createProgressBar(gravity)}
+${gravity}%
+
+Signal Coherence:
+${createProgressBar(signalCoherence)}
+${signalCoherence}%
+
+Signal Output:
+${createProgressBar(signalOutput)}
+${signalOutput}%
+
+* Extremely high Gravity (${gravity}%) → the old identity has a powerful stabilising pull
+* Perfect Signal Coherence (${signalCoherence}%) → no fragmentation, no inner chaos
+* Very low Signal Output (${signalOutput}%) → not because of weakness, but because entry hadn't happened yet
+* CL ${consciousnessLevel} → stabilisation phase
+* QGC ${qgcActivation}% → genuine creative intelligence present but contained`
+              : `
 * **[Extract Gravity % from report]** → [what it means]
 * **[Extract Signal Coherence % from report]** → [what it means]
 * **[Extract Signal Output % from report]** → [what it means]
@@ -1233,62 +828,119 @@ Just answer that.`,
           // Try to extract key sentence and correction from report
           let keySentence = "";
           let correction = "";
-          
+
           if (priorReportSnippet) {
             // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
-            const keySentenceMatch = priorReportSnippet.match(
-              /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{10,150})["']/i
-            ) || priorReportSnippet.match(/["']([^"']{20,100}(?:will|must|can't|won't)[^"']{0,50})["']/i)
-            || priorReportSnippet.match(/(?:I will|I must|I can't|I won't)[^.\n]{10,80}/i);
-            
+            const keySentenceMatch =
+              priorReportSnippet.match(
+                /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{10,150})["']/i
+              ) ||
+              priorReportSnippet.match(
+                /["']([^"']{20,100}(?:will|must|can't|won't)[^"']{0,50})["']/i
+              ) ||
+              priorReportSnippet.match(
+                /(?:I will|I must|I can't|I won't)[^.\n]{10,80}/i
+              );
+
             if (keySentenceMatch) {
               keySentence = keySentenceMatch[1] || keySentenceMatch[0];
               keySentence = keySentence.trim().substring(0, 120);
             }
-            
+
             // Look for correction section
-            const correctionMatch = priorReportSnippet.match(
-              /(?:First Correction|correction|recommendation)[\s\S]{0,300}(.{50,200})/i
-            ) || priorReportSnippet.match(/(?:gentle|repeatable|entry|threshold|micro-correction)[\s\S]{0,200}(.{30,150})/i);
-            
+            const correctionMatch =
+              priorReportSnippet.match(
+                /(?:First Correction|correction|recommendation)[\s\S]{0,300}(.{50,200})/i
+              ) ||
+              priorReportSnippet.match(
+                /(?:gentle|repeatable|entry|threshold|micro-correction)[\s\S]{0,200}(.{30,150})/i
+              );
+
             if (correctionMatch) {
               correction = correctionMatch[1].trim().substring(0, 150);
             }
           }
-          
-          const keySentenceText = keySentence 
-            ? `> *"${keySentence}"*`
-            : `> *"[Extract the key sentence/pattern from the report]"*`;
-          
-          const correctionText = correction
-            ? `**${correction}**`
-            : `**[State what the report pointed to - their correction]**`;
-          
+
+          // If we can't extract key sentence, try to infer from report structure
+          let keySentenceText = "";
+          if (keySentence) {
+            keySentenceText = `> *"${keySentence}"*`;
+          } else if (priorReportSnippet) {
+            // Try to infer from report content - look for structural patterns
+            const structureMatch = priorReportSnippet.match(
+              /(?:structure|identity|pattern)[\s\S]{0,100}(.{30,100})/i
+            );
+            if (structureMatch) {
+              keySentenceText = `> *"${structureMatch[1]
+                .trim()
+                .substring(0, 100)}"*`;
+            } else {
+              // Skip key sentence section if we truly can't extract it
+              keySentenceText = "";
+            }
+          }
+
+          // If we can't extract correction, try to infer from report recommendations
+          let correctionText = "";
+          if (correction) {
+            correctionText = `**${correction}**`;
+          } else if (priorReportSnippet) {
+            // Try to infer from report - look for action items or focus areas
+            const actionMatch = priorReportSnippet.match(
+              /(?:focus|work on|action|next step)[\s\S]{0,100}(.{30,100})/i
+            );
+            if (actionMatch) {
+              correctionText = `**${actionMatch[1].trim().substring(0, 100)}**`;
+            } else {
+              // Use a generic but meaningful fallback
+              correctionText = `**structural alignment and entry threshold work**`;
+            }
+          }
+
           const questionText = correction
-            ? `Since this report (${reportDate || 'recently'}), have you made any progress on ${correction.substring(0, 50)}?`
-            : `Since this report (${reportDate || 'recently'}), what has changed or stayed the same?`;
+            ? `Since this report (${
+                reportDate || "recently"
+              }), have you made any progress on ${correction.substring(0, 50)}?`
+            : `Since this report (${
+                reportDate || "recently"
+              }), what has changed or stayed the same?`;
 
           nextMessage = {
             role: "assistant",
-            content: `Welcome back. I've loaded your last report.
+            content: `Welcomee back${name}. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
 Your structure at the last check-in was very clear:
 ${metricsSection}
 
-This is the key sentence from your map, distilled:
+${
+  keySentenceText
+    ? `This is the key sentence from your map, distilled:
 
 ${keySentenceText}
 
-${correction ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction.substring(0, 100)}.` : ''}
+`
+    : ""
+}${
+              correction
+                ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction.substring(
+                    0,
+                    100
+                  )}.`
+                : ""
+            }
 
-Your **entire correction** was about one thing only:
+${
+  correctionText
+    ? `Your **entire correction** was about one thing only:
 ${correctionText}
 
-Before I update anything, I need to check one thing — slowly.
+`
+    : ""
+}Before I update anything, I need to check one thing — slowly.
 
-**Since this report (${reportDate || 'recently'}):**
+**Since this report (${reportDate || "recently"}):**
 
 ${questionText}
 
@@ -1394,9 +1046,9 @@ Just answer that.`,
       }
     }
 
-    // Compute distinct questions answered: count completed question numbers only, excluding the pending one.
-    const answeredCount = maxQuestionNumber
-      ? maxQuestionNumber - (pendingQuestion ? 1 : 0)
+    // Compute distinct questions answered: count unique/distinct question numbers only, excluding the pending one.
+    const answeredCount = distinctQuestionsAnswered
+      ? distinctQuestionsAnswered - (pendingQuestion ? 1 : 0)
       : 0;
 
     // Persist intake progress (draft) so we can resume after refresh.
@@ -1407,6 +1059,10 @@ Just answer that.`,
       lastQuestionNumber: maxQuestionNumber,
       pendingQuestion,
       updatedAt: new Date().toISOString(),
+      // Persist the "requesting new diagnostic" flag so we stay in diagnostic mode
+      // Clear it only after all 12 questions are answered and report is generated
+      requestingNewDiagnostic:
+        wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
     };
 
     if (existingDiagnostic) {
@@ -1433,23 +1089,18 @@ Just answer that.`,
       });
     }
 
-    // If we've gathered all answers, auto-generate the diagnostic/PDF (only for first-time diagnostics).
+    // If we've gathered all answers, auto-generate the diagnostic/PDF
+    // This applies to both first-time diagnostics and new diagnostics requested by user
     if (
-      !hasExistingReport &&
+      (!hasExistingReport || wantsNewDiagnostic) &&
       answeredCount >= targetCount &&
       !pendingQuestion &&
       aiAnswered
     ) {
-      const {
-        courseAssessments,
-        normalizedProducts,
-        normalizedOffers,
-        metrics,
-        customerData,
-        attributes,
-        contactId,
-        siteId,
-      } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+      // Use cached Kajabi data (already fetched once at the beginning)
+      // Generate metrics from user's input (transcript) - not from Kajabi
+      // Metrics will be calculated by AI from the user's answers
+      const metrics = {};
 
       const finalizeRetrieved = lastUser?.content
         ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
@@ -1459,7 +1110,7 @@ Just answer that.`,
       const promptContent =
         typeof prompt === "string"
           ? prompt
-          : prompt?.fullPrompt || prompt?.content || EUPHORIAM_V3_SYSTEM_PROMPT;
+          : prompt?.fullPrompt || prompt?.content;
       const finalizeResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
         messages: [
@@ -1467,7 +1118,8 @@ Just answer that.`,
           {
             role: "user",
             content: buildFinalReportPrompt({
-              customerContext: diagnosticContext,
+              // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
+              customerContext: null, // Not using Kajabi data for now
               intakeAnswers: transcript,
               introPageText: introText,
               retrieved: finalizeRetrieved,
@@ -1490,38 +1142,27 @@ Just answer that.`,
         return errorResponse(res, "Invalid email address", 400);
       }
 
+      // Extract name from email or use provided name
+      const userName = name || email?.split("@")[0] || "User";
+
       const diagnosticPayload = {
         userId: appUser.id || null,
         email: email.trim(),
-        title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
+        title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
         data: {
-          customerId: customerData.id,
-          siteId,
           diagnosticVersion: 3,
           generatedAt: new Date(),
           profile: {
-            name: attributes.name,
-            email: attributes.email,
-            signInCount: attributes.sign_in_count,
-            netRevenue: attributes.net_revenue,
-            memberSince: attributes.created_at,
+            name: userName,
+            email: email.trim(),
           },
-          site: diagnosticContext.site,
-          contact: diagnosticContext.contact,
-          products: normalizedProducts,
-          offers: normalizedOffers,
-          courseAssessments,
-          metrics,
+          metrics, // Metrics will be extracted from the report by AI
           previousReports,
           intakeTranscript: updatedTranscript,
           aiReport: reportText,
           intakeState: {
             ...intakeState,
             finalizedAt: new Date().toISOString(),
-          },
-          rawSource: {
-            kajabiCustomerId: customerData.id,
-            kajabiContactId: contactId,
           },
         },
       };
@@ -1531,6 +1172,28 @@ Just answer that.`,
       if (!diagnostic) {
         // Try to find by email in case existingDiagnostic was null but one exists
         diagnostic = await Diagnostic.findOne({ where: { email } });
+      }
+
+      // If user requested a new diagnostic and one exists, preserve the old report in previousReports
+      if (wantsNewDiagnostic && diagnostic && diagnostic.data?.aiReport) {
+        const oldReportEntry = {
+          aiReport: diagnostic.data.aiReport,
+          pdfUrl: diagnostic.data.pdf?.url || null,
+          savedAt:
+            diagnostic.updatedAt ||
+            diagnostic.createdAt ||
+            new Date().toISOString(),
+        };
+        diagnosticPayload.data.previousReports = Array.isArray(
+          diagnostic.data.previousReports
+        )
+          ? [...diagnostic.data.previousReports, oldReportEntry]
+          : [oldReportEntry];
+      }
+
+      // Clear the requestingNewDiagnostic flag after report is generated
+      if (diagnosticPayload.data.intakeState) {
+        diagnosticPayload.data.intakeState.requestingNewDiagnostic = false;
       }
 
       if (diagnostic) {
@@ -1582,9 +1245,9 @@ Just answer that.`,
 
       // Email the user their report
       await sendEmail(
-        attributes.email,
+        email,
         "Your Diagnostic Report – Euphoraum-AI",
-        diagnosticReportEmail(attributes.name),
+        diagnosticReportEmail(userName),
         pdfPath
       );
 
@@ -1608,7 +1271,8 @@ Just answer that.`,
         autoFinalized: true,
         resumeNotice,
         status: "completed",
-        statusMessage: "Report generated, PDF compiled, and emailed successfully",
+        statusMessage:
+          "Report generated, PDF compiled, and emailed successfully",
         userMessage: `Your new diagnostic report has been generated and emailed to ${email}. Please check your inbox.`,
       });
     }
@@ -1616,12 +1280,12 @@ Just answer that.`,
     // For discovery mode: Check if user wants to end/generate report or has replied perfectly
     // Also check if the bot previously signaled the end and user just responded
     if (isDiscoveryMode && lastUser) {
-      const { 
-        detectUserWantsToEndOrGenerateReport, 
+      const {
+        detectUserWantsToEndOrGenerateReport,
         detectConversationComplete,
-        detectBotSignaledEnd 
+        detectBotSignaledEnd,
       } = require("../utils/validation");
-      
+
       const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
         userMessage: lastUser.content,
         transcript: updatedTranscript,
@@ -1638,24 +1302,23 @@ Just answer that.`,
       }
 
       // If bot previously signaled end and user just responded, conversation is complete
-      const conversationComplete = botPreviouslySignaledEnd || await detectConversationComplete({
-        transcript: updatedTranscript,
-        lastUserMessage: lastUser,
-        lastAssistantMessage: lastAssistant, // Check the previous assistant message
-      });
+      const conversationComplete =
+        botPreviouslySignaledEnd ||
+        (await detectConversationComplete({
+          transcript: updatedTranscript,
+          lastUserMessage: lastUser,
+          lastAssistantMessage: lastAssistant, // Check the previous assistant message
+        }));
 
       // If user wants to end/generate report OR conversation is complete, generate discovery report
       if (wantsToEndOrGenerate || conversationComplete) {
-        // Build Kajabi context to get attributes
-        const {
-          diagnosticContext: discoveryContext,
-          attributes: discoveryAttributes,
-        } = await buildKajabiDiagnosticContext({ email, assessmentIds });
+        // No Kajabi data needed - use user input only
+        const userName = name || email?.split("@")[0] || "User";
 
         // Get previous discovery if exists
         const previousDiscoveries = await Discovery.findAll({
-          where: { 
-            userId: existingDiagnostic?.userId || appUser?.id || null 
+          where: {
+            userId: existingDiagnostic?.userId || appUser?.id || null,
           },
           order: [["createdAt", "DESC"]],
           limit: 1,
@@ -1672,16 +1335,29 @@ Context: The user already has a completed diagnostic report and may have previou
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery ? `Previous discovery report (reference):
-${truncateForContext(previousDiscovery.data?.newReportSnippet || previousDiscovery.data?.newReport || "", 4000)}` : ""}
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
+${truncateForContext(
+  previousDiscovery.data?.newReportSnippet ||
+    previousDiscovery.data?.newReport ||
+    "",
+  4000
+)}`
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(updatedTranscript, null, 2)}
 
-Client Name: ${discoveryAttributes?.name || name}
-Client ID: ${discoveryContext?.customer?.id || "N/A"}
+Client Name: ${userName}
+Client ID: N/A
 Report Type: Full Diagnostic (Updated)
-Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+Date: ${new Date().toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })}
 
 CRITICAL: You MUST generate the report in the EXACT format that matches the diagnostic report format. The report MUST start with the intro page format below.
 
@@ -1739,19 +1415,29 @@ SECTION 3 — Vortex Settings
 [Map their vortex type and activation points]
 
 SECTION 4 — 3D Code (Gravity %)
-[Gravity percentage and what it's doing - use exact value: ${diagnosticMetrics.gravity || "N/A"}%]
+[Gravity percentage and what it's doing - use exact value: ${
+          diagnosticMetrics.gravity || "N/A"
+        }%]
 
 SECTION 5 — Consciousness Level (CL)
-[CL level and interpretation - use exact value: ${diagnosticMetrics.consciousnessLevel || "N/A"}]
+[CL level and interpretation - use exact value: ${
+          diagnosticMetrics.consciousnessLevel || "N/A"
+        }]
 
 SECTION 6 — Quantum Genius Codes (QGC)
-[QGC activation percentage and what it looks like - use exact value: ${diagnosticMetrics.qgcActivation || "N/A"}%]
+[QGC activation percentage and what it looks like - use exact value: ${
+          diagnosticMetrics.qgcActivation || "N/A"
+        }%]
 
 SECTION 7 — Signal Coherence
-[Signal Coherence analysis - use exact value: ${diagnosticMetrics.signalCoherence || "N/A"}%]
+[Signal Coherence analysis - use exact value: ${
+          diagnosticMetrics.signalCoherence || "N/A"
+        }%]
 
 SECTION 8 — Signal Output (IP-Protected)
-[Signal Output analysis - use exact value: ${diagnosticMetrics.signalOutput || "N/A"}%]
+[Signal Output analysis - use exact value: ${
+          diagnosticMetrics.signalOutput || "N/A"
+        }%]
 
 SECTION 9 — Angle of Growth
 [Their growth axis based on structure]
@@ -1761,7 +1447,9 @@ SECTION 10 — First Correction
 
 Metrics Gauge
 QGC Activation:     ${renderGauge(diagnosticMetrics.qgcActivation || 0)}
-Consciousness Level: ${renderGauge((diagnosticMetrics.consciousnessLevel || 0) * 20)}
+Consciousness Level: ${renderGauge(
+          (diagnosticMetrics.consciousnessLevel || 0) * 20
+        )}
 Gravity:             ${renderGauge(diagnosticMetrics.gravity || 0)}
 Signal Coherence:    ${renderGauge(diagnosticMetrics.signalCoherence || 0)}
 Signal Output:       ${renderGauge(diagnosticMetrics.signalOutput || 0)}
@@ -1806,16 +1494,15 @@ Generate the full report in this exact format.`;
           // Create a diagnostic-like object for PDF generation
           const discoveryForPdf = {
             id: existingDiagnostic?.id || Date.now(),
-            title: `Discovery Follow-up – ${discoveryAttributes?.name || name}`,
+            title: `Discovery Follow-up – ${userName}`,
             userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
             data: {
               profile: {
-                name: discoveryAttributes?.name || name,
+                name: userName,
                 email: email,
               },
               aiReport: discoveryReport,
               metrics: diagnosticMetrics,
-              customerId: discoveryContext?.customer?.id || null,
             },
           };
 
@@ -1823,13 +1510,15 @@ Generate the full report in this exact format.`;
           let pdfUrl = null;
           try {
             pdfPath = await generateDiagnosticPdf(discoveryForPdf);
-            
+
             // Upload PDF to Supabase
             if (pdfPath) {
               const buffer = await fs.promises.readFile(pdfPath);
               const upload = await uploadBufferToSupabase({
                 buffer,
-                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()}-${Date.now()}.pdf`,
+                objectPath: `discoveries/discovery-${
+                  existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
                 contentType: "application/pdf",
               });
               pdfUrl = upload.url || null;
@@ -1841,7 +1530,7 @@ Generate the full report in this exact format.`;
           await persistDiscoveryRecord({
             userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
             email,
-            title: `Discovery Follow-up – ${discoveryAttributes?.name || name}`,
+            title: `Discovery Follow-up – ${userName}`,
             transcript: updatedTranscript,
             previousReport: priorReportSnippet,
             newReport: discoveryReport,
@@ -1851,13 +1540,12 @@ Generate the full report in this exact format.`;
           });
 
           if (email) {
-            const { discoveryReportEmail } = require("../utils/emailTemplate/initialDiscoveryReport");
             // Email with PDF attachment if available
             if (pdfPath) {
               await sendEmail(
                 email,
                 "Your Discovery Report – Euphoriam AI",
-                discoveryReportEmail(discoveryAttributes?.name || name),
+                discoveryReportEmail(userName),
                 pdfPath
               );
             } else {
@@ -1878,7 +1566,8 @@ Generate the full report in this exact format.`;
             pdfUrl: pdfUrl || null,
             autoGenerated: true,
             status: "completed",
-            statusMessage: "Report generated, PDF compiled, and emailed successfully",
+            statusMessage:
+              "Report generated, PDF compiled, and emailed successfully",
             userMessage: `Your new discovery report has been generated and emailed to ${email}. Please check your inbox.`,
           });
         }
@@ -1900,33 +1589,6 @@ Generate the full report in this exact format.`;
     });
   }
 
-  // Finalize: if existing report, save discovery summary; otherwise generate full diagnostic.
-  const {
-    diagnosticContext,
-    courseAssessments,
-    normalizedProducts,
-    normalizedOffers,
-    metrics,
-    customerData,
-    attributes,
-    contactId,
-    siteId,
-  } = await buildKajabiDiagnosticContext({ email, assessmentIds });
-
-  if (!isCreatorClubMember(diagnosticContext)) {
-    return errorResponse(
-      res,
-      "You are not a Creator Club member. Please subscribe or purchase to use the chatbot.",
-      403
-    );
-  }
-
-  // Find or create user for finalize path
-  const appUser = await findOrCreateCreatorUser({
-    email,
-    name,
-  });
-
   const transcriptForFinal =
     (Array.isArray(existingState.transcript) && existingState.transcript.length
       ? existingState.transcript
@@ -1942,8 +1604,8 @@ Generate the full report in this exact format.`;
   if (hasExistingReport) {
     // Get previous discovery if exists
     const previousDiscoveries = await Discovery.findAll({
-      where: { 
-        userId: existingDiagnostic?.userId || appUser?.id || null 
+      where: {
+        userId: existingDiagnostic?.userId || appUser?.id || null,
       },
       order: [["createdAt", "DESC"]],
       limit: 1,
@@ -1959,16 +1621,29 @@ Context: The user already has a completed diagnostic report and may have previou
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery ? `Previous discovery report (reference):
-${truncateForContext(previousDiscovery.data?.newReportSnippet || previousDiscovery.data?.newReport || "", 4000)}` : ""}
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
+${truncateForContext(
+  previousDiscovery.data?.newReportSnippet ||
+    previousDiscovery.data?.newReport ||
+    "",
+  4000
+)}`
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(transcriptForFinal, null, 2)}
 
-Client Name: ${attributes.name || name}
-Client ID: ${customerData.id || "N/A"}
+Client Name: ${name || email?.split("@")[0] || "User"}
+Client ID: N/A
 Report Type: Full Diagnostic (Updated)
-Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+Date: ${new Date().toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })}
 
 CRITICAL: You MUST generate the report in the EXACT format that matches the diagnostic report format. The report MUST start with the intro page format below.
 
@@ -2026,16 +1701,24 @@ SECTION 3 — Vortex Settings
 [Map their vortex type and activation points]
 
 SECTION 4 — 3D Code (Gravity %)
-[Gravity percentage and what it's doing - use exact value: ${metrics.gravity || "N/A"}%]
+[Gravity percentage and what it's doing - use exact value: ${
+      metrics.gravity || "N/A"
+    }%]
 
 SECTION 5 — Consciousness Level (CL)
-[CL level and interpretation - use exact value: ${metrics.consciousnessLevel || "N/A"}]
+[CL level and interpretation - use exact value: ${
+      metrics.consciousnessLevel || "N/A"
+    }]
 
 SECTION 6 — Quantum Genius Codes (QGC)
-[QGC activation percentage and what it looks like - use exact value: ${metrics.qgcActivation || "N/A"}%]
+[QGC activation percentage and what it looks like - use exact value: ${
+      metrics.qgcActivation || "N/A"
+    }%]
 
 SECTION 7 — Signal Coherence
-[Signal Coherence analysis - use exact value: ${metrics.signalCoherence || "N/A"}%]
+[Signal Coherence analysis - use exact value: ${
+      metrics.signalCoherence || "N/A"
+    }%]
 
 SECTION 8 — Signal Output (IP-Protected)
 [Signal Output analysis - use exact value: ${metrics.signalOutput || "N/A"}%]
@@ -2096,27 +1779,30 @@ Generate the full report in this exact format.`;
         // Create a diagnostic-like object for PDF generation
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Discovery Follow-up – ${attributes.name}`,
+          title: `Discovery Follow-up – ${
+            name || email?.split("@")[0] || "User"
+          }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
           data: {
             profile: {
-              name: attributes.name,
+              name: name || email?.split("@")[0] || "User",
               email: email,
             },
             aiReport: discoveryReport,
-            metrics: metrics,
-            customerId: customerData.id || null,
+            metrics: diagnosticMetrics, // Use metrics from existing diagnostic
           },
         };
 
         pdfPath = await generateDiagnosticPdf(discoveryForPdf);
-        
+
         // Upload PDF to Supabase
         if (pdfPath) {
           const buffer = await fs.promises.readFile(pdfPath);
           const upload = await uploadBufferToSupabase({
             buffer,
-            objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()}-${Date.now()}.pdf`,
+            objectPath: `discoveries/discovery-${
+              existingDiagnostic?.id || Date.now()
+            }-${Date.now()}.pdf`,
             contentType: "application/pdf",
           });
           pdfUrl = upload.url || null;
@@ -2129,7 +1815,7 @@ Generate the full report in this exact format.`;
     await persistDiscoveryRecord({
       userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
       email,
-      title: `Discovery Follow-up – ${attributes.name}`,
+      title: `Discovery Follow-up – ${name || email?.split("@")[0] || "User"}`,
       transcript: transcriptForFinal,
       previousReport: priorReportSnippet,
       newReport: discoveryReport,
@@ -2139,13 +1825,12 @@ Generate the full report in this exact format.`;
     });
 
     if (email) {
-      const { discoveryReportEmail } = require("../utils/emailTemplate/initialDiscoveryReport");
       // Email with PDF attachment if available
       if (pdfPath && discoveryReport) {
         await sendEmail(
           email,
           "Your Discovery Report – Euphoriam AI",
-          discoveryReportEmail(attributes.name),
+          discoveryReportEmail(name || email?.split("@")[0] || "User"),
           pdfPath
         );
       } else {
@@ -2174,9 +1859,7 @@ Generate the full report in this exact format.`;
   const prompt = await getLatestPromptFromDb();
   // Extract string content from prompt object, or use fallback
   const promptContent =
-    typeof prompt === "string"
-      ? prompt
-      : prompt?.fullPrompt || prompt?.content || EUPHORIAM_V3_SYSTEM_PROMPT;
+    typeof prompt === "string" ? prompt : prompt?.fullPrompt || prompt?.content;
 
   const aiResponse = await openai.chat.completions.create({
     model: "gpt-5.2",
@@ -2185,7 +1868,8 @@ Generate the full report in this exact format.`;
       {
         role: "user",
         content: buildFinalReportPrompt({
-          customerContext: diagnosticContext,
+          // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
+          customerContext: null, // Not using Kajabi data for now
           intakeAnswers: transcriptForFinal,
           introPageText: introText,
           retrieved,
@@ -2213,28 +1897,21 @@ Generate the full report in this exact format.`;
     return errorResponse(res, "Invalid email address", 400);
   }
 
+  // Extract name from email or use provided name
+  const userName = name || email?.split("@")[0] || "User";
+
   const finalPayload = {
     userId: appUser.id || null,
     email: email.trim(),
-    title: `Euphoriam Diagnostic v3 (Freeform) – ${attributes.name}`,
+    title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
     data: {
-      customerId: customerData.id,
-      siteId,
       diagnosticVersion: 3,
       generatedAt: new Date(),
       profile: {
-        name: attributes.name,
-        email: attributes.email,
-        signInCount: attributes.sign_in_count,
-        netRevenue: attributes.net_revenue,
-        memberSince: attributes.created_at,
+        name: userName,
+        email: email.trim(),
       },
-      site: diagnosticContext.site,
-      contact: diagnosticContext.contact,
-      products: normalizedProducts,
-      offers: normalizedOffers,
-      courseAssessments,
-      metrics,
+      metrics, // Metrics will be extracted from the report by AI
       previousReports,
       intakeTranscript: transcriptForFinal,
       aiReport: reportText,
@@ -2242,10 +1919,6 @@ Generate the full report in this exact format.`;
         ...(existingState || {}),
         transcript: transcriptForFinal,
         finalizedAt: new Date().toISOString(),
-      },
-      rawSource: {
-        kajabiCustomerId: customerData.id,
-        kajabiContactId: contactId,
       },
     },
   };
@@ -2306,9 +1979,9 @@ Generate the full report in this exact format.`;
 
   // Email the user their updated report
   await sendEmail(
-    attributes.email,
+    email,
     "Your Diagnostic Report – Euphoraum-AI",
-    diagnosticReportEmail(attributes.name),
+    diagnosticReportEmail(userName),
     pdfPath
   );
 
@@ -2359,14 +2032,6 @@ const getById = async (req, res) => {
   const diagnostic = await Diagnostic.findByPk(req.params.id);
   if (!diagnostic) {
     return errorResponse(res, "Diagnostic not found", 404);
-  }
-
-  if (
-    diagnostic.userId !== req.user.sub &&
-    req.user.role &&
-    req.user.role !== "admin"
-  ) {
-    return errorResponse(res, "Forbidden", 403);
   }
 
   return successResponse(res, "Diagnostic fetched", diagnostic);
@@ -2638,7 +2303,6 @@ module.exports = {
   listAll,
   getById,
   chatbotDiagnosticFreeform,
-  buildKajabiDiagnosticContext,
   truncateForContext,
   persistDiscoveryRecord,
   getAllPdfUrls,

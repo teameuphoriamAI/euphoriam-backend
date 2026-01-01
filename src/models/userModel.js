@@ -25,6 +25,10 @@ const User = sequelize.define(
       type: DataTypes.STRING,
       allowNull: false,
     },
+    membership: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+    },
     role: {
       type: DataTypes.STRING,
       allowNull: false,

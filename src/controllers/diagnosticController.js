@@ -348,18 +348,34 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     // Determine if the last user turn actually answered the last assistant question.
     const pendingQuestion = hasAssistantTurn && !aiAnswered;
 
+    // Check if this is the first user interaction (no user messages in transcript yet)
+    const isFirstUserInteraction =
+      transcript.filter((m) => m?.role === "user").length === 0;
+
     // Check if user wants a new diagnostic
     const { wantsNewDiagnostic, intakeInProgress } = checkWantsNewDiagnostic(
       transcript,
       existingState
     );
 
+    // If there's an existing report and this is the first user interaction,
+    // show the welcome message with existing report first
+    // Only start new intake if user explicitly requests it in their message OR intake is already in progress
+    const shouldShowExistingReportFirst =
+      hasExistingReport &&
+      isFirstUserInteraction &&
+      !wantsNewDiagnostic &&
+      !intakeInProgress;
+
     // Determine chat mode
-    const isDiscoveryMode = determineChatMode(
-      hasExistingReport,
-      wantsNewDiagnostic,
-      intakeInProgress
-    );
+    // If we should show existing report first, use discovery mode
+    const isDiscoveryMode =
+      shouldShowExistingReportFirst ||
+      determineChatMode(
+        hasExistingReport,
+        wantsNewDiagnostic,
+        intakeInProgress
+      );
 
     // Check if intake has started
     const intakeHasStarted = transcript.some(
@@ -720,7 +736,7 @@ ${signalOutput}%
 
             nextMessage = {
               role: "assistant",
-              content: `WelcomesS back ${name}!. I've loaded your last report.
+              content: `Welcome back ${name}!. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
@@ -907,7 +923,7 @@ ${signalOutput}%
 
           nextMessage = {
             role: "assistant",
-            content: `Welcomee back${name}. I've loaded your last report.
+            content: `Welcome back ${name}. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
@@ -1060,9 +1076,10 @@ Just answer that.`,
       pendingQuestion,
       updatedAt: new Date().toISOString(),
       // Persist the "requesting new diagnostic" flag so we stay in diagnostic mode
-      // Clear it only after all 12 questions are answered and report is generated
-      requestingNewDiagnostic:
-        wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
+      // Clear it if we're showing existing report first (user can request new diagnostic explicitly after)
+      requestingNewDiagnostic: shouldShowExistingReportFirst
+        ? false // Clear flag when showing existing report first
+        : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
     };
 
     if (existingDiagnostic) {

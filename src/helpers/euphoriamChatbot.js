@@ -369,6 +369,7 @@ const buildFreeformIntakePrompt = ({
   lastMessageFromAssistant = false,
   priorReport,
   distinctQuestionNumbers = [], // Array of distinct question numbers already asked
+  wantsNewDiagnostic = false, // Whether user is requesting a new diagnostic
 }) => {
   const userMessages = transcript.filter(
     (m) => m?.role === "user" && !isQuestion(m.content || "")
@@ -420,25 +421,41 @@ const buildFreeformIntakePrompt = ({
     ? `\nExisting diagnostic report (reference only; stay consistent and do not regenerate the full report here):\n${priorReport}\n`
     : "";
 
-  const firstQuestion = priorReport
+  const firstQuestion = priorReport && !wantsNewDiagnostic
     ? `
 If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
 
-"Hi ${displayName}, I’ve loaded your last diagnostic report so we can build on it.
+"Hi ${displayName}, I've loaded your last diagnostic report so we can build on it.
 What has shifted since that report? What feels most different right now?"
+`
+    : priorReport && wantsNewDiagnostic
+    ? `
+If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
+
+"Hi ${displayName}, I understand you'd like to create a new diagnostic report. We'll start fresh with the 12-Question Deep Intake to map your current structure.
+
+Q1 — Desired Reality
+
+When you imagine the version of your life that actually feels right —
+not impressive, not "successful," but true —
+
+what is different from how you're living now?
+
+Take a breath before you answer.
+Say it in your own words."
 `
     : `
 If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
 
-"Hi ${displayName}, I don’t have your intake on record yet, so we’ll start with the 12-Question Deep Intake Engine™.
+"Hi ${displayName}, I don't have your intake on record yet, so we'll start with the 12-Question Deep Intake Engine™.
 One question at a time. No rushing. No fixing. Just mapping.
 
 Q1 — Desired Reality
 
 When you imagine the version of your life that actually feels right —
-not impressive, not “successful,” but true —
+not impressive, not "successful," but true —
 
-what is different from how you’re living now?
+what is different from how you're living now?
 
 Take a breath before you answer.
 Say it in your own words."
@@ -1680,8 +1697,9 @@ const buildChatPrompts = async ({
                 ? false
                 : Boolean(lastAssistant),
             resumeNotice: intakeResumeNotice,
-            priorReport: wantsNewDiagnostic ? null : priorReportSnippet,
+            priorReport: priorReportSnippet, // Keep prior report for context even when starting new diagnostic
             distinctQuestionNumbers: [],
+            wantsNewDiagnostic: wantsNewDiagnostic && !intakeHasStarted, // Pass flag to customize first question
           })
         : aiAnswered
         ? buildFreeformIntakePrompt({

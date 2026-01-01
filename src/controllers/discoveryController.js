@@ -1,39 +1,79 @@
 const { Discovery } = require("../models/discoveryModel");
+const { User } = require("../models/userModel");
+const { sequelize } = require("../config/sequelize");
+const { Op } = require("sequelize");
 const { successResponse, errorResponse } = require("../utils/response");
 
 const listMine = async (req, res) => {
-  const discoveries = await Discovery.findAll({
-    where: { userId: req.body.email },
-    order: [["createdAt", "DESC"]],
-  });
-  return successResponse(res, "Discoveries fetched", discoveries);
+  try {
+    // If email is provided, search by email in data field, otherwise use userId
+    const whereClause = req.body.email
+      ? sequelize.where(
+          sequelize.fn(
+            "jsonb_extract_path_text",
+            sequelize.col("data"),
+            "email"
+          ),
+          Op.eq,
+          req.body.email
+        )
+      : { userId: req.user?.sub || req.body.userId };
+
+    const discoveries = await Discovery.findAll({
+      where: whereClause,
+      order: [["createdAt", "DESC"]],
+    });
+    return successResponse(res, "Discoveries fetched", discoveries);
+  } catch (err) {
+    console.error("[listMine] Error:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to fetch discoveries",
+      500
+    );
+  }
 };
 
 const listAll = async (_req, res) => {
-  const discoveries = await Discovery.findAll({
-    order: [["createdAt", "DESC"]],
-  });
-  return successResponse(res, "Discoveries fetched", discoveries);
+  try {
+    const discoveries = await Discovery.findAll({
+      order: [["createdAt", "DESC"]],
+    });
+    return successResponse(res, "Discoveries fetched", discoveries);
+  } catch (err) {
+    console.error("[listAll] Error:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to fetch discoveries",
+      500
+    );
+  }
 };
 
 const getById = async (req, res) => {
-  const discovery = await Discovery.findByPk(req.params.id);
-  if (!discovery) {
-    return errorResponse(res, "Discovery not found", 404);
-  }
+  try {
+    const { email } = req.body;
 
-  if (
-    discovery.userId !== req.user.sub &&
-    req.user.role &&
-    req.user.role !== "admin"
-  ) {
-    return errorResponse(res, "Forbidden", 403);
-  }
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+    const finduser = await User.findOne({ where: { email } });
+    if (!finduser) {
+      return errorResponse(res, "user not found", 404);
+    }
+    // Search by email in the JSONB data field
+    const discovery = await Discovery.findAll({
+      where: { userId: finduser.id },
+    });
 
-  return successResponse(res, "Discovery fetched", discovery);
+    if (discovery.length <= 0) {
+      return errorResponse(res, "Discovery not found", 404);
+    }
+    return successResponse(res, "Discovery fetched", discovery);
+  } catch (err) {
+    console.error("[getById] Error:", err);
+    return errorResponse(res, err.message || "Failed to fetch discovery", 500);
+  }
 };
 
 module.exports = { listMine, listAll, getById };
-
-
-

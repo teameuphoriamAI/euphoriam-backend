@@ -374,7 +374,7 @@ const getPromptHistory = async (req, res) => {
 // Get admin stats
 const getStats = async (req, res) => {
   try {
-    const totalUsers = await User.count();
+    const totalUsers = await User.count({ where: { role: "user" } });
     const totalDiagnostics = await Diagnostic.count();
     const totalDiscoveries = await Discovery.count();
     const totalPrompts = await Prompt.count();
@@ -398,6 +398,7 @@ const getStats = async (req, res) => {
         createdAt: {
           [Op.gte]: thirtyDaysAgo,
         },
+        role: "user",
       },
     });
 
@@ -424,6 +425,7 @@ const getStats = async (req, res) => {
     // Get users with most reports
     const usersWithReports = await User.findAll({
       attributes: ["id", "name", "email"],
+      where: { role: "user" },
       limit: 10,
     });
 

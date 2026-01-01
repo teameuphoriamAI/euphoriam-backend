@@ -17,6 +17,7 @@ router.get("/health", (_req, res) => {
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
 router.use("/diagnostics", diagnosticRoutes);
+router.use("/diagnostic", diagnosticRoutes); // Alias for backward compatibility
 router.use("/kajabi", kajabiRoutes);
 router.use("/voice-notes", voiceRoutes);
 router.use("/rag", ragRoutes);

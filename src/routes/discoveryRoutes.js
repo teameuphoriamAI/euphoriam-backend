@@ -13,9 +13,12 @@ router.get(
   asyncHandler(discoveryController.listAll)
 );
 router.post("/", auth, asyncHandler(discoveryController.listMine));
-router.get("/:id", auth, asyncHandler(discoveryController.getById));
+router.post(
+  "/findByEmail",
+  // requireRole(["admin"]),
+  asyncHandler(discoveryController.getById)
+);
 
 module.exports = router;
-
 
 

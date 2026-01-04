@@ -6,6 +6,7 @@ const {
   DEFAULT_INTRO_PAGE_TEXT,
   sanitizeReportText,
   SUPPORT_LOCK_PROMPT,
+  checkWantsEmail,
 } = require("../helpers/euphoriamChatbot");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
@@ -243,8 +244,15 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
       pdfUrl: pdfUrl || existing.data.pdf?.url || null,
     });
 
-    // Email the updated diagnostic report
-    if (session.email && pdfPath) {
+    // Check if user wants email
+    const lastUserMessage = session.transcript
+      ?.filter((m) => m?.role === "user")
+      ?.slice(-1)[0]?.content || "";
+    const userWantsEmail = checkWantsEmail(session.transcript || [], lastUserMessage);
+    const shouldEmail = userWantsEmail;
+
+    // Email the updated diagnostic report only if user requested it
+    if (session.email && pdfPath && shouldEmail) {
       try {
         await sendEmail(
           session.email,
@@ -600,13 +608,29 @@ CRITICAL RULES:
           message: "Generating discovery report...",
         });
         await endChatAsDiscovery(socket, session, { reason: "finalize" });
+        
+        // Check if user wants email
+        const lastUserMessage = session.transcript
+          ?.filter((m) => m?.role === "user")
+          ?.slice(-1)[0]?.content || "";
+        const userWantsEmail = checkWantsEmail(session.transcript || [], lastUserMessage);
+        const shouldEmail = userWantsEmail;
+        
+        const statusMessage = shouldEmail
+          ? "Report generated, PDF compiled, and emailed successfully"
+          : "Report generated and updated in your account";
+        
+        const userMessage = shouldEmail
+          ? "Updated diagnostic report generated and emailed."
+          : "Updated diagnostic report generated and updated in your account. You can access it anytime. If you'd like it emailed, just ask!";
+        
         socket.emit("done", {
           discovery: true,
           diagnosticId: session.existingDiagnostic?.id,
-          message: "Updated diagnostic report generated and emailed.",
+          message: userMessage,
           status: "completed",
-          statusMessage:
-            "Report generated, PDF compiled, and emailed successfully",
+          statusMessage,
+          emailed: shouldEmail,
         });
         return;
       }
@@ -711,18 +735,46 @@ CRITICAL RULES:
         }
       }
 
-      socket.emit("status", {
-        stage: "emailing_report",
-        message: "Emailing report to your inbox...",
-      });
+      // Check if user wants email or if it's first-time user
+      const isFirstTimeUser = !session.existingDiagnostic;
+      const lastUserMessage = session.transcript
+        ?.filter((m) => m?.role === "user")
+        ?.slice(-1)[0]?.content || "";
+      const userWantsEmail = checkWantsEmail(session.transcript || [], lastUserMessage);
+      const shouldEmail = isFirstTimeUser || userWantsEmail;
 
-      // Note: Email sending happens in endChatAsDiscovery or should be added here
-      // For now, we'll emit done after upload
+      if (shouldEmail) {
+        socket.emit("status", {
+          stage: "emailing_report",
+          message: "Emailing report to your inbox...",
+        });
+
+        try {
+          await sendEmail(
+            session.email,
+            "Your Diagnostic Report – Euphoriam AI",
+            require("../utils/emailTemplate/initialDignosticReport").diagnosticReportEmail(
+              session.email?.split("@")[0] || "User"
+            ),
+            pdfPath
+          );
+        } catch (err) {
+          console.error("[socket finalize] Email sending failed", err);
+        }
+      }
 
       // Clear the requestingNewDiagnostic flag after report is generated
       if (session) {
         session.requestingNewDiagnostic = false;
       }
+
+      const statusMessage = shouldEmail
+        ? "Report generated, PDF compiled, and emailed successfully"
+        : "Report generated and updated in your account";
+      
+      const userMessage = shouldEmail
+        ? `Your diagnostic report has been generated and emailed to ${session.email}. Please check your inbox.`
+        : `Your diagnostic report has been generated and updated in your account. You can access it anytime.${userWantsEmail ? "" : " If you'd like it emailed, just ask!"}`;
 
       socket.emit("done", {
         diagnosticId: diagnostic.id,
@@ -730,8 +782,9 @@ CRITICAL RULES:
         pdfUrl,
         reportText,
         status: "completed",
-        statusMessage:
-          "Report generated, PDF compiled, and emailed successfully",
+        statusMessage,
+        userMessage,
+        emailed: shouldEmail,
       });
     });
 

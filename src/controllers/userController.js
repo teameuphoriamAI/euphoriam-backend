@@ -9,40 +9,77 @@ const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { CoachingSession } = require("../models/coachingSessionModel");
 const { buildKajabiDiagnosticContext } = require("./kajabi");
+const { sequelize } = require("../config/sequelize");
+const { Op } = require("sequelize");
 const listUsers = async (_req, res) => {
   try {
+    // First, get users without heavy includes to avoid timeout
     const users = await User.findAll({
       where: { role: "user" },
       attributes: { exclude: ["password"] },
-      include: [
-        {
-          model: Diagnostic,
-          required: false,
-        },
-        {
-          model: Discovery,
-          required: false,
-        },
-      ],
       order: [["createdAt", "DESC"]],
+      limit: 1000, // Add a reasonable limit
     });
+
+    // If no users, return early
+    if (users.length === 0) {
+      return successResponse(res, "Users fetched", []);
+    }
+
+    // Get user IDs for batch counting
+    const userIds = users.map((user) => user.id);
+
+    // Get diagnostic counts using Sequelize count with grouping
+    const diagnosticCountsData = await Diagnostic.findAll({
+      where: {
+        userId: {
+          [Op.in]: userIds,
+        },
+      },
+      attributes: [
+        "userId",
+        [sequelize.fn("COUNT", sequelize.col("id")), "count"],
+      ],
+      group: ["userId"],
+      raw: true,
+    });
+
+    // Get discovery counts using Sequelize count with grouping
+    const discoveryCountsData = await Discovery.findAll({
+      where: {
+        userId: {
+          [Op.in]: userIds,
+        },
+      },
+      attributes: [
+        "userId",
+        [sequelize.fn("COUNT", sequelize.col("id")), "count"],
+      ],
+      group: ["userId"],
+      raw: true,
+    });
+
+    // Create lookup maps for counts
+    const diagnosticCountMap = {};
+    if (Array.isArray(diagnosticCountsData)) {
+      diagnosticCountsData.forEach((item) => {
+        diagnosticCountMap[item.userId] = parseInt(item.count) || 0;
+      });
+    }
+
+    const discoveryCountMap = {};
+    if (Array.isArray(discoveryCountsData)) {
+      discoveryCountsData.forEach((item) => {
+        discoveryCountMap[item.userId] = parseInt(item.count) || 0;
+      });
+    }
 
     // Add report counts to each user
     const usersWithReportCounts = users.map((user) => {
       const userJson = user.toJSON();
+      const diagnosticCount = diagnosticCountMap[user.id] || 0;
+      const discoveryCount = discoveryCountMap[user.id] || 0;
 
-      // Check if Diagnostics exists and has items, and if data.pdfUrls exists
-      const diagnosticCount =
-        userJson.Diagnostics &&
-        userJson.Diagnostics.length > 0 &&
-        userJson.Diagnostics[0].data &&
-        Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
-          ? userJson.Diagnostics[0].data.pdfUrls.length
-          : 0;
-      const discoveryCount =
-        userJson.Discoveries && Array.isArray(userJson.Discoveries)
-          ? userJson.Discoveries.length
-          : 0;
       return {
         ...userJson,
         diagnosticCount,

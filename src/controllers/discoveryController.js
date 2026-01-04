@@ -6,17 +6,9 @@ const { successResponse, errorResponse } = require("../utils/response");
 
 const listMine = async (req, res) => {
   try {
-    // If email is provided, search by email in data field, otherwise use userId
+    // If email is provided, search by email column, otherwise use userId
     const whereClause = req.body.email
-      ? sequelize.where(
-          sequelize.fn(
-            "jsonb_extract_path_text",
-            sequelize.col("data"),
-            "email"
-          ),
-          Op.eq,
-          req.body.email
-        )
+      ? { email: req.body.email }
       : { userId: req.user?.sub || req.body.userId };
 
     const discoveries = await Discovery.findAll({

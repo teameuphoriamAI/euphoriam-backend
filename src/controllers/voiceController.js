@@ -8,6 +8,7 @@ const { sequelize } = require("../config/sequelize");
 const { VoiceNote } = require("../models/voiceNoteModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { successResponse, errorResponse } = require("../utils/response");
+const { User } = require("../models");
 
 const ensureTempFile = async (file) => {
   const safeName = file.originalname.replace(/\s+/g, "_");
@@ -41,8 +42,47 @@ const transcribeAudio = async (file) => {
   }
 };
 
+// Helper function to ensure bucket exists
+const ensureBucketExists = async (bucketName) => {
+  // Check if bucket exists by trying to list it
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  
+  if (listError) {
+    console.error("[voiceController] Error listing buckets:", listError);
+    return false;
+  }
+
+  const bucketExists = buckets?.some((b) => b.name === bucketName);
+  
+  if (!bucketExists) {
+    // Try to create the bucket
+    const { data: newBucket, error: createError } = await supabase.storage.createBucket(bucketName, {
+      public: true, // Make it publicly accessible
+      fileSizeLimit: 52428800, // 50MB limit
+      allowedMimeTypes: ['audio/*', 'video/*', 'application/octet-stream'],
+    });
+
+    if (createError) {
+      console.error(`[voiceController] Failed to create bucket "${bucketName}":`, createError);
+      throw new Error(
+        `Storage bucket "${bucketName}" does not exist and could not be created. ` +
+        `Please create it in your Supabase dashboard: Storage > New bucket > Name: "${bucketName}" > Public: true`
+      );
+    }
+    
+    console.log(`[voiceController] Created bucket "${bucketName}"`);
+    return true;
+  }
+  
+  return true;
+};
+
 const uploadVoiceToSupabase = async (file) => {
   const bucket = process.env.SUPABASE_STORAGE_BUCKET || "voice-notes";
+  
+  // Ensure bucket exists before uploading
+  await ensureBucketExists(bucket);
+  
   const ext = path.extname(file.originalname) || ".bin";
   const objectPath = `voices/${Date.now()}-${Math.random()
     .toString(16)
@@ -56,6 +96,13 @@ const uploadVoiceToSupabase = async (file) => {
     });
 
   if (error) {
+    // Provide more helpful error messages
+    if (error.statusCode === "404" || error.message?.includes("Bucket not found")) {
+      throw new Error(
+        `Storage bucket "${bucket}" not found. ` +
+        `Please create it in your Supabase dashboard: Storage > New bucket > Name: "${bucket}" > Public: true`
+      );
+    }
     throw error;
   }
 
@@ -66,33 +113,112 @@ const uploadVoiceToSupabase = async (file) => {
   return { path: data?.path || objectPath, url: publicUrl };
 };
 
-const findDiagnosticByEmail = async (email) =>
-  Diagnostic.findOne({
-    where: {
-      [Op.or]: [
-        { email },
-        sequelize.where(sequelize.json("data.profile.email"), email),
-      ],
-    },
+const findUserByEmail = async (email) =>
+  User.findOne({
+    where: { email },
     order: [["createdAt", "DESC"]],
   });
+
+const transcribeVoiceFile = async (file) => {
+  if (!file) throw new Error("No file provided for transcription");
+  console.log("fole", file);
+
+  // Save buffer to temp file
+  const safeName = file.originalname.replace(/\s+/g, "_");
+  const tempPath = path.join(os.tmpdir(), `voice-${Date.now()}-${safeName}`);
+  await fs.promises.writeFile(tempPath, file.buffer);
+
+  try {
+    const response = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(tempPath),
+      model: "whisper-1",
+      response_format: "json",
+    });
+
+    if (!response?.text) return null;
+
+    return {
+      text: response.text.trim(),
+      meta: {
+        model: response.model || "whisper-1",
+        duration: response.duration,
+        language: response.language,
+        originalFileName: file.originalname,
+        mimeType: file.mimetype,
+      },
+    };
+  } finally {
+    fs.promises.unlink(tempPath).catch(() => {});
+  }
+};
+const attachVoiceNoteToUser = async (req, res) => {
+  try {
+    //voiceId to attach to user
+    const { email, voiceId } = req.body;
+    if (!email) throw new Error("Email is required to attach a note");
+    if (!voiceId) throw new Error("voiceId is required");
+
+    // 1️⃣ Find user by email
+    const user = await findUserByEmail(email);
+    if (!user) {
+      throw new Error(`No user found for email: ${email}`);
+    }
+
+    // 2️⃣ Find the existing voice note
+    const voiceNote = await VoiceNote.findOne({ where: { id: voiceId } });
+    if (!voiceNote) {
+      throw new Error("Voice note not found");
+    }
+
+    // 3️⃣ Update the userId
+    await voiceNote.update({ userId: user.id });
+
+    // 4️⃣ Return updated info
+    return successResponse(res, "transcript attached to user", voiceNote);
+  } catch (error) {
+    return errorResponse(res, error);
+  }
+};
+const getAll = async (req, res) => {
+  try {
+    const voiceNotes = await VoiceNote.findAll({
+      order: [["createdAt", "DESC"]],
+      include: [
+        {
+          model: User,
+          as: "user", // must match the alias above
+          attributes: ["id", "email", "name", "createdAt"], // choose fields you need
+        },
+      ],
+    });
+
+    return successResponse(res, "All voice notes retrieved", voiceNotes);
+  } catch (error) {
+    return errorResponse(
+      res,
+      error.message || "Failed to fetch voice notes",
+      500
+    );
+  }
+};
 
 const createVoiceNote = async (req, res) => {
   const { email, text } = req.body;
   const voiceFile = req.file;
+  console.log("voice", voiceFile);
 
-  if (!email) {
-    return errorResponse(res, "Email is required to attach voice/text", 400);
-  }
+  // if (!email) {
+  //   return errorResponse(res, "Email is required to attach voice/text", 400);
+  // }
 
-  const diagnostic = await findDiagnosticByEmail(email);
-  if (!diagnostic) {
-    return errorResponse(
-      res,
-      "No diagnostic found for the provided email",
-      404
-    );
-  }
+  // const diagnostic = await findDiagnosticByEmail(email);
+  // if (!diagnostic) {
+  //   return errorResponse(
+  //     res,
+  //     "No diagnostic found for the provided email",
+  //     404
+  //   );
+  // }
 
   let content = (text || "").trim();
   let sourceType = "text";
@@ -128,7 +254,7 @@ const createVoiceNote = async (req, res) => {
   }
 
   const voiceNote = await VoiceNote.create({
-    diagnosticEmail: email,
+    // diagnosticEmail: email,
     content,
     sourceType,
     transcriptMeta,
@@ -136,18 +262,7 @@ const createVoiceNote = async (req, res) => {
     audioUrl,
   });
 
-  return successResponse(res, "Voice/Text note saved", {
-    id: voiceNote.id,
-    diagnosticId: diagnostic.id,
-    diagnosticEmail: voiceNote.diagnosticEmail,
-    content: voiceNote.content,
-    sourceType: voiceNote.sourceType,
-    transcriptMeta: voiceNote.transcriptMeta,
-    audioPath: voiceNote.audioPath,
-    audioUrl: voiceNote.audioUrl,
-  });
+  return successResponse(res, "Voice/Text note saved", voiceNote);
 };
 
-module.exports = { createVoiceNote };
-
-
+module.exports = { createVoiceNote, attachVoiceNoteToUser, getAll };

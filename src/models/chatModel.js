@@ -1,8 +1,8 @@
 const { DataTypes } = require("sequelize");
 const { sequelize } = require("../config/sequelize");
 
-const Diagnostic = sequelize.define(
-  "Diagnostic",
+const Chat = sequelize.define(
+  "Chat",
   {
     id: {
       type: DataTypes.INTEGER,
@@ -13,27 +13,21 @@ const Diagnostic = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
-    chatId: {
+    dignosticId: {
       type: DataTypes.INTEGER,
       allowNull: true,
     },
-    email: {
-      type: DataTypes.STRING,
-      allowNull: true,
-      validate: {
-        isEmail: true,
-      },
-      unique: true,
-    },
-    pdfUrl: { type: DataTypes.STRING, allowNull: true },
-    report: { type: DataTypes.STRING, allowNull: true },
-    title: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
+
     data: {
       type: DataTypes.JSONB,
       allowNull: false,
+    },
+    isChatEnded: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    chatType: {
+      type: DataTypes.ENUM("dignostic", "discovery"),
     },
     createdAt: {
       type: DataTypes.DATE,
@@ -47,10 +41,10 @@ const Diagnostic = sequelize.define(
     },
   },
   {
-    tableName: "diagnostics",
+    tableName: "chat",
     freezeTableName: true,
     timestamps: true,
   }
 );
 
-module.exports = { Diagnostic };
+module.exports = { Chat };

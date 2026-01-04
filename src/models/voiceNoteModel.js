@@ -1,5 +1,6 @@
 const { DataTypes } = require("sequelize");
 const { sequelize } = require("../config/sequelize");
+const { User } = require("./userModel");
 
 const VoiceNote = sequelize.define(
   "VoiceNote",
@@ -9,9 +10,9 @@ const VoiceNote = sequelize.define(
       autoIncrement: true,
       primaryKey: true,
     },
-    diagnosticEmail: {
-      type: DataTypes.STRING,
-      allowNull: false,
+    userId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
     content: {
       type: DataTypes.TEXT,
@@ -52,6 +53,10 @@ const VoiceNote = sequelize.define(
   }
 );
 
+VoiceNote.belongsTo(User, {
+  foreignKey: "userId", // column in VoiceNote
+  targetKey: "id", // column in User
+  as: "user", // alias when including
+});
+
 module.exports = { VoiceNote };
-
-

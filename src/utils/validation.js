@@ -257,12 +257,26 @@ export async function detectUserWantsToEndOrGenerateReport({
   userMessage,
   transcript = [],
 }) {
+  const lowerMessage = (userMessage || "").toLowerCase();
+  
+  // Quick check for explicit email/report requests (before AI check)
+  const explicitEmailReportRequest = 
+    /(email|send).*(me|the|my).*(report|it)/i.test(userMessage) ||
+    /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(userMessage) ||
+    /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(userMessage);
+  
+  if (explicitEmailReportRequest) {
+    return true; // Immediately return true for explicit requests
+  }
+  
   const prompt = `
 You are a binary classifier. Analyze the user's message and determine if they want to:
 1. End the chat/conversation
 2. Generate a report
 3. Get a report
 4. Finish the conversation
+5. Email the report
+6. Send the report
 
 User's latest message: "${userMessage || ""}"
 
@@ -271,9 +285,9 @@ ${JSON.stringify(transcript.slice(-3), null, 2)}
 
 Rules:
 - Reply ONLY "yes" or "no"
-- "yes" if the user is asking to end, finish, stop, generate report, get report, or wants their report
+- "yes" if the user is asking to end, finish, stop, generate report, get report, email report, send report, or wants their report
 - "no" if they're just answering questions or continuing the conversation
-- Be sensitive to variations like "give me my report", "I want the report", "can I get a report", "end this", "finish up", etc.
+- Be sensitive to variations like "give me my report", "I want the report", "can I get a report", "email me the report", "send the report", "end this", "finish up", etc.
 
 Reply:`;
 
@@ -316,7 +330,13 @@ Look for phrases like:
 - "This is enough"
 - "We stop here and let this land"
 - "For now: you're not stuck"
-- Any indication that the session is concluding
+- "I'm going to lock this into a clean Euphoriam diagnostic report"
+- "lock this into a clean Euphoriam diagnostic report"
+- "generate a report"
+- "generate your updated diagnostic report"
+- "We'll pause here. Let this settle."
+- "I'm going to generate"
+- Any indication that the session is concluding or a report should be generated
 
 Rules:
 - Reply ONLY "yes" or "no"

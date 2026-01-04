@@ -15,6 +15,16 @@ const sequelize = new Sequelize(DATABASE_URL, {
       rejectUnauthorized: false,
     },
   },
+  pool: {
+    max: 10, // Maximum number of connections in pool
+    min: 2, // Minimum number of connections in pool
+    acquire: 60000, // Maximum time (ms) to wait for a connection
+    idle: 10000, // Maximum time (ms) a connection can be idle before being released
+    evict: 1000, // Interval (ms) to check for idle connections
+  },
+  retry: {
+    max: 3,
+  },
 });
 
 const backfillDiagnosticEmails = async () => {
@@ -121,6 +131,124 @@ const initDb = async () => {
   } catch (err) {
     // If column doesn't exist or conversion fails, that's fine - sync will handle it
     console.log("Membership column migration:", err.message);
+  }
+
+  // Add missing columns to diagnostics table if they don't exist
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        -- Add chatId column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'diagnostics' 
+          AND column_name = 'chatId'
+        ) THEN
+          ALTER TABLE "diagnostics" ADD COLUMN "chatId" INTEGER;
+        END IF;
+
+        -- Add pdfUrl column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'diagnostics' 
+          AND column_name = 'pdfUrl'
+        ) THEN
+          ALTER TABLE "diagnostics" ADD COLUMN "pdfUrl" VARCHAR(255);
+        END IF;
+
+        -- Add report column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'diagnostics' 
+          AND column_name = 'report'
+        ) THEN
+          ALTER TABLE "diagnostics" ADD COLUMN "report" TEXT;
+        END IF;
+      END $$;
+    `);
+    console.log("Diagnostics table columns migration completed");
+  } catch (err) {
+    console.log("Diagnostics columns migration:", err.message);
+  }
+
+  // Handle voice_notes table migrations
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        -- Drop any existing foreign key constraints on diagnosticEmail
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints 
+          WHERE table_name = 'voice_notes' 
+          AND constraint_name LIKE '%diagnosticEmail%'
+          AND constraint_type = 'FOREIGN KEY'
+        ) THEN
+          ALTER TABLE "voice_notes" 
+          DROP CONSTRAINT IF EXISTS "voice_notes_diagnosticEmail_fkey";
+        END IF;
+
+        -- Make diagnosticEmail nullable (remove NOT NULL constraint)
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'voice_notes' 
+          AND column_name = 'diagnosticEmail'
+          AND is_nullable = 'NO'
+        ) THEN
+          ALTER TABLE "voice_notes" 
+          ALTER COLUMN "diagnosticEmail" DROP NOT NULL;
+        END IF;
+
+        -- Check if voice_notes table exists and userId column exists
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'voice_notes' 
+          AND column_name = 'userId'
+        ) THEN
+          -- Check if it's not already INTEGER
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'voice_notes' 
+            AND column_name = 'userId' 
+            AND data_type != 'integer'
+          ) THEN
+            -- Drop any existing foreign key constraints on userId first
+            IF EXISTS (
+              SELECT 1 FROM information_schema.table_constraints 
+              WHERE table_name = 'voice_notes' 
+              AND constraint_name LIKE '%userId%'
+              AND constraint_type = 'FOREIGN KEY'
+            ) THEN
+              ALTER TABLE "voice_notes" 
+              DROP CONSTRAINT IF EXISTS "voice_notes_userId_fkey";
+            END IF;
+
+            -- Convert userId column to INTEGER with proper casting
+            ALTER TABLE "voice_notes" 
+            ALTER COLUMN "userId" TYPE INTEGER 
+            USING CASE 
+              WHEN "userId" IS NULL THEN NULL
+              WHEN "userId"::text ~ '^[0-9]+$' THEN "userId"::text::INTEGER
+              ELSE NULL
+            END;
+          END IF;
+
+          -- Ensure userId is nullable (remove NOT NULL constraint if it exists)
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'voice_notes' 
+            AND column_name = 'userId'
+            AND is_nullable = 'NO'
+          ) THEN
+            ALTER TABLE "voice_notes" 
+            ALTER COLUMN "userId" DROP NOT NULL;
+          END IF;
+        END IF;
+      END $$;
+    `);
+    console.log("Voice notes table migration completed");
+  } catch (err) {
+    // If column doesn't exist or conversion fails, that's fine - sync will handle it
+    console.log("Voice notes table migration:", err.message);
   }
 
   // Sync all models together to respect FK dependencies (e.g., users before diagnostics)

@@ -6,8 +6,9 @@ const errorHandler = require("./middleware/errorHandler");
 const app = express();
 
 // Core middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Increased body size limits for large PDF uploads
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Route registration
 app.use("/api", routes);

@@ -28,14 +28,8 @@ const applyAssociations = () => {
   User.hasMany(CoachingSession, { foreignKey: "coachId", as: "CoachingAssignments" });
   CoachingSession.belongsTo(User, { foreignKey: "coachId", as: "Coach" });
 
-  Diagnostic.hasMany(VoiceNote, {
-    foreignKey: "diagnosticEmail",
-    sourceKey: "email",
-    onDelete: "CASCADE",
-  });
-  VoiceNote.belongsTo(Diagnostic, {
-    foreignKey: "diagnosticEmail",
-    targetKey: "email",
+  User.hasMany(VoiceNote, {
+    foreignKey: "userId",
     onDelete: "CASCADE",
   });
 };

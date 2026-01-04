@@ -1,6 +1,12 @@
 const { upsertDocuments, retrieveSimilarChunks } = require("../helpers/rag");
-const { ingestSupabaseCourses } = require("../helpers/supabaseRag");
+const { 
+  ingestSupabaseCourses, 
+  ingestSupabaseBucketPdfs,
+  extractPdfsForFineTuning 
+} = require("../helpers/supabaseRag");
 const { successResponse, errorResponse } = require("../utils/response");
+const fs = require("fs");
+const path = require("path");
 
 const ingestDocuments = async (req, res) => {
   const { documents = [] } = req.body || {};
@@ -26,5 +32,67 @@ const ingestSupabase = async (_req, res) => {
   return successResponse(res, "Supabase bucket ingested", result);
 };
 
-module.exports = { ingestDocuments, searchDocuments, ingestSupabase };
+/**
+ * Ingest PDFs from a Supabase bucket for RAG
+ * POST /api/rag/ingest-bucket
+ * Body: { bucket?: string, folder?: string }
+ */
+const ingestBucketPdfs = async (req, res) => {
+  try {
+    const { bucket, folder = "" } = req.body || {};
+    const result = await ingestSupabaseBucketPdfs(bucket, folder);
+    return successResponse(res, "Bucket PDFs ingested for RAG", result);
+  } catch (error) {
+    console.error("[ragController] ingestBucketPdfs error:", error);
+    return errorResponse(res, error.message || "Failed to ingest bucket PDFs", 500);
+  }
+};
+
+/**
+ * Extract PDFs from Supabase bucket and format for GPT fine-tuning
+ * POST /api/rag/extract-fine-tuning
+ * Body: { bucket?: string, folder?: string, systemPrompt?: string, saveFile?: boolean }
+ * Returns: JSONL format data ready for OpenAI fine-tuning
+ */
+const extractForFineTuning = async (req, res) => {
+  try {
+    const { bucket, folder = "", systemPrompt, saveFile = false } = req.body || {};
+    
+    const result = await extractPdfsForFineTuning(bucket, folder, {
+      systemPrompt,
+    });
+
+    // Optionally save JSONL file
+    if (saveFile) {
+      const outputDir = path.join(__dirname, "..", "..", "training-data");
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+      
+      const fileName = `fine-tuning-${bucket}-${Date.now()}.jsonl`;
+      const filePath = path.join(outputDir, fileName);
+      fs.writeFileSync(filePath, result.jsonl, "utf8");
+      
+      result.filePath = filePath;
+      result.fileName = fileName;
+    }
+
+    return successResponse(res, "Fine-tuning data extracted", {
+      ...result,
+      // Include JSONL in response for direct download
+      downloadUrl: saveFile ? `/training-data/${result.fileName}` : null,
+    });
+  } catch (error) {
+    console.error("[ragController] extractForFineTuning error:", error);
+    return errorResponse(res, error.message || "Failed to extract fine-tuning data", 500);
+  }
+};
+
+module.exports = { 
+  ingestDocuments, 
+  searchDocuments, 
+  ingestSupabase,
+  ingestBucketPdfs,
+  extractForFineTuning
+};
 

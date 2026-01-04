@@ -1,5 +1,8 @@
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
+const { User } = require("../models/userModel");
+const { Prompt } = require("../models/promptModel");
+const openai = require("../config/openai");
 
 // Fixed 12-question intake used for first-time users.
 const DEEP_INTAKE_QUESTIONS = [
@@ -85,6 +88,52 @@ If a conflict occurs: do not advance — clarity comes first.
 
 **NEVER Move to the next question until the user refuses to answer or we get the answer to the last question**
 `;
+const isCreatorClubMember = (context = {}) => {
+  const hasProduct = (context.products || []).some((p) =>
+    (p.title || "").toLowerCase().includes("creator club")
+  );
+  const hasOffer = (context.offers || []).some((o) =>
+    (o.title || "").toLowerCase().includes("creator club")
+  );
+  return hasProduct || hasOffer;
+};
+const findOrCreateCreatorUser = async ({ email, name, assessmentIds = [] }) => {
+  let user = await User.findOne({ where: { email } });
+
+  if (!user) {
+    user = await User.create({ email, name });
+  }
+
+  // If membership is missing or user is not a Creator Club member
+  if (!user.membership?.isCreatorClub) {
+    try {
+      const { diagnosticContext } = await buildKajabiDiagnosticContext({
+        email,
+        assessmentIds,
+      });
+
+      const isCreatorClub = isCreatorClubMember(diagnosticContext);
+
+      const membership = {
+        isCreatorClub,
+        lastUpdated: new Date().toISOString(),
+        products: diagnosticContext.products || [],
+        offers: diagnosticContext.offers || [],
+      };
+
+      await user.update({ membership });
+      user = await user.reload(); // Reload to get updated data
+    } catch (err) {
+      console.error(
+        "[findOrCreateCreatorUser] Failed to check membership:",
+        err
+      );
+      // Continue even if membership check fails
+    }
+  }
+
+  return user;
+};
 const buildIntakeQuestionResponse = ({ answers = [], isReturningUser }) => {
   const answeredIds = new Set(answers.map((a) => String(a.id)));
   const nextIndex = DEEP_INTAKE_QUESTIONS.findIndex(
@@ -421,15 +470,16 @@ const buildFreeformIntakePrompt = ({
     ? `\nExisting diagnostic report (reference only; stay consistent and do not regenerate the full report here):\n${priorReport}\n`
     : "";
 
-  const firstQuestion = priorReport && !wantsNewDiagnostic
-    ? `
+  const firstQuestion =
+    priorReport && !wantsNewDiagnostic
+      ? `
 If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
 
 "Hi ${displayName}, I've loaded your last diagnostic report so we can build on it.
 What has shifted since that report? What feels most different right now?"
 `
-    : priorReport && wantsNewDiagnostic
-    ? `
+      : priorReport && wantsNewDiagnostic
+      ? `
 If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
 
 "Hi ${displayName}, I understand you'd like to create a new diagnostic report. We'll start fresh with the 12-Question Deep Intake to map your current structure.
@@ -444,7 +494,7 @@ what is different from how you're living now?
 Take a breath before you answer.
 Say it in your own words."
 `
-    : `
+      : `
 If you have not asked any intake question yet (assistant questions asked = 0), you MUST ask exactly this as your next message (and nothing else):
 
 "Hi ${displayName}, I don't have your intake on record yet, so we'll start with the 12-Question Deep Intake Engine™.
@@ -1105,6 +1155,33 @@ Take a breath before you answer. Say it in your own words."
 - After all 12 questions are answered, a new diagnostic report will be automatically generated`;
   }
 
+  // Check if user wants to email/generate report
+  const wantsEmailOrReport =
+    lastUserMessage &&
+    (/(email|send).*(me|the|my).*(report|it)/i.test(lastUserMessage) ||
+      /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
+        lastUserMessage
+      ) ||
+      /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(
+        lastUserMessage
+      ));
+
+  if (wantsEmailOrReport) {
+    // User wants to generate report - return instruction to signal report generation
+    return `🚨 CRITICAL: The user has explicitly requested to email/generate the report.
+
+You MUST respond with EXACTLY this (do not modify or add anything):
+
+"Alright. I'm going to **lock this into a clean Euphoriam diagnostic report** now — grounded, precise, no overwhelm."
+
+⚠️ ABSOLUTE RULES:
+- Do NOT say you can't email
+- Do NOT ask for email address
+- Do NOT ask for consent
+- Just say you're generating the report
+- The system will automatically detect this and generate/email the report`;
+  }
+
   return `
 You are Euphoriam AI working with structure-aware precision.${discoveryTypeContext}
 
@@ -1154,7 +1231,17 @@ CRITICAL APPROACH:
    - Set clear next check-in: "When you come back next time, we'll see whether [specific thing]"
    - Example: "We stop here and let this land. For now: you're not stuck. You're paused on purpose."
 
-8. TONE:
+8. REPORT GENERATION (CRITICAL):
+   - After asking 8-12 questions and gathering enough structural information, you MUST signal that you're ready to generate a report
+   - When you have enough information to create a structural update report, end your last response with a clear signal like:
+     * "Alright. I'm going to **lock this into a clean Euphoriam diagnostic report** now — grounded, precise, no overwhelm."
+     * "We'll pause here. Let this settle."
+     * "I'm going to generate your updated diagnostic report now."
+   - After signaling, the system will automatically generate the report
+   - Count your questions: After 8-12 questions with substantive answers, you should signal report generation
+   - The report will capture all the structural shifts, corrections, and insights from the conversation
+
+9. TONE:
    - Precise, not vague
    - Respectful of the structure
    - No judgment, no pushing
@@ -1227,6 +1314,13 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
 - Read the report provided in the user prompt
 - Extract ACTUAL values, sentences, and text from the report
 - Output ONLY the actual extracted content, never placeholders
+
+🚨🚨🚨 CRITICAL EMAIL RULE:
+- If the user says "email me the report", "email the report", "send the report", or similar, DO NOT say you can't email
+- DO NOT ask for email address or consent
+- The system will automatically detect this and generate/email the report
+- Simply acknowledge their request and let the system handle it
+- Example response: "I'll generate your updated report now."
 
 🌑 CRITICAL APPROACH (Structure-Aware Discovery):
 
@@ -1323,10 +1417,34 @@ const validateChatbotRequest = (req) => {
 };
 
 /**
+ * Safely find Diagnostic without new columns that might not exist
+ * Uses explicit attributes to avoid selecting columns that don't exist in database
+ */
+const safeFindDiagnostic = async (options = {}) => {
+  // Always use explicit attributes to avoid chatId, pdfUrl, report column errors
+  // These columns might not exist in the database yet (old flow compatibility)
+  const safeOptions = {
+    ...options,
+    attributes: ['id', 'userId', 'email', 'title', 'data', 'createdAt', 'updatedAt'],
+  };
+  
+  try {
+    return await Diagnostic.findOne(safeOptions);
+  } catch (err) {
+    // If still fails, try without attributes (fallback)
+    if (err.message && err.message.includes('does not exist')) {
+      return await Diagnostic.findOne(options);
+    }
+    throw err;
+  }
+};
+
+/**
  * Loads diagnostic state and existing report for a user
+ * Excludes new columns (chatId, pdfUrl, report) that might not exist yet in database
  */
 const loadDiagnosticState = async (email) => {
-  const existingDiagnostic = await Diagnostic.findOne({ where: { email } });
+  const existingDiagnostic = await safeFindDiagnostic({ where: { email } });
   const existingState = existingDiagnostic?.data?.intakeState || {};
   const existingReport = existingDiagnostic?.data?.aiReport;
   const diagnosticMetrics = existingDiagnostic?.data?.metrics || {};
@@ -1507,6 +1625,25 @@ const checkWantsNewDiagnostic = (transcript, existingState) => {
 };
 
 /**
+ * Checks if user is requesting to email the report
+ */
+const checkWantsEmail = (transcript, lastUserMessage = null) => {
+  const message =
+    lastUserMessage ||
+    transcript.filter((m) => m?.role === "user").slice(-1)[0]?.content ||
+    "";
+  const lowerMessage = message.toLowerCase();
+
+  // More comprehensive email detection patterns
+  const wantsEmail =
+    /(email|send.*email|email.*me|email.*report|send.*report|email.*it|send.*it|email.*the.*report|send.*the.*report)/i.test(
+      lowerMessage
+    ) && !/(don't|dont|no|not|can't|cannot).*(email|send)/i.test(lowerMessage);
+
+  return wantsEmail;
+};
+
+/**
  * Determines chat mode (discovery vs diagnostic)
  */
 const determineChatMode = (
@@ -1526,10 +1663,21 @@ const prepareTranscript = (
   hasExistingReport,
   wantsNewDiagnostic
 ) => {
-  const useExistingTranscript =
+  // For diagnostic mode: use existing transcript if no new messages and no report exists
+  const useExistingDiagnosticTranscript =
     !hasExistingReport &&
     Array.isArray(existingState.transcript) &&
     existingState.transcript.length;
+
+  // For discovery mode: use existing transcript if it's a discovery conversation
+  const useExistingDiscoveryTranscript =
+    hasExistingReport &&
+    existingState.mode === "discovery" &&
+    Array.isArray(existingState.transcript) &&
+    existingState.transcript.length;
+
+  const useExistingTranscript =
+    useExistingDiagnosticTranscript || useExistingDiscoveryTranscript;
 
   const baseTranscript =
     Array.isArray(messages) && messages.length
@@ -1728,6 +1876,119 @@ Do NOT emit a new question number; stay on the same question.`;
 
   return { userPrompt, systemPrompt };
 };
+
+/**
+ * Generate AI chat response
+ */
+const generateChatResponse = async ({
+  systemPrompt,
+  userPrompt,
+  transcript,
+  priorReportSnippet,
+  isDiscoveryMode,
+  name,
+  temperature = 0.3,
+  maxTokens = 400,
+}) => {
+  // Build messages array for AI
+  let messages = [{ role: "system", content: systemPrompt }];
+
+  // Include prior report in system context for both modes
+  if (priorReportSnippet) {
+    messages.push({
+      role: "system",
+      content: isDiscoveryMode
+        ? `Previous diagnostic report for ${name} (you have full access to this - use it to answer questions about what the report revealed, their patterns, insights, etc.):\n${priorReportSnippet}`
+        : `Existing diagnostic report for ${name} (reference for continuity; do not re-emit the full report here):\n${priorReportSnippet}`,
+    });
+  }
+
+  messages.push(
+    ...transcript.map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    })),
+    {
+      role: "user",
+      content: userPrompt,
+    }
+  );
+
+  try {
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-5.2",
+      messages,
+      temperature,
+      max_completion_tokens: maxTokens,
+    });
+
+    const nextMessage = aiResponse?.choices?.[0]?.message;
+    return nextMessage;
+  } catch (err) {
+    console.error("[generateChatResponse] Error:", err);
+    return null;
+  }
+};
+
+/**
+ * Check if chat should be finalized (auto-finalize for diagnostic mode)
+ */
+const shouldAutoFinalize = ({
+  hasExistingReport,
+  wantsNewDiagnostic,
+  answeredCount,
+  targetCount,
+  pendingQuestion,
+  aiAnswered,
+}) => {
+  return (
+    (!hasExistingReport || wantsNewDiagnostic) &&
+    answeredCount >= targetCount &&
+    !pendingQuestion &&
+    aiAnswered
+  );
+};
+
+/**
+ * Save chat state to Chat table only (not in diagnostic)
+ * This function is kept for backward compatibility but should not be used
+ * Chat data should be saved directly in Chat table
+ */
+const saveChatState = async ({
+  diagnostic,
+  transcript,
+  mode,
+  discoveryType = null,
+}) => {
+  // Don't save chat data in diagnostic - it should be saved in Chat table
+  // This function is kept for compatibility but does nothing
+  // Chat data should be managed in Chat table only
+  return;
+};
+
+/**
+ * Get latest prompt from database
+ */
+const getLatestPromptFromDb = async () => {
+  try {
+    const prompt = await Prompt.findOne({
+      where: { isActive: true },
+      order: [["createdAt", "DESC"]],
+      raw: true,
+    });
+
+    if (!prompt) return null;
+
+    return {
+      ...prompt,
+      fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}`,
+    };
+  } catch (error) {
+    console.error("Error fetching latest prompt:", error);
+    return null;
+  }
+};
+
 module.exports = {
   DEEP_INTAKE_QUESTIONS,
   buildIntakeQuestionResponse,
@@ -1746,9 +2007,16 @@ module.exports = {
   extractReportDate,
   preparePreviousReports,
   checkWantsNewDiagnostic,
+  checkWantsEmail,
   determineChatMode,
   prepareTranscript,
   trackQuestionNumbers,
   extractQuestionNumber,
   SUPPORT_LOCK_PROMPT,
+  isAiLikelyAnswer,
+  generateChatResponse,
+  shouldAutoFinalize,
+  saveChatState,
+  getLatestPromptFromDb,
+  safeFindDiagnostic,
 };

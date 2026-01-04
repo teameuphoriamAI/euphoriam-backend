@@ -75,6 +75,131 @@ const drawMetricsTable = (doc, metrics) => {
   doc.moveDown(2);
 };
 
+const drawMetricsInterpretationTable = (doc) => {
+  const startX = doc.x;
+  let y = doc.y;
+  const pageWidth = doc.page.width;
+  const pageMargins = doc.page.margins;
+  const availableWidth = pageWidth - pageMargins.left - pageMargins.right;
+  
+  // Column widths for 5 columns
+  const colWidths = [
+    availableWidth * 0.18, // Metric
+    availableWidth * 0.22, // What It Represents
+    availableWidth * 0.20, // Low (0-39)
+    availableWidth * 0.20, // Mid (40-69)
+    availableWidth * 0.20, // High (70-100)
+  ];
+
+  const tableData = [
+    // Header row
+    [
+      "Metric",
+      "What It Represents",
+      "Low (0-39)",
+      "Mid (40-69)",
+      "High (70-100)",
+    ],
+    // QGC Activation
+    [
+      "QGC Activation",
+      "Access to your native creation codes",
+      "Codes dormant; expression feels blocked",
+      "Codes intermittent; talent present, inconsistent",
+      "Codes online; expression is potent and clear",
+    ],
+    // Consciousness Level
+    [
+      "Consciousness Level",
+      "Vantage point of perception and authorship",
+      "Reactive/survival-led perception",
+      "Mixed perception; oscillates under stress",
+      "Author-level perception; stable self-leadership",
+    ],
+    // Gravity
+    [
+      "Gravity",
+      "Pull of old identity and inherited roles",
+      "Low pull; change is easier to sustain",
+      "Moderate pull; requires structure to stabilize",
+      "Strong pull; loyalty patterns dominate unless addressed",
+    ],
+    // Signal Coherence
+    [
+      "Signal Coherence",
+      "Alignment between truth, emotion, choice, action",
+      "Fragmented signal; mixed outcomes",
+      "Partial alignment; results come with effort",
+      "Clean alignment; reality responds quickly",
+    ],
+    // Signal Output
+    [
+      "Signal Output",
+      "Broadcast strength to reality (IP-protected)",
+      "Low broadcast; muted impact/traction",
+      "Moderate broadcast; traction with consistency",
+      "High broadcast; strong impact, visibility, manifestation",
+    ],
+  ];
+
+  const headerRowHeight = 25;
+  const dataRowHeight = 35; // Taller rows for multi-line text
+
+  // Draw header row
+  doc.font("Helvetica-Bold").fontSize(9);
+  let x = startX;
+  tableData[0].forEach((cell, j) => {
+    doc.rect(x, y, colWidths[j], headerRowHeight).stroke();
+    doc.text(cell, x + 3, y + 5, {
+      width: colWidths[j] - 6,
+      align: "left",
+      lineGap: 1,
+    });
+    x += colWidths[j];
+  });
+  y += headerRowHeight;
+
+  // Draw data rows
+  doc.font("Helvetica").fontSize(8);
+  for (let i = 1; i < tableData.length; i++) {
+    const row = tableData[i];
+    
+    // Check if we need a new page
+    const estimatedRowHeight = dataRowHeight;
+    if (y + estimatedRowHeight > doc.page.height - doc.page.margins.bottom) {
+      doc.addPage();
+      y = doc.page.margins.top;
+    }
+    
+    x = startX;
+    
+    // Calculate row height based on longest cell content
+    let maxLines = 1;
+    row.forEach((cell, cellIndex) => {
+      // Estimate lines by character count and width
+      const cellWidth = colWidths[cellIndex] - 6;
+      const estimatedCharsPerLine = Math.floor(cellWidth / 4); // Rough estimate: 4px per char
+      const cellLines = Math.ceil(cell.length / estimatedCharsPerLine) || 1;
+      maxLines = Math.max(maxLines, cellLines);
+    });
+    const currentRowHeight = Math.max(dataRowHeight, maxLines * 10 + 10);
+
+    row.forEach((cell, j) => {
+      doc.rect(x, y, colWidths[j], currentRowHeight).stroke();
+      doc.text(cell, x + 3, y + 5, {
+        width: colWidths[j] - 6,
+        align: "left",
+        lineGap: 1,
+      });
+      x += colWidths[j];
+    });
+    y += currentRowHeight;
+  }
+
+  doc.moveDown(2);
+  doc.font("Helvetica").fontSize(11); // Reset to default font size
+};
+
 const isAllCapsHeader = (line) =>
   /^[A-Z0-9][A-Z0-9\s/&()'".:-]{6,}$/.test(line) && line === line.toUpperCase();
 
@@ -84,11 +209,58 @@ const renderStyledReport = (doc, text) => {
   doc.font("Helvetica").fontSize(11);
   doc.fillColor("#111111");
 
-  for (const rawLine of lines) {
+  let skipUntilNextSection = false;
+  let foundMetricsInterpretation = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
     const line = rawLine.trimEnd();
+
+    // Check if we've found the Metrics Interpretation Table header
+    if (
+      /METRICS\s+INTERPRETATION\s+TABLE/i.test(line) ||
+      /METRICS INTERPRETATION/i.test(line)
+    ) {
+      foundMetricsInterpretation = true;
+      skipUntilNextSection = true;
+      doc.moveDown(0.5);
+      doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE");
+      doc.moveDown(0.3);
+      drawMetricsInterpretationTable(doc);
+      doc.font("Helvetica").fontSize(11); // Reset font
+      continue;
+    }
+
+    // Skip lines until we hit the next major section (empty line + header, divider, or section marker)
+    if (skipUntilNextSection) {
+      // Check if we've hit a new section (empty line followed by header, or divider, or section marker)
+      if (
+        (!line.trim() && i + 1 < lines.length && 
+         (isAllCapsHeader(lines[i + 1]?.trim()) || 
+          lines[i + 1]?.trim().startsWith("SECTION") ||
+          lines[i + 1]?.trim().startsWith("PHASE") ||
+          lines[i + 1]?.trim() === "----------------------------------------")) ||
+        line === "----------------------------------------" ||
+        /^SECTION\s+\d+\s+—\s+/.test(line) ||
+        /^PHASE\s+\d+\s+—\s+/.test(line) ||
+        (isAllCapsHeader(line) && line !== "METRICS INTERPRETATION TABLE")
+      ) {
+        skipUntilNextSection = false;
+        // Continue processing this line
+      } else {
+        // Skip this line (it's part of the table text we're replacing)
+        continue;
+      }
+    }
 
     if (!line.trim()) {
       doc.moveDown(0.8);
+      continue;
+    }
+
+    // Markdown horizontal rules (---)
+    if (/^---+$/.test(line)) {
+      doc.moveDown(0.3);
       continue;
     }
 
@@ -103,6 +275,18 @@ const renderStyledReport = (doc, text) => {
       doc.font("Helvetica-Bold").fontSize(16).text(line.slice(2));
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.4);
+      continue;
+    }
+
+    // Markdown headers (##, ###, etc.)
+    if (/^#{1,6}\s+/.test(line)) {
+      const headerText = line.replace(/^#{1,6}\s+/, "").trim();
+      const headerLevel = (line.match(/^#+/)?.[0] || "").length;
+      const fontSize = headerLevel === 1 ? 16 : headerLevel === 2 ? 14 : headerLevel === 3 ? 13 : 12;
+      doc.moveDown(0.3);
+      doc.font("Helvetica-Bold").fontSize(fontSize).text(headerText);
+      doc.font("Helvetica").fontSize(11);
+      doc.moveDown(0.2);
       continue;
     }
 
@@ -205,13 +389,22 @@ const generateDiagnosticPdf = (diagnostic) =>
         const startsWithFullTitle = /^EUPHORIAM.*DIAGNOSTIC REPORT/i.test(
           trimmed
         );
+        // Check for markdown format (--- followed by ## header, or just ## header)
+        const hasMarkdownHeader = /^---+[\s\n]*##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(
+          trimmed
+        ) || /^##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(trimmed);
+        const startsWithMarkdownHeader = /^#+\s*EUPHORIAM/i.test(trimmed);
+        const startsWithMarkdownDivider = /^---+/.test(trimmed);
 
         if (
           !startsWithDivider &&
           !startsWithIntro &&
           !containsIntroEarly &&
           !startsWithTitle &&
-          !startsWithFullTitle
+          !startsWithFullTitle &&
+          !hasMarkdownHeader &&
+          !startsWithMarkdownHeader &&
+          !startsWithMarkdownDivider
         ) {
           const head = aiReport.slice(0, 300);
           const err = new Error(
@@ -337,6 +530,12 @@ const generateDiagnosticPdf = (diagnostic) =>
         };
 
         drawMetricsTable(doc, gauge);
+        
+        // Add Metrics Interpretation Table
+        doc.moveDown(0.5);
+        doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE");
+        doc.moveDown(0.3);
+        drawMetricsInterpretationTable(doc);
 
         const sections = Array.isArray(aiReport.sections)
           ? aiReport.sections

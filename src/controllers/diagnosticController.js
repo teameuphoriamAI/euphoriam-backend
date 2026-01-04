@@ -3,6 +3,7 @@ const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { Prompt } = require("../models/promptModel");
 const { User } = require("../models/userModel");
+const { Chat } = require("../models/chatModel");
 const validate = require("../helpers/validate");
 const openai = require("../config/openai");
 const {
@@ -18,6 +19,7 @@ const {
   extractReportDate,
   preparePreviousReports,
   checkWantsNewDiagnostic,
+  checkWantsEmail,
   determineChatMode,
   prepareTranscript,
   trackQuestionNumbers,
@@ -191,13 +193,15 @@ const persistDiscoveryRecord = async ({
       userId: safeUserId,
       title: title || `Diagnostic Follow-up – ${email || "client"}`,
       discoveryType: discoveryType || "integrated", // Default to integrated if not specified
+      email: email || null,
+      diagnosticId: diagnosticId || null,
+      transcript: transcript || null,
+      previousReportSnippet: previousReport
+        ? truncateForContext(previousReport, 1500)
+        : null,
+      newReportSnippet: newReport ? truncateForContext(newReport, 1500) : null,
+      pdfUrl: pdfUrl || null,
       data: {
-        email,
-        diagnosticId,
-        transcript,
-        previousReportSnippet: truncateForContext(previousReport, 1500),
-        newReportSnippet: truncateForContext(newReport, 1500),
-        pdfUrl: pdfUrl || null,
         createdAt: new Date().toISOString(),
         type: "diagnostic_followup",
       },
@@ -238,6 +242,1665 @@ const getLatestPromptFromDb = async () => {
   }
 };
 
+/**
+ * ============================================
+ * DISCOVERY MODE HANDLER
+ * ============================================
+ * Handles all discovery mode logic for users with existing reports
+ * This includes:
+ * - Discovery chat conversations
+ * - Generating discovery follow-up reports
+ * - Handling discovery finalize requests
+ */
+const handleDiscoveryMode = async ({
+  req,
+  res,
+  email,
+  name,
+  messages,
+  transcript,
+  updatedTranscript,
+  existingDiagnostic,
+  existingState,
+  priorReportSnippet,
+  diagnosticMetrics,
+  latestDiscoveryMetrics,
+  reportDate,
+  appUser,
+  lastUser,
+  lastAssistant,
+  nextMessage,
+  introText,
+  discoveryType,
+}) => {
+  // Discovery mode: Check if user wants to end/generate report
+  // If nextMessage is null, it means we're skipping bot response to generate report directly
+  let wantsToEndOrGenerate = false;
+  let conversationComplete = false;
+
+  if (nextMessage === null && lastUser) {
+    // Skip bot response - generate report immediately (already detected earlier)
+    wantsToEndOrGenerate = true;
+    conversationComplete = true;
+  } else if (lastUser) {
+    const {
+      detectUserWantsToEndOrGenerateReport,
+      detectConversationComplete,
+      detectBotSignaledEnd,
+    } = require("../utils/validation");
+
+    wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
+      userMessage: lastUser.content,
+      transcript: updatedTranscript,
+    });
+
+    let botPreviouslySignaledEnd = false;
+    if (lastAssistant) {
+      botPreviouslySignaledEnd = await detectBotSignaledEnd({
+        lastAssistantMessage: lastAssistant,
+        transcript: transcript,
+      });
+    }
+
+    conversationComplete =
+      botPreviouslySignaledEnd ||
+      (await detectConversationComplete({
+        transcript: updatedTranscript,
+        lastUserMessage: lastUser,
+        lastAssistantMessage: lastAssistant,
+      }));
+  }
+
+  // If user wants to end/generate report OR conversation is complete, generate discovery report
+  if (wantsToEndOrGenerate || conversationComplete) {
+    const userName = name || email?.split("@")[0] || "User";
+
+    // Get previous discovery if exists
+    const previousDiscoveries = await Discovery.findAll({
+      where: {
+        userId: existingDiagnostic?.userId || appUser?.id || null,
+      },
+      order: [["createdAt", "DESC"]],
+      limit: 1,
+    });
+    const previousDiscovery = previousDiscoveries[0];
+
+    // Generate discovery report
+    const reportDate = new Date().toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    const reportVersion = previousDiscovery ? "v3.2" : "v3.1";
+
+    const discoveryPrompt = `
+You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
+
+Context: The user already has a completed diagnostic report and may have previous discovery sessions.
+
+Previous diagnostic (reference):
+${priorReportSnippet || "None"}
+
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
+${truncateForContext(
+  previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    previousDiscovery.data?.newReport ||
+    "",
+  4000
+)}`
+    : ""
+}
+
+New conversation transcript (latest messages last):
+${JSON.stringify(updatedTranscript, null, 2)}
+
+Client Name: ${userName}
+Client ID: N/A
+Report Type: Structural Update Report
+Date: ${reportDate}
+
+CRITICAL: You MUST generate the report in the EXACT format shown below. This is a structural update report based on the conversation interaction.
+
+Generate a FULL DISCOVERY REPORT following this EXACT format:
+
+---
+
+## EUPHORIAM™ STRUCTURAL UPDATE REPORT
+
+**Client:** ${userName}
+**Report Type:** Identity Authority Collapse + Gravity Shift (or appropriate type based on conversation)
+**Version:** ${reportVersion}
+**Date:** ${reportDate}
+**Tone:** Warm / Grounded
+
+---
+
+### 1. STRUCTURE TYPE (Updated)
+
+**Primary Structure:**
+[Analyze their primary structure based on metrics and conversation - be specific about what changed]
+
+**Key refinement:**
+[Explain what has shifted or been refined in their structure based on the conversation]
+
+---
+
+### 2. AVOIDANCE BEHAVIOUR (Resolved Layer)
+
+**Original Pattern:**
+[What was the original avoidance pattern from previous report]
+
+**Updated Reading:**
+[How the avoidance has changed or been resolved based on the conversation - be specific about what shifted]
+
+---
+
+### 3. VORTEX STATUS
+
+**Previous Vortex:**
+[What was the previous vortex state]
+
+**Current State:**
+[Current vortex status - use ⚠️ if destabilized, ✅ if stable, etc.]
+
+Why:
+[Explain what changed and why based on the conversation]
+
+---
+
+### 4. GRAVITY (3D CODE)
+
+**Previous Gravity:** ~${diagnosticMetrics.gravity || "N/A"}%
+**Current Reading:** [Current gravity status - use ↓ if dropping, ↑ if increasing, or stable]
+
+Critical insight:
+[Explain what the gravity shift means based on the conversation]
+
+---
+
+### 5. CONSCIOUSNESS LEVEL (CL)
+
+**Previous CL:** ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+**Current CL:** [Current CL level]
+
+Marker of shift:
+[Explain what changed and what it indicates]
+
+---
+
+### 6. QUANTUM GENIUS CODES (QGC)
+
+**Previous QGC:** ~${diagnosticMetrics.qgcActivation || "N/A"}%
+**Current Status:** [Current QGC status]
+
+[Explain what changed and what it means]
+
+---
+
+### 7. SIGNAL COHERENCE
+
+**Signal Coherence:** [Current status - use exact value: ${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%]
+
+Important note:
+[Explain what the coherence level indicates]
+
+---
+
+### 8. SIGNAL OUTPUT
+
+**Previous Output:** ~${diagnosticMetrics.signalOutput || "N/A"}%
+**Current Status:** [Current status]
+
+This is crucial:
+[Explain what changed and why]
+
+---
+
+### 9. ANGLE OF GROWTH (Updated)
+
+**Current Angle:**
+[Their updated growth axis based on the conversation]
+
+Not:
+[What it's NOT about]
+
+---
+
+### 10. FIRST CORRECTION (Updated)
+
+One sentence. Exact.
+
+> **[The exact correction based on the conversation]**
+
+That's it.
+
+---
+
+## METRICS GAUGE (Current Snapshot)
+
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%
+* **Consciousness Level:** ${renderGauge(
+      (diagnosticMetrics.consciousnessLevel || 0) * 20
+    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+* **Gravity:** ${renderGauge(
+      diagnosticMetrics.gravity || 0
+    )}  [Current status with arrow if changed]
+* **Signal Coherence:** ${renderGauge(
+      diagnosticMetrics.signalCoherence || 0
+    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+* **Signal Output:** ${renderGauge(
+      diagnosticMetrics.signalOutput || 0
+    )}  [Current status]
+
+---
+
+## UNLIMITED CREATOR / CREATOR CLUB RECOMMENDATIONS
+
+Based on current metrics and collapse point:
+
+### Primary Focus (now)
+
+* **[Specific recommendation 1]**
+* **[Specific recommendation 2]**
+* **[Specific recommendation 3]**
+
+Why:
+[Explain why these are recommended]
+
+### Deferred (not yet)
+
+* [What should be deferred]
+* [What should be deferred]
+
+These come **after** [specific condition].
+
+---
+
+## EVOLUTION NOTE (Important)
+
+What just happened is [rare/common] and [clean/complex]:
+
+[Explain what structural shift occurred - be specific about what changed]
+
+---
+
+## FINAL SUMMARY
+
+${userName}, [Personalized summary based on the conversation - what shifted, what it means, what's next]
+
+---
+
+### 📄 PDF STATUS
+
+Your **Euphoriam Diagnostic PDF (${reportVersion})** has been generated and logged internally under your profile.
+
+**Filename:**
+\`${userName}_Euphoriam_Diagnostic_${new Date()
+      .toISOString()
+      .split("T")[0]
+      .replace(/-/g, "")}_${reportVersion}.pdf\`
+
+[Closing message based on the conversation]
+
+We'll stop here.
+
+---
+
+Generate the full report in this exact format. Use actual insights from the conversation transcript, not placeholders.`;
+
+    let discoveryReport = "";
+    try {
+      // Add timeout wrapper for OpenAI call
+      const timeoutPromise = new Promise(
+        (_, reject) =>
+          setTimeout(() => reject(new Error("OpenAI request timeout")), 120000) // 2 minute timeout
+      );
+
+      const aiDiscoveryPromise = openai.chat.completions.create({
+        model: "gpt-5.2",
+        messages: [{ role: "user", content: discoveryPrompt }],
+        temperature: 0.15,
+        max_completion_tokens: 4500,
+      });
+
+      const aiDiscovery = await Promise.race([
+        aiDiscoveryPromise,
+        timeoutPromise,
+      ]);
+      discoveryReport =
+        aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
+    } catch (err) {
+      console.error("[discovery] failed to generate follow-up report", err);
+      // Return error response if report generation fails
+      return errorResponse(
+        res,
+        "Failed to generate discovery report. Please try again.",
+        500
+      );
+    }
+
+    if (discoveryReport) {
+      const discoveryTypeValue =
+        discoveryType || req.body.discoveryType || "integrated";
+
+      const userForDiscovery = existingDiagnostic?.userId
+        ? await User.findByPk(existingDiagnostic.userId)
+        : await User.findOne({ where: { email } });
+
+      // Save discovery record immediately (before PDF/email)
+      await persistDiscoveryRecord({
+        userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+        email,
+        title: `Discovery Follow-up – ${userName}`,
+        transcript: updatedTranscript,
+        previousReport: priorReportSnippet,
+        newReport: discoveryReport,
+        diagnosticId: existingDiagnostic?.id || null,
+        pdfUrl: null, // Will be updated after PDF is generated
+        discoveryType: discoveryTypeValue,
+      });
+
+      // Clear intakeState transcript since report is completed
+      if (existingDiagnostic) {
+        await existingDiagnostic.update({
+          data: {
+            ...(existingDiagnostic.data || {}),
+            intakeState: {
+              ...(existingDiagnostic.data?.intakeState || {}),
+              transcript: [], // Clear transcript after report generation
+              completedAt: new Date().toISOString(),
+              mode: null, // Clear mode
+            },
+          },
+        });
+      }
+
+      const userWantsEmail = checkWantsEmail(
+        updatedTranscript,
+        lastUser?.content
+      );
+      let shouldEmail = userWantsEmail;
+
+      // Send response immediately - don't wait for PDF/email
+      const response = successResponse(res, "Discovery chat saved", {
+        discovery: true,
+        message:
+          "Discovery report generated. PDF are being processed in the background.",
+        discoveryReport: discoveryReport || null,
+        pdfPath: null, // Will be generated in background
+        pdfUrl: null, // Will be updated after PDF is generated
+        autoGenerated: true,
+        status: "completed",
+        statusMessage:
+          "Report generated. PDF and email processing in background.",
+        userMessage: `Your discovery report has been generated. ${
+          shouldEmail
+            ? "Email will be sent shortly."
+            : "You can access it in your account."
+        }`,
+        emailed: false, // Will be updated in background
+      });
+
+      // Process PDF and email in background (don't await - fire and forget)
+      (async () => {
+        try {
+          const discoveryForPdf = {
+            id: existingDiagnostic?.id || Date.now(),
+            title: `Discovery Follow-up – ${userName}`,
+            userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+            data: {
+              profile: {
+                name: userName,
+                email: email,
+              },
+              aiReport: discoveryReport,
+              metrics: diagnosticMetrics,
+            },
+          };
+
+          let pdfPath = null;
+          let pdfUrl = null;
+
+          try {
+            // Generate PDF in background
+            pdfPath = await generateDiagnosticPdf(discoveryForPdf);
+
+            if (pdfPath) {
+              // Upload PDF in background
+              const buffer = await fs.promises.readFile(pdfPath);
+              const upload = await uploadBufferToSupabase({
+                buffer,
+                objectPath: `discoveries/discovery-${
+                  existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
+                contentType: "application/pdf",
+              });
+
+              pdfUrl = upload.url || null;
+
+              // Update discovery record with PDF URL
+              const latestDiscovery = await Discovery.findOne({
+                where: {
+                  userId:
+                    userForDiscovery?.id || existingDiagnostic?.userId || null,
+                  email: email,
+                },
+                order: [["createdAt", "DESC"]],
+              });
+
+              if (latestDiscovery) {
+                await latestDiscovery.update({
+                  pdfUrl: pdfUrl,
+                });
+              }
+            }
+          } catch (err) {
+            console.error(
+              "[discovery] PDF generation/upload failed (background):",
+              err
+            );
+          }
+
+          // Send email in background if requested
+          if (email && shouldEmail && pdfPath) {
+            try {
+              await sendEmail(
+                email,
+                "Your Discovery Report – Euphoriam AI",
+                discoveryReportEmail(userName),
+                pdfPath
+              );
+              console.log("[discovery] Email sent successfully (background)");
+            } catch (err) {
+              console.error(
+                "[discovery] Email sending failed (background):",
+                err
+              );
+            }
+          }
+        } catch (err) {
+          console.error("[discovery] Background processing error:", err);
+        }
+      })();
+
+      return response;
+    }
+  }
+
+  // Save incomplete discovery conversation to intakeState so user can resume
+  if (updatedTranscript && updatedTranscript.length > 0) {
+    const discoveryIntakeState = {
+      transcript: updatedTranscript,
+      discoveryType: discoveryType || "integrated",
+      updatedAt: new Date().toISOString(),
+      mode: "discovery",
+    };
+
+    if (existingDiagnostic) {
+      await existingDiagnostic.update({
+        data: {
+          ...(existingDiagnostic.data || {}),
+          intakeState: {
+            ...(existingDiagnostic.data?.intakeState || {}),
+            ...discoveryIntakeState,
+          },
+        },
+      });
+    } else if (appUser) {
+      // Create a diagnostic record to store discovery state if none exists
+      await Diagnostic.create({
+        userId: appUser.id || null,
+        email,
+        title: `Discovery Chat (Draft) – ${
+          name || email?.split("@")[0] || "User"
+        }`,
+        data: {
+          profile: { name, email },
+          intakeState: discoveryIntakeState,
+        },
+      });
+    }
+  }
+
+  // Get updated state after saving
+  const updatedState = existingDiagnostic
+    ? (await Diagnostic.findByPk(existingDiagnostic.id))?.data?.intakeState ||
+      existingState
+    : existingState;
+
+  // Return regular discovery chat response
+  return successResponse(res, "Next chatbot message", {
+    nextMessage,
+    introPageText: introText,
+    transcript: updatedTranscript,
+    intakeState: updatedState,
+    retrieved: [],
+    resumeNotice: null,
+    answeredCount: 0,
+    pendingQuestion: false,
+    aiAnswered: false,
+    status: "chatting",
+    statusMessage: "Chatting in progress",
+    canResume: true, // Always allow resuming
+  });
+};
+
+/**
+ * ============================================
+ * DISCOVERY FINALIZE HANDLER
+ * ============================================
+ * Handles discovery finalize requests (finalize=true with existing report)
+ */
+const handleDiscoveryFinalize = async ({
+  req,
+  res,
+  email,
+  name,
+  transcriptForFinal,
+  existingDiagnostic,
+  priorReportSnippet,
+  diagnosticMetrics,
+  appUser,
+  introText,
+  backgroundMode = false, // If true, skip email and don't send response
+}) => {
+  // Get previous discovery if exists
+  const previousDiscoveries = await Discovery.findAll({
+    where: {
+      userId: existingDiagnostic?.userId || appUser?.id || null,
+    },
+    order: [["createdAt", "DESC"]],
+    limit: 1,
+  });
+  const previousDiscovery = previousDiscoveries[0];
+
+  // Generate a FULL discovery report using prior diagnostic + new transcript
+  const reportDate = new Date().toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const reportVersion = previousDiscovery ? "v3.2" : "v3.1";
+  const userName = name || email?.split("@")[0] || "User";
+
+  const discoveryPrompt = `
+You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
+
+Context: The user already has a completed diagnostic report and may have previous discovery sessions.
+
+Previous diagnostic (reference):
+${priorReportSnippet || "None"}
+
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
+${truncateForContext(
+  previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    previousDiscovery.data?.newReport ||
+    "",
+  4000
+)}`
+    : ""
+}
+
+New conversation transcript (latest messages last):
+${JSON.stringify(transcriptForFinal, null, 2)}
+
+Client Name: ${userName}
+Client ID: N/A
+Report Type: Structural Update Report
+Date: ${reportDate}
+
+CRITICAL: You MUST generate the report in the EXACT format shown below. This is a structural update report based on the conversation interaction.
+
+Generate a FULL DISCOVERY REPORT following this EXACT format:
+
+---
+
+## EUPHORIAM™ STRUCTURAL UPDATE REPORT
+
+**Client:** ${userName}
+**Report Type:** Identity Authority Collapse + Gravity Shift (or appropriate type based on conversation)
+**Version:** ${reportVersion}
+**Date:** ${reportDate}
+**Tone:** Warm / Grounded
+
+---
+
+### 1. STRUCTURE TYPE (Updated)
+
+**Primary Structure:**
+[Analyze their primary structure based on metrics and conversation - be specific about what changed]
+
+**Key refinement:**
+[Explain what has shifted or been refined in their structure based on the conversation]
+
+---
+
+### 2. AVOIDANCE BEHAVIOUR (Resolved Layer)
+
+**Original Pattern:**
+[What was the original avoidance pattern from previous report]
+
+**Updated Reading:**
+[How the avoidance has changed or been resolved based on the conversation - be specific about what shifted]
+
+---
+
+### 3. VORTEX STATUS
+
+**Previous Vortex:**
+[What was the previous vortex state]
+
+**Current State:**
+[Current vortex status - use ⚠️ if destabilized, ✅ if stable, etc.]
+
+Why:
+[Explain what changed and why based on the conversation]
+
+---
+
+### 4. GRAVITY (3D CODE)
+
+**Previous Gravity:** ~${diagnosticMetrics.gravity || "N/A"}%
+**Current Reading:** [Current gravity status - use ↓ if dropping, ↑ if increasing, or stable]
+
+Critical insight:
+[Explain what the gravity shift means based on the conversation]
+
+---
+
+### 5. CONSCIOUSNESS LEVEL (CL)
+
+**Previous CL:** ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+**Current CL:** [Current CL level]
+
+Marker of shift:
+[Explain what changed and what it indicates]
+
+---
+
+### 6. QUANTUM GENIUS CODES (QGC)
+
+**Previous QGC:** ~${diagnosticMetrics.qgcActivation || "N/A"}%
+**Current Status:** [Current QGC status]
+
+[Explain what changed and what it means]
+
+---
+
+### 7. SIGNAL COHERENCE
+
+**Signal Coherence:** [Current status - use exact value: ${
+    diagnosticMetrics.signalCoherence || "N/A"
+  }%]
+
+Important note:
+[Explain what the coherence level indicates]
+
+---
+
+### 8. SIGNAL OUTPUT
+
+**Previous Output:** ~${diagnosticMetrics.signalOutput || "N/A"}%
+**Current Status:** [Current status]
+
+This is crucial:
+[Explain what changed and why]
+
+---
+
+### 9. ANGLE OF GROWTH (Updated)
+
+**Current Angle:**
+[Their updated growth axis based on the conversation]
+
+Not:
+[What it's NOT about]
+
+---
+
+### 10. FIRST CORRECTION (Updated)
+
+One sentence. Exact.
+
+> **[The exact correction based on the conversation]**
+
+That's it.
+
+---
+
+## METRICS GAUGE (Current Snapshot)
+
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+    diagnosticMetrics.qgcActivation || "N/A"
+  }%
+* **Consciousness Level:** ${renderGauge(
+    (diagnosticMetrics.consciousnessLevel || 0) * 20
+  )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+* **Gravity:** ${renderGauge(
+    diagnosticMetrics.gravity || 0
+  )}  [Current status with arrow if changed]
+* **Signal Coherence:** ${renderGauge(
+    diagnosticMetrics.signalCoherence || 0
+  )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+* **Signal Output:** ${renderGauge(
+    diagnosticMetrics.signalOutput || 0
+  )}  [Current status]
+
+---
+
+## UNLIMITED CREATOR / CREATOR CLUB RECOMMENDATIONS
+
+Based on current metrics and collapse point:
+
+### Primary Focus (now)
+
+* **[Specific recommendation 1]**
+* **[Specific recommendation 2]**
+* **[Specific recommendation 3]**
+
+Why:
+[Explain why these are recommended]
+
+### Deferred (not yet)
+
+* [What should be deferred]
+* [What should be deferred]
+
+These come **after** [specific condition].
+
+---
+
+## EVOLUTION NOTE (Important)
+
+What just happened is [rare/common] and [clean/complex]:
+
+[Explain what structural shift occurred - be specific about what changed]
+
+---
+
+## FINAL SUMMARY
+
+${userName}, [Personalized summary based on the conversation - what shifted, what it means, what's next]
+
+---
+
+### 📄 PDF STATUS
+
+Your **Euphoriam Diagnostic PDF (${reportVersion})** has been generated and logged internally under your profile.
+
+**Filename:**
+\`${userName}_Euphoriam_Diagnostic_${new Date()
+    .toISOString()
+    .split("T")[0]
+    .replace(/-/g, "")}_${reportVersion}.pdf\`
+
+[Closing message based on the conversation]
+
+We'll stop here.
+
+---
+
+Generate the full report in this exact format. Use actual insights from the conversation transcript, not placeholders.`;
+
+  const discoveryType = req.body.discoveryType || "integrated";
+
+  const userForDiscovery = existingDiagnostic?.userId
+    ? await User.findByPk(existingDiagnostic.userId)
+    : await User.findOne({ where: { email } });
+
+  // Save discovery record immediately (report will be generated in background)
+  await persistDiscoveryRecord({
+    userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+    email,
+    title: `Discovery Follow-up – ${name || email?.split("@")[0] || "User"}`,
+    transcript: transcriptForFinal,
+    previousReport: priorReportSnippet,
+    newReport: null, // Will be updated after report is generated
+    diagnosticId: existingDiagnostic?.id || null,
+    pdfUrl: null, // Will be updated after PDF is generated
+    discoveryType,
+  });
+
+  // Clear intakeState transcript since report is completed
+  if (existingDiagnostic) {
+    await existingDiagnostic.update({
+      data: {
+        ...(existingDiagnostic.data || {}),
+        intakeState: {
+          ...(existingDiagnostic.data?.intakeState || {}),
+          transcript: [], // Clear transcript after report generation
+          completedAt: new Date().toISOString(),
+          mode: null, // Clear mode
+        },
+      },
+    });
+  }
+
+  // Check if user explicitly requested email - only email if they say "email report" or similar
+  const lastUserMessage =
+    req.body.messages?.filter((m) => m?.role === "user")?.slice(-1)[0]
+      ?.content || "";
+  const transcriptMessages =
+    transcriptForFinal?.filter((m) => m?.role === "user") || [];
+  const lastTranscriptMessage =
+    transcriptMessages[transcriptMessages.length - 1]?.content || "";
+  const userMessageToCheck = lastUserMessage || lastTranscriptMessage || "";
+  const lowerMessage = userMessageToCheck.toLowerCase();
+
+  // Only email if user explicitly says "email report" or "email me the report" etc.
+  const explicitlyWantsEmail =
+    /(email|send).*(me|the|my).*(report|it)/i.test(lowerMessage) ||
+    /(email|send).*(report|it)/i.test(lowerMessage);
+
+  // Don't email if they just said "end chat" or similar without mentioning email/report
+  const justEndingChat =
+    /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
+    !/(email|send|report)/i.test(lowerMessage);
+
+  const shouldEmail = backgroundMode
+    ? false
+    : explicitlyWantsEmail && !justEndingChat; // Don't email in background mode
+
+  // Generate report, PDF and email in background (don't await - fire and forget)
+  (async () => {
+    let discoveryReport = "";
+    try {
+      const aiDiscovery = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        messages: [{ role: "user", content: discoveryPrompt }],
+        temperature: 0.15,
+        max_completion_tokens: 4500,
+        timeout: 120000, // 2 minute timeout
+      });
+      discoveryReport =
+        aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
+
+      if (discoveryReport) {
+        // Update discovery record with generated report
+        const latestDiscovery = await Discovery.findOne({
+          where: {
+            userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+            email: email,
+          },
+          order: [["createdAt", "DESC"]],
+        });
+
+        if (latestDiscovery) {
+          await latestDiscovery.update({
+            newReportSnippet: truncateForContext(discoveryReport, 1500),
+          });
+        }
+      }
+    } catch (err) {
+      console.error(
+        "[discovery] failed to generate follow-up report (background):",
+        err
+      );
+      return; // Exit early if report generation fails
+    }
+
+    if (discoveryReport) {
+      try {
+        const discoveryForPdf = {
+          id: existingDiagnostic?.id || Date.now(),
+          title: `Discovery Follow-up – ${
+            name || email?.split("@")[0] || "User"
+          }`,
+          userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
+          data: {
+            profile: {
+              name: name || email?.split("@")[0] || "User",
+              email: email,
+            },
+            aiReport: discoveryReport,
+            metrics: diagnosticMetrics,
+          },
+        };
+
+        let pdfPath = null;
+        let pdfUrl = null;
+
+        try {
+          pdfPath = await generateDiagnosticPdf(discoveryForPdf);
+
+          if (pdfPath) {
+            const buffer = await fs.promises.readFile(pdfPath);
+            const upload = await uploadBufferToSupabase({
+              buffer,
+              objectPath: `discoveries/discovery-${
+                existingDiagnostic?.id || Date.now()
+              }-${Date.now()}.pdf`,
+              contentType: "application/pdf",
+            });
+            pdfUrl = upload.url || null;
+
+            // Update discovery record with PDF URL
+            const latestDiscovery = await Discovery.findOne({
+              where: {
+                userId:
+                  userForDiscovery?.id || existingDiagnostic?.userId || null,
+                email: email,
+              },
+              order: [["createdAt", "DESC"]],
+            });
+
+            if (latestDiscovery) {
+              await latestDiscovery.update({
+                pdfUrl: pdfUrl,
+              });
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[discovery finalize] PDF generation/upload failed (background):",
+            err
+          );
+        }
+
+        // Send email in background ONLY if user explicitly requested it
+        if (email && shouldEmail && pdfPath) {
+          try {
+            await sendEmail(
+              email,
+              "Your Discovery Report – Euphoriam AI",
+              discoveryReportEmail(name || email?.split("@")[0] || "User"),
+              pdfPath
+            );
+            console.log(
+              "[discovery finalize] Email sent successfully (background)"
+            );
+          } catch (err) {
+            console.error(
+              "[discovery finalize] Email sending failed (background):",
+              err
+            );
+          }
+        } else if (email && !shouldEmail) {
+          console.log(
+            "[discovery finalize] Email not sent - user did not explicitly request it"
+          );
+        } else if (backgroundMode) {
+          console.log(
+            `[discovery finalize] Report generated and saved in background for user ${email} (no email sent)`
+          );
+        }
+      } catch (err) {
+        console.error("[discovery finalize] Background processing error:", err);
+      }
+    }
+  })();
+
+  // Background mode - already processing above, just return
+  if (backgroundMode) {
+    return;
+  }
+
+  // Send response if not in background mode
+  return successResponse(res, "Discovery chat saved", {
+    discovery: true,
+    message: shouldEmail
+      ? "Chat ended. Your discovery report is being generated and will be emailed to you shortly."
+      : "Chat ended. Your discovery report is being generated and will be available in your account shortly.",
+    discoveryReport: null, // Will be generated in background
+    pdfPath: null, // Will be generated in background
+    pdfUrl: null, // Will be updated after PDF is generated
+    status: "processing",
+    statusMessage:
+      "Report generation in progress. This may take a few minutes.",
+    userMessage: shouldEmail
+      ? "Chat ended. Your discovery report is being generated and will be emailed to you shortly. This may take a few minutes."
+      : "Chat ended. Your discovery report is being generated and will be available in your account shortly. This may take a few minutes.",
+    emailed: false, // Will be updated in background
+  });
+};
+
+/**
+ * ============================================
+ * DIAGNOSTIC FINALIZE HANDLER
+ * ============================================
+ * Handles diagnostic finalize requests (finalize=true without existing report)
+ */
+const handleDiagnosticFinalize = async ({
+  req,
+  res,
+  email,
+  name,
+  transcriptForFinal,
+  existingDiagnostic,
+  priorReportSnippet,
+  previousReports,
+  appUser,
+  existingState,
+  introText,
+  retrieved,
+  backgroundMode = false, // If true, skip email and don't send response
+}) => {
+  if (!email || typeof email !== "string" || !email.includes("@")) {
+    console.error("[diagnostic] Invalid email:", email);
+    return errorResponse(res, "Invalid email address", 400);
+  }
+
+  const userName = name || email?.split("@")[0] || "User";
+
+  // Get or create diagnostic record (without report yet)
+  let diagnostic = existingDiagnostic;
+  if (!diagnostic) {
+    // Use safe find to avoid chatId column errors
+    try {
+      diagnostic = await Diagnostic.findOne({
+        where: { email },
+        attributes: [
+          "id",
+          "userId",
+          "email",
+          "title",
+          "data",
+          "createdAt",
+          "updatedAt",
+        ],
+      });
+    } catch (err) {
+      // If still fails, try without attributes (will use model defaults)
+      diagnostic = await Diagnostic.findOne({ where: { email } });
+    }
+  }
+
+  // Save discovery record immediately (report will be generated in background)
+  const userForFinal = diagnostic?.userId
+    ? await User.findByPk(diagnostic.userId)
+    : await User.findOne({ where: { email } });
+
+  await persistDiscoveryRecord({
+    userId: userForFinal?.id || diagnostic?.userId || null,
+    email,
+    title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
+    transcript: transcriptForFinal,
+    previousReport: null,
+    newReport: null, // Will be updated after report is generated
+    diagnosticId: diagnostic?.id || null,
+    pdfUrl: null, // Will be updated after PDF is generated
+  });
+
+  // Check if user explicitly requested email - only email if they say "email report" or similar
+  const lastUserMessage =
+    req.body.messages?.filter((m) => m?.role === "user")?.slice(-1)[0]
+      ?.content || "";
+  const transcriptMessages =
+    transcriptForFinal?.filter((m) => m?.role === "user") || [];
+  const lastTranscriptMessage =
+    transcriptMessages[transcriptMessages.length - 1]?.content || "";
+  const userMessageToCheck = lastUserMessage || lastTranscriptMessage || "";
+  const lowerMessage = userMessageToCheck.toLowerCase();
+
+  // Only email if user explicitly says "email report" or "email me the report" etc.
+  const explicitlyWantsEmail =
+    /(email|send).*(me|the|my).*(report|it)/i.test(lowerMessage) ||
+    /(email|send).*(report|it)/i.test(lowerMessage);
+
+  // Don't email if they just said "end chat" or similar without mentioning email/report
+  const justEndingChat =
+    /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
+    !/(email|send|report)/i.test(lowerMessage);
+
+  const shouldEmail = backgroundMode
+    ? false
+    : explicitlyWantsEmail && !justEndingChat; // Don't email in background mode
+
+  // Generate report, PDF and email in background (don't await - fire and forget)
+  (async () => {
+    const prompt = await getLatestPromptFromDb();
+    const promptContent =
+      typeof prompt === "string"
+        ? prompt
+        : prompt?.fullPrompt || prompt?.content;
+
+    let reportText = "";
+    try {
+      const aiResponse = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        messages: [
+          { role: "system", content: promptContent },
+          {
+            role: "user",
+            content: buildFinalReportPrompt({
+              customerContext: null,
+              intakeAnswers: transcriptForFinal,
+              introPageText: introText,
+              retrieved,
+              previousReport: priorReportSnippet,
+            }),
+          },
+        ],
+        temperature: 0.15,
+        max_completion_tokens: 4500,
+        timeout: 120000, // 2 minute timeout
+      });
+
+      reportText = (aiResponse?.choices?.[0]?.message?.content || "").trim();
+
+      if (!reportText) {
+        console.error(
+          "[diagnostic] AI returned empty diagnostic report (background)"
+        );
+        return; // Exit early if report generation fails
+      }
+
+      // Update diagnostic with generated report
+      const finalPayload = {
+        userId: appUser.id || null,
+        email: email.trim(),
+        title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
+        report: reportText, // Save report in report column
+        data: {
+          diagnosticVersion: 3,
+          generatedAt: new Date(),
+          profile: {
+            name: userName,
+            email: email.trim(),
+          },
+          metrics: {},
+          previousReports,
+          intakeTranscript: transcriptForFinal,
+          aiReport: reportText,
+          intakeState: {
+            ...(existingState || {}),
+            transcript: transcriptForFinal,
+            finalizedAt: new Date().toISOString(),
+          },
+        },
+      };
+
+      if (diagnostic) {
+        await diagnostic.update(finalPayload);
+      } else {
+        try {
+          diagnostic = await Diagnostic.create(finalPayload);
+        } catch (createError) {
+          if (
+            createError.name === "SequelizeUniqueConstraintError" ||
+            createError.name === "ValidationError"
+          ) {
+            diagnostic = await Diagnostic.findOne({ where: { email } });
+            if (diagnostic) {
+              await diagnostic.update(finalPayload);
+            }
+          }
+        }
+      }
+
+      // Update discovery record with generated report
+      const latestDiscovery = await Discovery.findOne({
+        where: {
+          userId: userForFinal?.id || diagnostic?.userId || null,
+          email: email,
+        },
+        order: [["createdAt", "DESC"]],
+      });
+
+      if (latestDiscovery) {
+        await latestDiscovery.update({
+          newReportSnippet: truncateForContext(reportText, 1500),
+        });
+      }
+    } catch (err) {
+      console.error(
+        "[diagnostic] Failed to generate report (background):",
+        err
+      );
+      return; // Exit early if report generation fails
+    }
+
+    if (reportText) {
+      try {
+        const pdfPath = await generateDiagnosticPdf(diagnostic);
+        let pdf = { path: pdfPath, url: null };
+
+        try {
+          const buffer = await fs.promises.readFile(pdfPath);
+          const upload = await uploadBufferToSupabase({
+            buffer,
+            objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
+            contentType: "application/pdf",
+          });
+          pdf = upload;
+          console.log(
+            "[diagnostic] PDF uploaded to Supabase (background)",
+            upload
+          );
+
+          // Update diagnostic with PDF URL
+          await diagnostic.update({
+            pdfUrl: pdf.url || null,
+            data: {
+              ...(diagnostic.data || {}),
+              pdf,
+            },
+          });
+
+          // Update discovery record with PDF URL
+          const latestDiscovery = await Discovery.findOne({
+            where: {
+              userId: userForFinal?.id || diagnostic?.userId || null,
+              email: email,
+            },
+            order: [["createdAt", "DESC"]],
+          });
+
+          if (latestDiscovery) {
+            await latestDiscovery.update({
+              pdfUrl: pdf.url || null,
+            });
+          }
+        } catch (err) {
+          console.error(
+            "[diagnostic] Failed to upload diagnostic PDF to Supabase (background)",
+            err
+          );
+        }
+
+        // Send email in background ONLY if user explicitly requested it
+        if (shouldEmail && pdfPath) {
+          try {
+            await sendEmail(
+              email,
+              "Your Diagnostic Report – Euphoraum-AI",
+              diagnosticReportEmail(userName),
+              pdfPath
+            );
+            console.log("[diagnostic] Email sent successfully (background)");
+          } catch (err) {
+            console.error(
+              "[diagnostic] Email sending failed (background):",
+              err
+            );
+          }
+        } else if (!shouldEmail) {
+          console.log(
+            "[diagnostic] Email not sent - user did not explicitly request it"
+          );
+        } else if (backgroundMode) {
+          console.log(
+            `[diagnostic] Report generated and saved in background for user ${email} (no email sent)`
+          );
+        }
+      } catch (err) {
+        console.error(
+          "[diagnostic] PDF/email processing error (background):",
+          err
+        );
+      }
+    }
+  })();
+
+  // Background mode - already processing above, just return
+  if (backgroundMode) {
+    return;
+  }
+
+  // Send response if not in background mode
+  return successResponse(res, "Chatbot diagnostic (freeform) generated", {
+    diagnosticId: diagnostic?.id || null,
+    diagnostic: diagnostic?.data || {},
+    pdfPath: null, // Will be generated in background
+    pdfUrl: null, // Will be updated after PDF is generated
+    reportText: null, // Will be generated in background
+    status: "processing",
+    statusMessage:
+      "Report generation in progress. This may take a few minutes.",
+    userMessage: shouldEmail
+      ? "Chat ended. Your diagnostic report is being generated and will be emailed to you shortly. This may take a few minutes."
+      : "Chat ended. Your diagnostic report is being generated and will be available in your account shortly. This may take a few minutes.",
+    emailed: false, // Will be updated in background
+  });
+};
+
+/**
+ * ============================================
+ * DIAGNOSTIC MODE HANDLER
+ * ============================================
+ * Handles all diagnostic mode logic for first-time users or users requesting new diagnostics
+ * This includes:
+ * - 12-question intake flow
+ * - Auto-finalization when all questions answered
+ * - Diagnostic report generation
+ */
+const handleDiagnosticMode = async ({
+  req,
+  res,
+  email,
+  name,
+  messages,
+  transcript,
+  updatedTranscript,
+  existingDiagnostic,
+  existingState,
+  priorReportSnippet,
+  previousReports,
+  appUser,
+  lastUser,
+  lastAssistant,
+  nextMessage,
+  introText,
+  targetCount,
+  answeredCount,
+  pendingQuestion,
+  aiAnswered,
+  distinctQuestionNumbers,
+  maxQuestionNumber,
+  distinctQuestionsAnswered,
+  resumeNotice,
+  wantsNewDiagnostic,
+  hasExistingReport,
+}) => {
+  // Auto-finalization: If we've gathered all answers, auto-generate the diagnostic/PDF
+  if (
+    (!hasExistingReport || wantsNewDiagnostic) &&
+    answeredCount >= targetCount &&
+    !pendingQuestion &&
+    aiAnswered
+  ) {
+    const metrics = {};
+
+    const finalizeRetrieved = lastUser?.content
+      ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+      : [];
+    const prompt = await getLatestPromptFromDb();
+    const promptContent =
+      typeof prompt === "string"
+        ? prompt
+        : prompt?.fullPrompt || prompt?.content;
+    const finalizeResponse = await openai.chat.completions.create({
+      model: "gpt-5.2",
+      messages: [
+        { role: "system", content: promptContent },
+        {
+          role: "user",
+          content: buildFinalReportPrompt({
+            customerContext: null,
+            intakeAnswers: transcript,
+            introPageText: introText,
+            retrieved: finalizeRetrieved,
+            previousReport: priorReportSnippet,
+          }),
+        },
+      ],
+      temperature: 0.15,
+      max_completion_tokens: 4500,
+    });
+
+    let reportText = (
+      finalizeResponse?.choices?.[0]?.message?.content || ""
+    ).trim();
+    reportText = sanitizeReportText(reportText, metrics);
+
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      console.error("[diagnostic] Invalid email:", email);
+      return errorResponse(res, "Invalid email address", 400);
+    }
+
+    const userName = name || email?.split("@")[0] || "User";
+
+    const diagnosticPayload = {
+      userId: appUser.id || null,
+      email: email.trim(),
+      title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
+      data: {
+        diagnosticVersion: 3,
+        generatedAt: new Date(),
+        profile: {
+          name: userName,
+          email: email.trim(),
+        },
+        metrics,
+        previousReports,
+        intakeTranscript: updatedTranscript,
+        aiReport: reportText,
+        intakeState: {
+          ...existingState,
+          finalizedAt: new Date().toISOString(),
+        },
+      },
+    };
+
+    let diagnostic = existingDiagnostic;
+    if (!diagnostic) {
+      // Use safe find to avoid chatId column errors
+      try {
+        diagnostic = await Diagnostic.findOne({
+          where: { email },
+          attributes: [
+            "id",
+            "userId",
+            "email",
+            "title",
+            "data",
+            "createdAt",
+            "updatedAt",
+          ],
+        });
+      } catch (err) {
+        diagnostic = await Diagnostic.findOne({ where: { email } });
+      }
+    }
+
+    if (wantsNewDiagnostic && diagnostic && diagnostic.data?.aiReport) {
+      const oldReportEntry = {
+        aiReport: diagnostic.data.aiReport,
+        pdfUrl: diagnostic.data.pdf?.url || null,
+        savedAt:
+          diagnostic.updatedAt ||
+          diagnostic.createdAt ||
+          new Date().toISOString(),
+      };
+      diagnosticPayload.data.previousReports = Array.isArray(
+        diagnostic.data.previousReports
+      )
+        ? [...diagnostic.data.previousReports, oldReportEntry]
+        : [oldReportEntry];
+    }
+
+    if (diagnosticPayload.data.intakeState) {
+      diagnosticPayload.data.intakeState.requestingNewDiagnostic = false;
+    }
+
+    if (diagnostic) {
+      diagnostic = await diagnostic.update(diagnosticPayload);
+    } else {
+      try {
+        diagnostic = await Diagnostic.create(diagnosticPayload);
+      } catch (createError) {
+        if (
+          createError.name === "SequelizeUniqueConstraintError" ||
+          createError.name === "ValidationError"
+        ) {
+          // Use safe find to avoid chatId column errors
+          try {
+            diagnostic = await Diagnostic.findOne({
+              where: { email },
+              attributes: [
+                "id",
+                "userId",
+                "email",
+                "title",
+                "data",
+                "createdAt",
+                "updatedAt",
+              ],
+            });
+          } catch (err) {
+            diagnostic = await Diagnostic.findOne({ where: { email } });
+          }
+          if (diagnostic) {
+            diagnostic = await diagnostic.update(diagnosticPayload);
+          } else {
+            throw createError;
+          }
+        } else {
+          throw createError;
+        }
+      }
+    }
+
+    // Save discovery record immediately (before PDF/email)
+    await persistDiscoveryRecord({
+      userId: appUser?.id || diagnostic.userId || 0,
+      email,
+      title: diagnosticPayload.title,
+      transcript: updatedTranscript,
+      previousReport: null,
+      newReport: reportText,
+      diagnosticId: diagnostic.id,
+      pdfUrl: null, // Will be updated after PDF is generated
+    });
+
+    // Check if user explicitly requested email - only email if they say "email report" or similar
+    const lastUserMessage = lastUser?.content || "";
+    const transcriptMessages =
+      updatedTranscript?.filter((m) => m?.role === "user") || [];
+    const lastTranscriptMessage =
+      transcriptMessages[transcriptMessages.length - 1]?.content || "";
+    const userMessageToCheck = lastUserMessage || lastTranscriptMessage || "";
+    const lowerMessage = userMessageToCheck.toLowerCase();
+
+    // Only email if user explicitly says "email report" or "email me the report" etc.
+    const explicitlyWantsEmail =
+      /(email|send).*(me|the|my).*(report|it)/i.test(lowerMessage) ||
+      /(email|send).*(report|it)/i.test(lowerMessage);
+
+    // Don't email if they just said "end chat" or similar without mentioning email/report
+    const justEndingChat =
+      /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
+      !/(email|send|report)/i.test(lowerMessage);
+
+    const shouldEmail = explicitlyWantsEmail && !justEndingChat;
+
+    // Send response immediately - don't wait for PDF/email
+    const response = successResponse(
+      res,
+      "Chatbot diagnostic (auto-finalized)",
+      {
+        diagnosticId: diagnostic.id,
+        diagnostic: diagnostic.data,
+        pdfPath: null, // Will be generated in background
+        pdfUrl: null, // Will be updated after PDF is generated
+        reportText,
+        autoFinalized: true,
+        resumeNotice,
+        status: "completed",
+        statusMessage: shouldEmail
+          ? "Report generated. PDF and email processing in background."
+          : "Report generated. PDF processing in background.",
+        userMessage: shouldEmail
+          ? "Your diagnostic report has been generated. PDF are being processed in the background. You'll receive an email shortly."
+          : "Your diagnostic report has been generated and saved. PDF is being processed in the background. You can access it in your account anytime.",
+        emailed: false, // Will be updated in background
+      }
+    );
+
+    // Process PDF and email in background (don't await - fire and forget)
+    (async () => {
+      try {
+        const pdfPath = await generateDiagnosticPdf(diagnostic);
+        let pdf = { path: pdfPath, url: null };
+
+        try {
+          const buffer = await fs.promises.readFile(pdfPath);
+          const upload = await uploadBufferToSupabase({
+            buffer,
+            objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
+            contentType: "application/pdf",
+          });
+          pdf = upload;
+          console.log(
+            "[diagnostic] PDF uploaded to Supabase (background)",
+            upload
+          );
+
+          // Update diagnostic with PDF URL
+          await diagnostic.update({
+            pdfUrl: pdf.url || null,
+            data: {
+              ...(diagnostic.data || {}),
+              pdf,
+            },
+          });
+
+          // Update discovery record with PDF URL
+          const latestDiscovery = await Discovery.findOne({
+            where: {
+              userId: appUser?.id || diagnostic.userId || 0,
+              email: email,
+            },
+            order: [["createdAt", "DESC"]],
+          });
+
+          if (latestDiscovery) {
+            await latestDiscovery.update({
+              pdfUrl: pdf.url || null,
+            });
+          }
+        } catch (err) {
+          console.error(
+            "[diagnostic] Failed to upload diagnostic PDF to Supabase (background)",
+            err
+          );
+        }
+
+        // Send email in background ONLY if user explicitly requested it
+        if (shouldEmail && pdfPath) {
+          try {
+            await sendEmail(
+              email,
+              "Your Diagnostic Report – Euphoraum-AI",
+              diagnosticReportEmail(userName),
+              pdfPath
+            );
+            console.log("[diagnostic] Email sent successfully (background)");
+          } catch (err) {
+            console.error(
+              "[diagnostic] Email sending failed (background):",
+              err
+            );
+          }
+        } else if (!shouldEmail) {
+          console.log(
+            "[diagnostic] Email not sent - user did not explicitly request it"
+          );
+        }
+      } catch (err) {
+        console.error("[diagnostic] Background processing error:", err);
+      }
+    })();
+
+    return response;
+  }
+
+  // Return regular diagnostic chat response
+  return successResponse(res, "Next chatbot message", {
+    nextMessage,
+    introPageText: introText,
+    transcript: updatedTranscript,
+    intakeState: existingState,
+    retrieved: [],
+    resumeNotice,
+    answeredCount,
+    pendingQuestion,
+    aiAnswered,
+    status: "chatting",
+    statusMessage: "Chatting in progress",
+  });
+};
+
 const chatbotDiagnosticFreeform = async (req, res) => {
   const {
     email,
@@ -267,6 +1930,91 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     existingReport,
     diagnosticMetrics,
   } = await loadDiagnosticState(email);
+
+  // If no messages provided, check for incomplete chat and return it if exists
+  const hasNoMessages = !messages || messages.length === 0;
+
+  if (hasNoMessages && !finalize) {
+    const hasExistingReport = Boolean(existingReport);
+    const transcript = existingState?.transcript || [];
+    const intakeState = existingState || {};
+
+    // Check if there's an incomplete chat (not completed)
+    const isCompleted = intakeState?.completedAt || false;
+    const hasIncompleteChat =
+      transcript && transcript.length > 0 && !isCompleted;
+
+    if (hasIncompleteChat) {
+      const isIncompleteDiagnostic = !hasExistingReport;
+      const isIncompleteDiscovery =
+        hasExistingReport && intakeState.mode === "discovery";
+
+      // Determine mode
+      const mode = isIncompleteDiscovery
+        ? "discovery"
+        : isIncompleteDiagnostic
+        ? "diagnostic"
+        : hasExistingReport
+        ? "discovery"
+        : "diagnostic";
+
+      // Calculate progress for diagnostic mode
+      let answeredCount = 0;
+      let pendingQuestion = false;
+      let distinctQuestionNumbers = [];
+      let maxQuestionNumber = 0;
+
+      if (isIncompleteDiagnostic) {
+        const {
+          distinctQuestionNumbers: questionNumbers,
+          maxQuestionNumber: maxQNum,
+          distinctQuestionsAnswered,
+        } = trackQuestionNumbers(transcript);
+
+        distinctQuestionNumbers = questionNumbers;
+        maxQuestionNumber = maxQNum;
+        answeredCount = distinctQuestionsAnswered || 0;
+
+        const lastAssistant = [...transcript]
+          .reverse()
+          .find((m) => m?.role === "assistant");
+        const lastUser = [...transcript]
+          .reverse()
+          .find((m) => m?.role === "user");
+
+        if (lastAssistant && lastUser) {
+          const aiAnswered = await isAiLikelyAnswer({
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          });
+          pendingQuestion = !aiAnswered;
+        } else if (lastAssistant) {
+          pendingQuestion = true;
+        }
+      }
+
+      // Return incomplete chat state
+      return successResponse(res, "Incomplete chat loaded", {
+        hasIncompleteChat: true,
+        hasExistingReport,
+        mode,
+        transcript,
+        intakeState: {
+          ...intakeState,
+          answeredCount,
+          pendingQuestion,
+          distinctQuestionNumbers,
+          maxQuestionNumber,
+        },
+        diagnosticMetrics,
+        canResume: true,
+        status: "resumable",
+        statusMessage:
+          "Incomplete chat found. You can continue from where you left off.",
+      });
+    }
+    // If no incomplete chat, continue with normal flow (will start new conversation)
+  }
 
   // Load latest discovery metrics
   const { latestDiscovery, latestDiscoveryReport, latestDiscoveryMetrics } =
@@ -321,6 +2069,45 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
   if (!finalize) {
     const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
+
+    // EARLY CHECK: If user wants to email/generate report in discovery mode, skip bot response and generate report immediately
+    if (hasExistingReport && lastUser) {
+      const {
+        detectUserWantsToEndOrGenerateReport,
+      } = require("../utils/validation");
+
+      const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
+        userMessage: lastUser.content,
+        transcript: transcript,
+      });
+
+      if (wantsToEndOrGenerate) {
+        // User wants report - generate it immediately without bot response
+        const updatedTranscript = transcript;
+        return await handleDiscoveryMode({
+          req,
+          res,
+          email,
+          name,
+          messages,
+          transcript,
+          updatedTranscript,
+          existingDiagnostic,
+          existingState,
+          priorReportSnippet,
+          diagnosticMetrics,
+          latestDiscoveryMetrics,
+          reportDate,
+          appUser,
+          lastUser,
+          lastAssistant: null, // No assistant message yet
+          nextMessage: null, // Skip bot response
+          introText,
+          discoveryType: req.body.discoveryType || null,
+        });
+      }
+    }
+
     const retrieved = lastUser?.content
       ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
       : [];
@@ -377,6 +2164,48 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         intakeInProgress
       );
 
+    // EARLY CHECK: If in discovery mode and user wants to email/generate report, skip bot response and generate report immediately
+    if (isDiscoveryMode && lastUser) {
+      const {
+        detectUserWantsToEndOrGenerateReport,
+      } = require("../utils/validation");
+
+      const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
+        userMessage: lastUser.content,
+        transcript: transcript,
+      });
+
+      if (wantsToEndOrGenerate) {
+        // User wants report - generate it immediately without bot response
+        const updatedTranscript = transcript;
+        const lastAssistant = [...transcript]
+          .reverse()
+          .find((m) => m?.role === "assistant");
+
+        return await handleDiscoveryMode({
+          req,
+          res,
+          email,
+          name,
+          messages,
+          transcript,
+          updatedTranscript,
+          existingDiagnostic,
+          existingState,
+          priorReportSnippet,
+          diagnosticMetrics,
+          latestDiscoveryMetrics,
+          reportDate,
+          appUser,
+          lastUser,
+          lastAssistant,
+          nextMessage: null, // Skip bot response - generate report directly
+          introText,
+          discoveryType: req.body.discoveryType || null,
+        });
+      }
+    }
+
     // Check if intake has started
     const intakeHasStarted = transcript.some(
       (m) => m.role === "assistant" && /Q\d+/i.test(m.content)
@@ -402,12 +2231,12 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       reportDate,
     });
 
-    // Build messages array for AI
-    let messages = [{ role: "system", content: systemPrompt }];
+    // Build messages array for AI (rename to avoid shadowing the messages parameter)
+    let aiMessages = [{ role: "system", content: systemPrompt }];
 
     // Include prior report in system context for both modes (needed for discovery mode to answer questions about it)
     if (priorReportSnippet) {
-      messages.push({
+      aiMessages.push({
         role: "system",
         content: isDiscoveryMode
           ? `Previous diagnostic report for ${name} (you have full access to this - use it to answer questions about what the report revealed, their patterns, insights, etc.):\n${priorReportSnippet}`
@@ -415,7 +2244,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       });
     }
 
-    messages.push(
+    aiMessages.push(
       ...transcript.map((m) => ({
         role: m.role === "assistant" ? "assistant" : "user",
         content: m.content,
@@ -475,7 +2304,7 @@ Be concise (300-500 words). Extract details from the report in the system contex
     while (retryCount <= maxRetries) {
       aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
-        messages,
+        messages: aiMessages,
         temperature,
         max_completion_tokens: maxTokens,
       });
@@ -514,7 +2343,7 @@ Be concise (300-500 words). Extract details from the report in the system contex
             content: `Provide a comprehensive breakdown of my diagnostic report. Start with "**What Your Diagnostic Report Revealed:**" and then "**Where You Can Improve:**"`,
           },
         ];
-        messages = retryMessages;
+        aiMessages = retryMessages;
         retryCount++;
         continue;
       }
@@ -655,20 +2484,37 @@ ${signalOutput}%
 
             if (priorReportSnippet) {
               // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
-              const keySentenceMatch =
-                priorReportSnippet.match(
-                  /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{10,150})["']/i
-                ) ||
-                priorReportSnippet.match(
-                  /["']([^"']{20,100}(?:will|must|can't|won't)[^"']{0,50})["']/i
-                ) ||
-                priorReportSnippet.match(
-                  /(?:I will|I must|I can't|I won't)[^.\n]{10,80}/i
-                );
+              // First try to find explicit "key sentence" or "distilled" markers with quotes
+              const explicitKeySentenceMatch = priorReportSnippet.match(
+                /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{15,150})["']/i
+              );
 
-              if (keySentenceMatch) {
-                keySentence = keySentenceMatch[1] || keySentenceMatch[0];
-                keySentence = keySentence.trim().substring(0, 120);
+              // Try to find quoted identity statements with "I will", "I must", etc.
+              const identityStatementMatch = priorReportSnippet.match(
+                /["']([^"']{20,120}(?:I will|I must|I can't|I won't|I need|I have to)[^"']{0,60})["']/i
+              );
+
+              // Try to find unquoted identity statements
+              const unquotedIdentityMatch = priorReportSnippet.match(
+                /(?:I will|I must|I can't|I won't|I need|I have to)[^.\n]{15,100}/i
+              );
+
+              if (explicitKeySentenceMatch && explicitKeySentenceMatch[1]) {
+                keySentence = explicitKeySentenceMatch[1].trim();
+              } else if (identityStatementMatch && identityStatementMatch[1]) {
+                keySentence = identityStatementMatch[1].trim();
+              } else if (unquotedIdentityMatch && unquotedIdentityMatch[0]) {
+                keySentence = unquotedIdentityMatch[0].trim();
+              }
+
+              // Clean up the key sentence - remove if it's too short or doesn't make sense
+              if (keySentence && keySentence.length < 15) {
+                keySentence = "";
+              }
+
+              // Limit length
+              if (keySentence) {
+                keySentence = keySentence.substring(0, 120);
               }
 
               // Look for correction section
@@ -687,17 +2533,30 @@ ${signalOutput}%
 
             // If we can't extract key sentence, try to infer from report structure
             let keySentenceText = "";
-            if (keySentence) {
+            if (keySentence && keySentence.length >= 15) {
               keySentenceText = `> *"${keySentence}"*`;
             } else if (priorReportSnippet) {
-              // Try to infer from report content - look for structural patterns
-              const structureMatch = priorReportSnippet.match(
-                /(?:structure|identity|pattern)[\s\S]{0,100}(.{30,100})/i
+              // Try to find structure type or identity description - be more specific
+              // Look for "Structure Type" section or similar
+              const structureTypeMatch = priorReportSnippet.match(
+                /(?:Structure Type|Primary Structure|Your structure)[\s\S]{0,300}(?:is|means|indicates)[\s\S]{0,200}([^.\n]{20,120})/i
               );
-              if (structureMatch) {
-                keySentenceText = `> *"${structureMatch[1]
-                  .trim()
-                  .substring(0, 100)}"*`;
+
+              // Look for identity patterns in quotes
+              const identityPatternMatch = priorReportSnippet.match(
+                /(?:identity|structure)[\s\S]{0,200}["']([^"']{20,120})["']/i
+              );
+
+              if (structureTypeMatch && structureTypeMatch[1]) {
+                const extracted = structureTypeMatch[1].trim();
+                if (extracted.length >= 20 && extracted.length <= 120) {
+                  keySentenceText = `> *"${extracted}"*`;
+                }
+              } else if (identityPatternMatch && identityPatternMatch[1]) {
+                const extracted = identityPatternMatch[1].trim();
+                if (extracted.length >= 20 && extracted.length <= 120) {
+                  keySentenceText = `> *"${extracted}"*`;
+                }
               } else {
                 // Skip key sentence section if we truly can't extract it
                 keySentenceText = "";
@@ -847,20 +2706,37 @@ ${signalOutput}%
 
           if (priorReportSnippet) {
             // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
-            const keySentenceMatch =
-              priorReportSnippet.match(
-                /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{10,150})["']/i
-              ) ||
-              priorReportSnippet.match(
-                /["']([^"']{20,100}(?:will|must|can't|won't)[^"']{0,50})["']/i
-              ) ||
-              priorReportSnippet.match(
-                /(?:I will|I must|I can't|I won't)[^.\n]{10,80}/i
-              );
+            // First try to find explicit "key sentence" or "distilled" markers with quotes
+            const explicitKeySentenceMatch = priorReportSnippet.match(
+              /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{15,150})["']/i
+            );
 
-            if (keySentenceMatch) {
-              keySentence = keySentenceMatch[1] || keySentenceMatch[0];
-              keySentence = keySentence.trim().substring(0, 120);
+            // Try to find quoted identity statements with "I will", "I must", etc.
+            const identityStatementMatch = priorReportSnippet.match(
+              /["']([^"']{20,120}(?:I will|I must|I can't|I won't|I need|I have to)[^"']{0,60})["']/i
+            );
+
+            // Try to find unquoted identity statements
+            const unquotedIdentityMatch = priorReportSnippet.match(
+              /(?:I will|I must|I can't|I won't|I need|I have to)[^.\n]{15,100}/i
+            );
+
+            if (explicitKeySentenceMatch && explicitKeySentenceMatch[1]) {
+              keySentence = explicitKeySentenceMatch[1].trim();
+            } else if (identityStatementMatch && identityStatementMatch[1]) {
+              keySentence = identityStatementMatch[1].trim();
+            } else if (unquotedIdentityMatch && unquotedIdentityMatch[0]) {
+              keySentence = unquotedIdentityMatch[0].trim();
+            }
+
+            // Clean up the key sentence - remove if it's too short or doesn't make sense
+            if (keySentence && keySentence.length < 15) {
+              keySentence = "";
+            }
+
+            // Limit length
+            if (keySentence) {
+              keySentence = keySentence.substring(0, 120);
             }
 
             // Look for correction section
@@ -879,17 +2755,30 @@ ${signalOutput}%
 
           // If we can't extract key sentence, try to infer from report structure
           let keySentenceText = "";
-          if (keySentence) {
+          if (keySentence && keySentence.length >= 15) {
             keySentenceText = `> *"${keySentence}"*`;
           } else if (priorReportSnippet) {
-            // Try to infer from report content - look for structural patterns
-            const structureMatch = priorReportSnippet.match(
-              /(?:structure|identity|pattern)[\s\S]{0,100}(.{30,100})/i
+            // Try to find structure type or identity description - be more specific
+            // Look for "Structure Type" section or similar
+            const structureTypeMatch = priorReportSnippet.match(
+              /(?:Structure Type|Primary Structure|Your structure)[\s\S]{0,300}(?:is|means|indicates)[\s\S]{0,200}([^.\n]{20,120})/i
             );
-            if (structureMatch) {
-              keySentenceText = `> *"${structureMatch[1]
-                .trim()
-                .substring(0, 100)}"*`;
+
+            // Look for identity patterns in quotes
+            const identityPatternMatch = priorReportSnippet.match(
+              /(?:identity|structure)[\s\S]{0,200}["']([^"']{20,120})["']/i
+            );
+
+            if (structureTypeMatch && structureTypeMatch[1]) {
+              const extracted = structureTypeMatch[1].trim();
+              if (extracted.length >= 20 && extracted.length <= 120) {
+                keySentenceText = `> *"${extracted}"*`;
+              }
+            } else if (identityPatternMatch && identityPatternMatch[1]) {
+              const extracted = identityPatternMatch[1].trim();
+              if (extracted.length >= 20 && extracted.length <= 120) {
+                keySentenceText = `> *"${extracted}"*`;
+              }
             } else {
               // Skip key sentence section if we truly can't extract it
               keySentenceText = "";
@@ -1106,505 +2995,66 @@ Just answer that.`,
       });
     }
 
-    // If we've gathered all answers, auto-generate the diagnostic/PDF
-    // This applies to both first-time diagnostics and new diagnostics requested by user
-    if (
-      (!hasExistingReport || wantsNewDiagnostic) &&
-      answeredCount >= targetCount &&
-      !pendingQuestion &&
-      aiAnswered
-    ) {
-      // Use cached Kajabi data (already fetched once at the beginning)
-      // Generate metrics from user's input (transcript) - not from Kajabi
-      // Metrics will be calculated by AI from the user's answers
-      const metrics = {};
-
-      const finalizeRetrieved = lastUser?.content
-        ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
-        : [];
-      const prompt = await getLatestPromptFromDb();
-      // Extract string content from prompt object, or use fallback
-      const promptContent =
-        typeof prompt === "string"
-          ? prompt
-          : prompt?.fullPrompt || prompt?.content;
-      const finalizeResponse = await openai.chat.completions.create({
-        model: "gpt-5.2",
-        messages: [
-          { role: "system", content: promptContent },
-          {
-            role: "user",
-            content: buildFinalReportPrompt({
-              // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
-              customerContext: null, // Not using Kajabi data for now
-              intakeAnswers: transcript,
-              introPageText: introText,
-              retrieved: finalizeRetrieved,
-              previousReport: priorReportSnippet,
-            }),
-          },
-        ],
-        temperature: 0.15,
-        max_completion_tokens: 4500,
-      });
-
-      let reportText = (
-        finalizeResponse?.choices?.[0]?.message?.content || ""
-      ).trim();
-      reportText = sanitizeReportText(reportText, metrics);
-
-      // Ensure email is valid and data is not null
-      if (!email || typeof email !== "string" || !email.includes("@")) {
-        console.error("[diagnostic] Invalid email:", email);
-        return errorResponse(res, "Invalid email address", 400);
-      }
-
-      // Extract name from email or use provided name
-      const userName = name || email?.split("@")[0] || "User";
-
-      const diagnosticPayload = {
-        userId: appUser.id || null,
-        email: email.trim(),
-        title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
-        data: {
-          diagnosticVersion: 3,
-          generatedAt: new Date(),
-          profile: {
-            name: userName,
-            email: email.trim(),
-          },
-          metrics, // Metrics will be extracted from the report by AI
-          previousReports,
-          intakeTranscript: updatedTranscript,
-          aiReport: reportText,
-          intakeState: {
-            ...intakeState,
-            finalizedAt: new Date().toISOString(),
-          },
-        },
-      };
-
-      // Always try to find existing diagnostic first to avoid unique constraint violations
-      let diagnostic = existingDiagnostic;
-      if (!diagnostic) {
-        // Try to find by email in case existingDiagnostic was null but one exists
-        diagnostic = await Diagnostic.findOne({ where: { email } });
-      }
-
-      // If user requested a new diagnostic and one exists, preserve the old report in previousReports
-      if (wantsNewDiagnostic && diagnostic && diagnostic.data?.aiReport) {
-        const oldReportEntry = {
-          aiReport: diagnostic.data.aiReport,
-          pdfUrl: diagnostic.data.pdf?.url || null,
-          savedAt:
-            diagnostic.updatedAt ||
-            diagnostic.createdAt ||
-            new Date().toISOString(),
-        };
-        diagnosticPayload.data.previousReports = Array.isArray(
-          diagnostic.data.previousReports
-        )
-          ? [...diagnostic.data.previousReports, oldReportEntry]
-          : [oldReportEntry];
-      }
-
-      // Clear the requestingNewDiagnostic flag after report is generated
-      if (diagnosticPayload.data.intakeState) {
-        diagnosticPayload.data.intakeState.requestingNewDiagnostic = false;
-      }
-
-      if (diagnostic) {
-        diagnostic = await diagnostic.update(diagnosticPayload);
-      } else {
-        try {
-          diagnostic = await Diagnostic.create(diagnosticPayload);
-        } catch (createError) {
-          // If creation fails due to unique constraint, try to find and update
-          if (
-            createError.name === "SequelizeUniqueConstraintError" ||
-            createError.name === "ValidationError"
-          ) {
-            diagnostic = await Diagnostic.findOne({ where: { email } });
-            if (diagnostic) {
-              diagnostic = await diagnostic.update(diagnosticPayload);
-            } else {
-              throw createError;
-            }
-          } else {
-            throw createError;
-          }
-        }
-      }
-
-      const pdfPath = await generateDiagnosticPdf(diagnostic);
-      let pdf = { path: pdfPath, url: null };
-      try {
-        const buffer = await fs.promises.readFile(pdfPath);
-        const upload = await uploadBufferToSupabase({
-          buffer,
-          objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
-          contentType: "application/pdf",
-        });
-        pdf = upload;
-        console.log("[diagnostic] PDF uploaded to Supabase", upload);
-        await diagnostic.update({
-          data: {
-            ...(diagnostic.data || {}),
-            pdf,
-          },
-        });
-      } catch (err) {
-        console.error(
-          "[diagnostic] Failed to upload diagnostic PDF to Supabase",
-          err
-        );
-      }
-
-      // Email the user their report
-      await sendEmail(
+    // Route to appropriate handler based on mode
+    if (isDiscoveryMode) {
+      return await handleDiscoveryMode({
+        req,
+        res,
         email,
-        "Your Diagnostic Report – Euphoraum-AI",
-        diagnosticReportEmail(userName),
-        pdfPath
-      );
-
-      await persistDiscoveryRecord({
-        userId: appUser?.id || diagnostic.userId || 0,
-        email,
-        title: diagnosticPayload.title,
-        transcript: updatedTranscript,
-        previousReport: existingReport,
-        newReport: reportText,
-        diagnosticId: diagnostic.id,
-        pdfUrl: pdf.url || null,
+        name,
+        messages,
+        transcript,
+        updatedTranscript,
+        existingDiagnostic,
+        existingState: intakeState,
+        priorReportSnippet,
+        diagnosticMetrics,
+        latestDiscoveryMetrics,
+        reportDate,
+        appUser,
+        lastUser,
+        lastAssistant,
+        nextMessage,
+        introText,
+        discoveryType,
       });
-
-      return successResponse(res, "Chatbot diagnostic (auto-finalized)", {
-        diagnosticId: diagnostic.id,
-        diagnostic: diagnostic.data,
-        pdfPath,
-        pdfUrl: pdf.url || null,
-        reportText,
-        autoFinalized: true,
+    } else {
+      return await handleDiagnosticMode({
+        req,
+        res,
+        email,
+        name,
+        messages,
+        transcript,
+        updatedTranscript,
+        existingDiagnostic,
+        existingState: intakeState,
+        priorReportSnippet,
+        previousReports,
+        appUser,
+        lastUser,
+        lastAssistant,
+        nextMessage,
+        introText,
+        targetCount: targetCountForRun,
+        answeredCount,
+        pendingQuestion,
+        aiAnswered,
+        distinctQuestionNumbers,
+        maxQuestionNumber,
+        distinctQuestionsAnswered,
         resumeNotice,
-        status: "completed",
-        statusMessage:
-          "Report generated, PDF compiled, and emailed successfully",
-        userMessage: `Your new diagnostic report has been generated and emailed to ${email}. Please check your inbox.`,
+        wantsNewDiagnostic,
+        hasExistingReport,
       });
     }
-
-    // For discovery mode: Check if user wants to end/generate report or has replied perfectly
-    // Also check if the bot previously signaled the end and user just responded
-    if (isDiscoveryMode && lastUser) {
-      const {
-        detectUserWantsToEndOrGenerateReport,
-        detectConversationComplete,
-        detectBotSignaledEnd,
-      } = require("../utils/validation");
-
-      const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
-        userMessage: lastUser.content,
-        transcript: updatedTranscript,
-      });
-
-      // Check if the bot's PREVIOUS message (before user's response) signaled the end
-      // If bot signaled end in previous message and user just responded, conversation is complete
-      let botPreviouslySignaledEnd = false;
-      if (lastAssistant) {
-        botPreviouslySignaledEnd = await detectBotSignaledEnd({
-          lastAssistantMessage: lastAssistant,
-          transcript: transcript, // Use original transcript, not updated (before nextMessage)
-        });
-      }
-
-      // If bot previously signaled end and user just responded, conversation is complete
-      const conversationComplete =
-        botPreviouslySignaledEnd ||
-        (await detectConversationComplete({
-          transcript: updatedTranscript,
-          lastUserMessage: lastUser,
-          lastAssistantMessage: lastAssistant, // Check the previous assistant message
-        }));
-
-      // If user wants to end/generate report OR conversation is complete, generate discovery report
-      if (wantsToEndOrGenerate || conversationComplete) {
-        // No Kajabi data needed - use user input only
-        const userName = name || email?.split("@")[0] || "User";
-
-        // Get previous discovery if exists
-        const previousDiscoveries = await Discovery.findAll({
-          where: {
-            userId: existingDiagnostic?.userId || appUser?.id || null,
-          },
-          order: [["createdAt", "DESC"]],
-          limit: 1,
-        });
-        const previousDiscovery = previousDiscoveries[0];
-
-        // Generate discovery report using old diagnostic + previous discovery if exists
-        // Format should match the full diagnostic PDF format
-        const discoveryPrompt = `
-You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
-
-Context: The user already has a completed diagnostic report and may have previous discovery sessions.
-
-Previous diagnostic (reference):
-${priorReportSnippet || "None"}
-
-${
-  previousDiscovery
-    ? `Previous discovery report (reference):
-${truncateForContext(
-  previousDiscovery.data?.newReportSnippet ||
-    previousDiscovery.data?.newReport ||
-    "",
-  4000
-)}`
-    : ""
-}
-
-New conversation transcript (latest messages last):
-${JSON.stringify(updatedTranscript, null, 2)}
-
-Client Name: ${userName}
-Client ID: N/A
-Report Type: Full Diagnostic (Updated)
-Date: ${new Date().toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-        })}
-
-CRITICAL: You MUST generate the report in the EXACT format that matches the diagnostic report format. The report MUST start with the intro page format below.
-
-Generate a FULL DISCOVERY REPORT following this EXACT format (start with divider lines and intro page):
-
-----------------------------------------
-
-✨ BEFORE YOU READ THIS DIAGNOSTIC
-A Message About What You're About to Receive
-This document is not a simple write-up.
-It is a map of the structures governing your inner reality.
-It outlines:
-● the architecture of your identity
-● the gravitational pulls in your field
-● the multidimensional coding you carry
-● the vortex behind your resistance
-● the subatomic themes you inherited
-● the patterns that shape your outcomes
-● and the version of you trying to emerge
-This is not about psychology.
-This is not about mindset.
-This is not about behaviour.
-It is about consciousness physics — the forces beneath your thoughts, choices, and reality.
-Inside this diagnostic, you will see:
-● the hidden rules your identity has been obeying
-● the roles you inherited without choosing
-● the avoidance strategies that protect your deeper power
-● the structural reasons your expansion has looped
-● and the exact levers that move your destiny timeline
-You'll also see your:
-● Gravity (the pull of old identity)
-● Signal Output (your broadcast strength)
-● Quantum Genius Codes
-● Consciousness Level
-● Signal Coherence
-● Vortex
-Read this slowly.
-Let each section land in your body.
-This is not new information.
-This is recognition.
-Your deeper identity already knows every word.
-Once you see your structure clearly — reality reorganises around it.
-This is your map.
-And now that you have it, everything changes.
-
-----------------------------------------
-
-SECTION 1 — Structure Type Detection
-[Analyze their primary structure based on metrics and conversation]
-
-SECTION 2 — Avoidance Behaviour Mapping
-[Identify their avoidance patterns from the conversation]
-
-SECTION 3 — Vortex Settings
-[Map their vortex type and activation points]
-
-SECTION 4 — 3D Code (Gravity %)
-[Gravity percentage and what it's doing - use exact value: ${
-          diagnosticMetrics.gravity || "N/A"
-        }%]
-
-SECTION 5 — Consciousness Level (CL)
-[CL level and interpretation - use exact value: ${
-          diagnosticMetrics.consciousnessLevel || "N/A"
-        }]
-
-SECTION 6 — Quantum Genius Codes (QGC)
-[QGC activation percentage and what it looks like - use exact value: ${
-          diagnosticMetrics.qgcActivation || "N/A"
-        }%]
-
-SECTION 7 — Signal Coherence
-[Signal Coherence analysis - use exact value: ${
-          diagnosticMetrics.signalCoherence || "N/A"
-        }%]
-
-SECTION 8 — Signal Output (IP-Protected)
-[Signal Output analysis - use exact value: ${
-          diagnosticMetrics.signalOutput || "N/A"
-        }%]
-
-SECTION 9 — Angle of Growth
-[Their growth axis based on structure]
-
-SECTION 10 — First Correction
-[What corrections were made in this session]
-
-Metrics Gauge
-QGC Activation:     ${renderGauge(diagnosticMetrics.qgcActivation || 0)}
-Consciousness Level: ${renderGauge(
-          (diagnosticMetrics.consciousnessLevel || 0) * 20
-        )}
-Gravity:             ${renderGauge(diagnosticMetrics.gravity || 0)}
-Signal Coherence:    ${renderGauge(diagnosticMetrics.signalCoherence || 0)}
-Signal Output:       ${renderGauge(diagnosticMetrics.signalOutput || 0)}
-
-Unlimited Creator Recommendations
-[Recommendations based on their structure]
-
-Evolution Notes
-[Notes on their evolution and progress]
-
-Final Summary
-[Summary paragraph]
-
-End of Report
-
-Generate the full report in this exact format.`;
-
-        let discoveryReport = "";
-        try {
-          const aiDiscovery = await openai.chat.completions.create({
-            model: "gpt-5.2",
-            messages: [{ role: "user", content: discoveryPrompt }],
-            temperature: 0.15,
-            max_completion_tokens: 4500,
-          });
-          discoveryReport =
-            aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
-        } catch (err) {
-          console.error("[discovery] failed to generate follow-up report", err);
-        }
-
-        if (discoveryReport) {
-          // Determine discovery type from request or default to integrated
-          const discoveryType = req.body.discoveryType || "integrated";
-
-          // Get user ID from diagnostic or find by email
-          const userForDiscovery = existingDiagnostic?.userId
-            ? await User.findByPk(existingDiagnostic.userId)
-            : await User.findOne({ where: { email } });
-
-          // Generate PDF for discovery report
-          // Create a diagnostic-like object for PDF generation
-          const discoveryForPdf = {
-            id: existingDiagnostic?.id || Date.now(),
-            title: `Discovery Follow-up – ${userName}`,
-            userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
-            data: {
-              profile: {
-                name: userName,
-                email: email,
-              },
-              aiReport: discoveryReport,
-              metrics: diagnosticMetrics,
-            },
-          };
-
-          let pdfPath = null;
-          let pdfUrl = null;
-          try {
-            pdfPath = await generateDiagnosticPdf(discoveryForPdf);
-
-            // Upload PDF to Supabase
-            if (pdfPath) {
-              const buffer = await fs.promises.readFile(pdfPath);
-              const upload = await uploadBufferToSupabase({
-                buffer,
-                objectPath: `discoveries/discovery-${
-                  existingDiagnostic?.id || Date.now()
-                }-${Date.now()}.pdf`,
-                contentType: "application/pdf",
-              });
-              pdfUrl = upload.url || null;
-            }
-          } catch (err) {
-            console.error("[discovery] PDF generation/upload failed", err);
-          }
-
-          await persistDiscoveryRecord({
-            userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
-            email,
-            title: `Discovery Follow-up – ${userName}`,
-            transcript: updatedTranscript,
-            previousReport: priorReportSnippet,
-            newReport: discoveryReport,
-            diagnosticId: existingDiagnostic?.id || null,
-            pdfUrl: pdfUrl || existingDiagnostic?.data?.pdf?.url || null,
-            discoveryType,
-          });
-
-          if (email) {
-            // Email with PDF attachment if available
-            if (pdfPath) {
-              await sendEmail(
-                email,
-                "Your Discovery Report – Euphoriam AI",
-                discoveryReportEmail(userName),
-                pdfPath
-              );
-            } else {
-              // Fallback to basic email if PDF generation failed
-              await sendEmailBasic(
-                email,
-                "Your discovery follow-up",
-                discoveryReport.replace(/\n/g, "<br/>")
-              );
-            }
-          }
-
-          return successResponse(res, "Discovery chat saved", {
-            discovery: true,
-            message: "Discovery chat saved and emailed.",
-            discoveryReport: discoveryReport || null,
-            pdfPath: pdfPath || null,
-            pdfUrl: pdfUrl || null,
-            autoGenerated: true,
-            status: "completed",
-            statusMessage:
-              "Report generated, PDF compiled, and emailed successfully",
-            userMessage: `Your new discovery report has been generated and emailed to ${email}. Please check your inbox.`,
-          });
-        }
-      }
-    }
-
-    return successResponse(res, "Next chatbot message", {
-      nextMessage,
-      introPageText: introText,
-      transcript: updatedTranscript,
-      intakeState,
-      retrieved,
-      resumeNotice,
-      answeredCount,
-      pendingQuestion,
-      aiAnswered,
-      status: "chatting",
-      statusMessage: "Chatting in progress",
-    });
   }
+
+  // ============================================
+  // FINALIZE FLOW (finalize=true)
+  // ============================================
+  // Handle manual finalization requests
+  // Check if user said "end chat" - if so, save chat immediately and return response
 
   const transcriptForFinal =
     (Array.isArray(existingState.transcript) && existingState.transcript.length
@@ -1614,420 +3064,172 @@ Generate the full report in this exact format.`;
   const lastUser = [...transcriptForFinal]
     .reverse()
     .find((m) => m?.role === "user");
-  const retrieved = lastUser?.content
-    ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
-    : [];
+  const lastUserMsg = lastUser?.content || "";
+  const lowerMessage = lastUserMsg.toLowerCase();
 
-  if (hasExistingReport) {
-    // Get previous discovery if exists
-    const previousDiscoveries = await Discovery.findAll({
-      where: {
-        userId: existingDiagnostic?.userId || appUser?.id || null,
-      },
-      order: [["createdAt", "DESC"]],
-      limit: 1,
-    });
-    const previousDiscovery = previousDiscoveries[0];
+  // Check if user just said "end chat" (not "email report")
+  const justEndingChat =
+    /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
+    !/(email|send|report)/i.test(lowerMessage);
 
-    // Generate a FULL discovery report using prior diagnostic + new transcript
-    const discoveryPrompt = `
-You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
+  if (justEndingChat) {
+    // User just wants to end chat - save immediately and return response
+    // Report will be generated in background
 
-Context: The user already has a completed diagnostic report and may have previous discovery sessions.
+    // Find or create chat record
+    let chat = null;
+    if (existingDiagnostic?.chatId) {
+      chat = await Chat.findByPk(existingDiagnostic.chatId);
+    }
 
-Previous diagnostic (reference):
-${priorReportSnippet || "None"}
-
-${
-  previousDiscovery
-    ? `Previous discovery report (reference):
-${truncateForContext(
-  previousDiscovery.data?.newReportSnippet ||
-    previousDiscovery.data?.newReport ||
-    "",
-  4000
-)}`
-    : ""
-}
-
-New conversation transcript (latest messages last):
-${JSON.stringify(transcriptForFinal, null, 2)}
-
-Client Name: ${name || email?.split("@")[0] || "User"}
-Client ID: N/A
-Report Type: Full Diagnostic (Updated)
-Date: ${new Date().toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })}
-
-CRITICAL: You MUST generate the report in the EXACT format that matches the diagnostic report format. The report MUST start with the intro page format below.
-
-Generate a FULL DISCOVERY REPORT following this EXACT format (start with divider lines and intro page):
-
-----------------------------------------
-
-✨ BEFORE YOU READ THIS DIAGNOSTIC
-A Message About What You're About to Receive
-This document is not a simple write-up.
-It is a map of the structures governing your inner reality.
-It outlines:
-● the architecture of your identity
-● the gravitational pulls in your field
-● the multidimensional coding you carry
-● the vortex behind your resistance
-● the subatomic themes you inherited
-● the patterns that shape your outcomes
-● and the version of you trying to emerge
-This is not about psychology.
-This is not about mindset.
-This is not about behaviour.
-It is about consciousness physics — the forces beneath your thoughts, choices, and reality.
-Inside this diagnostic, you will see:
-● the hidden rules your identity has been obeying
-● the roles you inherited without choosing
-● the avoidance strategies that protect your deeper power
-● the structural reasons your expansion has looped
-● and the exact levers that move your destiny timeline
-You'll also see your:
-● Gravity (the pull of old identity)
-● Signal Output (your broadcast strength)
-● Quantum Genius Codes
-● Consciousness Level
-● Signal Coherence
-● Vortex
-Read this slowly.
-Let each section land in your body.
-This is not new information.
-This is recognition.
-Your deeper identity already knows every word.
-Once you see your structure clearly — reality reorganises around it.
-This is your map.
-And now that you have it, everything changes.
-
-----------------------------------------
-
-SECTION 1 — Structure Type Detection
-[Analyze their primary structure based on metrics and conversation]
-
-SECTION 2 — Avoidance Behaviour Mapping
-[Identify their avoidance patterns from the conversation]
-
-SECTION 3 — Vortex Settings
-[Map their vortex type and activation points]
-
-SECTION 4 — 3D Code (Gravity %)
-[Gravity percentage and what it's doing - use exact value: ${
-      metrics.gravity || "N/A"
-    }%]
-
-SECTION 5 — Consciousness Level (CL)
-[CL level and interpretation - use exact value: ${
-      metrics.consciousnessLevel || "N/A"
-    }]
-
-SECTION 6 — Quantum Genius Codes (QGC)
-[QGC activation percentage and what it looks like - use exact value: ${
-      metrics.qgcActivation || "N/A"
-    }%]
-
-SECTION 7 — Signal Coherence
-[Signal Coherence analysis - use exact value: ${
-      metrics.signalCoherence || "N/A"
-    }%]
-
-SECTION 8 — Signal Output (IP-Protected)
-[Signal Output analysis - use exact value: ${metrics.signalOutput || "N/A"}%]
-
-SECTION 9 — Angle of Growth
-[Their growth axis based on structure]
-
-SECTION 10 — First Correction
-[What corrections were made in this session]
-
-Metrics Gauge
-QGC Activation:     ${renderGauge(metrics.qgcActivation || 0)}
-Consciousness Level: ${renderGauge((metrics.consciousnessLevel || 0) * 20)}
-Gravity:             ${renderGauge(metrics.gravity || 0)}
-Signal Coherence:    ${renderGauge(metrics.signalCoherence || 0)}
-Signal Output:       ${renderGauge(metrics.signalOutput || 0)}
-
-Unlimited Creator Recommendations
-[Recommendations based on their structure]
-
-Evolution Notes
-[Notes on their evolution and progress]
-
-Final Summary
-[Summary paragraph]
-
-End of Report
-
-Generate the full report in this exact format.`;
-
-    let discoveryReport = "";
-    try {
-      const aiDiscovery = await openai.chat.completions.create({
-        model: "gpt-5.2",
-        messages: [{ role: "user", content: discoveryPrompt }],
-        temperature: 0.15,
-        max_completion_tokens: 4500,
+    if (!chat) {
+      // Find latest incomplete chat
+      chat = await Chat.findOne({
+        where: {
+          userId: appUser.id,
+          isChatEnded: false,
+        },
+        order: [["createdAt", "DESC"]],
       });
-      discoveryReport =
-        aiDiscovery?.choices?.[0]?.message?.content?.trim() || "";
-    } catch (err) {
-      console.error("[discovery] failed to generate follow-up report", err);
     }
 
-    // Determine discovery type from request or default to integrated
-    const discoveryType = req.body.discoveryType || "integrated";
+    // Save chat with transcript and mark as ended
+    if (chat) {
+      await chat.update({
+        isChatEnded: true,
+        data: {
+          ...(chat.data || {}),
+          transcript: transcriptForFinal,
+          messages: transcriptForFinal,
+          endedAt: new Date().toISOString(),
+        },
+      });
+      console.log(
+        `[chatbotDiagnosticFreeform] Chat ${chat.id} saved and marked as ended for user ${email}`
+      );
+    } else {
+      // Create new chat record if none exists
+      const chatType = hasExistingReport ? "discovery" : "dignostic";
+      chat = await Chat.create({
+        userId: appUser.id,
+        dignosticId: existingDiagnostic?.id || null,
+        chatType: chatType,
+        isChatEnded: true,
+        data: {
+          transcript: transcriptForFinal,
+          messages: transcriptForFinal,
+          endedAt: new Date().toISOString(),
+        },
+      });
+      console.log(
+        `[chatbotDiagnosticFreeform] New chat ${chat.id} created and marked as ended for user ${email}`
+      );
 
-    // Get user ID from diagnostic or find by email
-    const userForDiscovery = existingDiagnostic?.userId
-      ? await User.findByPk(existingDiagnostic.userId)
-      : await User.findOne({ where: { email } });
-
-    // Generate PDF for discovery report
-    let pdfPath = null;
-    let pdfUrl = null;
-    if (discoveryReport) {
-      try {
-        // Create a diagnostic-like object for PDF generation
-        const discoveryForPdf = {
-          id: existingDiagnostic?.id || Date.now(),
-          title: `Discovery Follow-up – ${
-            name || email?.split("@")[0] || "User"
-          }`,
-          userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
-          data: {
-            profile: {
-              name: name || email?.split("@")[0] || "User",
-              email: email,
-            },
-            aiReport: discoveryReport,
-            metrics: diagnosticMetrics, // Use metrics from existing diagnostic
-          },
-        };
-
-        pdfPath = await generateDiagnosticPdf(discoveryForPdf);
-
-        // Upload PDF to Supabase
-        if (pdfPath) {
-          const buffer = await fs.promises.readFile(pdfPath);
-          const upload = await uploadBufferToSupabase({
-            buffer,
-            objectPath: `discoveries/discovery-${
-              existingDiagnostic?.id || Date.now()
-            }-${Date.now()}.pdf`,
-            contentType: "application/pdf",
-          });
-          pdfUrl = upload.url || null;
-        }
-      } catch (err) {
-        console.error("[discovery finalize] PDF generation/upload failed", err);
+      // Link chat to diagnostic if exists
+      if (existingDiagnostic && !existingDiagnostic.chatId) {
+        await existingDiagnostic.update({ chatId: chat.id });
       }
     }
 
-    await persistDiscoveryRecord({
-      userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
-      email,
-      title: `Discovery Follow-up – ${name || email?.split("@")[0] || "User"}`,
+    // Return response immediately
+    const response = successResponse(res, "Chat ended and saved", {
+      message: "Your chat is ended and saved.",
+      status: "saved",
+      statusMessage: "Chat saved. Report is being generated in the background.",
+      userMessage:
+        "Your chat has been ended and saved. Your report is being generated in the background and will be available in your account shortly.",
+      chatId: chat.id,
       transcript: transcriptForFinal,
-      previousReport: priorReportSnippet,
-      newReport: discoveryReport,
-      diagnosticId: existingDiagnostic?.id || null,
-      pdfUrl: pdfUrl || existingDiagnostic?.data?.pdf?.url || null,
-      discoveryType,
     });
 
-    if (email) {
-      // Email with PDF attachment if available
-      if (pdfPath && discoveryReport) {
-        await sendEmail(
-          email,
-          "Your Discovery Report – Euphoriam AI",
-          discoveryReportEmail(name || email?.split("@")[0] || "User"),
-          pdfPath
-        );
-      } else {
-        // Fallback to basic email if PDF generation failed
-        await sendEmailBasic(
-          email,
-          "Your discovery follow-up",
-          discoveryReport
-            ? discoveryReport.replace(/\n/g, "<br/>")
-            : buildDiscoveryEmail({ transcript: transcriptForFinal, email })
-        );
-      }
-    }
+    // Generate report in background (don't await - fire and forget)
+    (async () => {
+      try {
+        const retrievedForBackground = lastUser?.content
+          ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+          : [];
 
-    return successResponse(res, "Discovery chat saved", {
-      discovery: true,
-      message: "Discovery chat saved and emailed.",
-      discoveryReport: discoveryReport || null,
-      pdfPath: pdfPath || null,
-      pdfUrl: pdfUrl || null,
-      status: "completed",
-      statusMessage: "Report generated, PDF compiled, and emailed successfully",
-      userMessage: `Your new discovery report has been generated and emailed to ${email}. Please check your inbox.`,
-    });
-  }
-  const prompt = await getLatestPromptFromDb();
-  // Extract string content from prompt object, or use fallback
-  const promptContent =
-    typeof prompt === "string" ? prompt : prompt?.fullPrompt || prompt?.content;
-
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-5.2",
-    messages: [
-      { role: "system", content: promptContent },
-      {
-        role: "user",
-        content: buildFinalReportPrompt({
-          // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
-          customerContext: null, // Not using Kajabi data for now
-          intakeAnswers: transcriptForFinal,
-          introPageText: introText,
-          retrieved,
-          previousReport: priorReportSnippet,
-        }),
-      },
-    ],
-    temperature: 0.15,
-    max_completion_tokens: 4500,
-  });
-
-  const reportText = (aiResponse?.choices?.[0]?.message?.content || "").trim();
-
-  if (!reportText) {
-    return errorResponse(
-      res,
-      "AI returned empty diagnostic report. Please retry.",
-      502
-    );
-  }
-
-  // Ensure email is valid and data is not null
-  if (!email || typeof email !== "string" || !email.includes("@")) {
-    console.error("[diagnostic] Invalid email:", email);
-    return errorResponse(res, "Invalid email address", 400);
-  }
-
-  // Extract name from email or use provided name
-  const userName = name || email?.split("@")[0] || "User";
-
-  const finalPayload = {
-    userId: appUser.id || null,
-    email: email.trim(),
-    title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
-    data: {
-      diagnosticVersion: 3,
-      generatedAt: new Date(),
-      profile: {
-        name: userName,
-        email: email.trim(),
-      },
-      metrics, // Metrics will be extracted from the report by AI
-      previousReports,
-      intakeTranscript: transcriptForFinal,
-      aiReport: reportText,
-      intakeState: {
-        ...(existingState || {}),
-        transcript: transcriptForFinal,
-        finalizedAt: new Date().toISOString(),
-      },
-    },
-  };
-
-  // Always try to find existing diagnostic first to avoid unique constraint violations
-  let diagnostic = existingDiagnostic;
-  if (!diagnostic) {
-    // Try to find by email in case existingDiagnostic was null but one exists
-    diagnostic = await Diagnostic.findOne({ where: { email } });
-  }
-
-  if (diagnostic) {
-    diagnostic = await diagnostic.update(finalPayload);
-  } else {
-    try {
-      diagnostic = await Diagnostic.create(finalPayload);
-    } catch (createError) {
-      // If creation fails due to unique constraint, try to find and update
-      if (
-        createError.name === "SequelizeUniqueConstraintError" ||
-        createError.name === "ValidationError"
-      ) {
-        diagnostic = await Diagnostic.findOne({ where: { email } });
-        if (diagnostic) {
-          diagnostic = await diagnostic.update(finalPayload);
+        if (hasExistingReport) {
+          // DISCOVERY: Generate discovery follow-up report
+          await handleDiscoveryFinalize({
+            req,
+            res: null, // No response needed - already sent
+            email,
+            name,
+            transcriptForFinal,
+            existingDiagnostic,
+            priorReportSnippet,
+            diagnosticMetrics,
+            appUser,
+            introText,
+            backgroundMode: true, // Flag to skip email
+          });
         } else {
-          throw createError;
+          // DIAGNOSTIC: Generate full diagnostic report
+          await handleDiagnosticFinalize({
+            req,
+            res: null, // No response needed - already sent
+            email,
+            name,
+            transcriptForFinal,
+            existingDiagnostic,
+            priorReportSnippet,
+            previousReports,
+            appUser,
+            existingState,
+            introText,
+            retrieved: retrievedForBackground,
+            backgroundMode: true, // Flag to skip email
+          });
         }
-      } else {
-        throw createError;
+        console.log(
+          `[chatbotDiagnosticFreeform] Report generated and saved in background for user ${email}`
+        );
+      } catch (err) {
+        console.error(
+          `[chatbotDiagnosticFreeform] Background report generation failed for user ${email}:`,
+          err
+        );
       }
-    }
+    })();
+
+    return response;
   }
 
-  const pdfPath = await generateDiagnosticPdf(diagnostic);
-  let pdf = { path: pdfPath, url: null };
-  try {
-    const buffer = await fs.promises.readFile(pdfPath);
-    const upload = await uploadBufferToSupabase({
-      buffer,
-      objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
-      contentType: "application/pdf",
+  // If user wants email or report, use existing handlers
+  if (hasExistingReport) {
+    // DISCOVERY FINALIZE: User has existing report, generate discovery follow-up
+    return await handleDiscoveryFinalize({
+      req,
+      res,
+      email,
+      name,
+      transcriptForFinal,
+      existingDiagnostic,
+      priorReportSnippet,
+      diagnosticMetrics,
+      appUser,
+      introText,
     });
-    pdf = upload;
-    console.log("[diagnostic] PDF uploaded to Supabase", upload);
-    await diagnostic.update({
-      data: {
-        ...(diagnostic.data || {}),
-        pdf,
-      },
+  } else {
+    // DIAGNOSTIC FINALIZE: First-time user, generate full diagnostic
+    return await handleDiagnosticFinalize({
+      req,
+      res,
+      email,
+      name,
+      transcriptForFinal,
+      existingDiagnostic,
+      priorReportSnippet,
+      previousReports,
+      appUser,
+      existingState,
+      introText,
+      retrieved: lastUser?.content
+        ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+        : [],
     });
-  } catch (err) {
-    console.error(
-      "[diagnostic] Failed to upload diagnostic PDF to Supabase",
-      err
-    );
   }
-
-  // Email the user their updated report
-  await sendEmail(
-    email,
-    "Your Diagnostic Report – Euphoraum-AI",
-    diagnosticReportEmail(userName),
-    pdfPath
-  );
-
-  // Get user ID from diagnostic or find by email
-  const userForFinal = diagnostic?.userId
-    ? await User.findByPk(diagnostic.userId)
-    : await User.findOne({ where: { email } });
-
-  await persistDiscoveryRecord({
-    userId: userForFinal?.id || diagnostic?.userId || null,
-    email,
-    title: finalPayload.title,
-    transcript: transcriptForFinal,
-    previousReport: existingReport,
-    newReport: reportText,
-    diagnosticId: diagnostic.id,
-    pdfUrl: pdf.url || null,
-  });
-
-  return successResponse(res, "Chatbot diagnostic (freeform) generated", {
-    diagnosticId: diagnostic.id,
-    diagnostic: diagnostic.data,
-    pdfPath,
-    pdfUrl: pdf.url || null,
-    reportText,
-    status: "completed",
-    statusMessage: "Report generated, PDF compiled, and emailed successfully",
-    userMessage: `Your new diagnostic report has been generated and emailed to ${email}. Please check your inbox.`,
-  });
 };
 
 const listMine = async (req, res) => {
@@ -2070,9 +3272,10 @@ const getAllPdfUrls = async (req, res) => {
 
     // Get all discoveries for this email (query all and filter by email in data field)
     const allDiscoveries = await Discovery.findAll({
+      where: { email },
       order: [["createdAt", "DESC"]],
     });
-    const discoveries = allDiscoveries.filter((d) => d.data?.email === email);
+    const discoveries = allDiscoveries;
 
     const allPdfUrls = [];
 
@@ -2134,14 +3337,15 @@ const getAllPdfUrls = async (req, res) => {
 
     // Extract PDF URLs from discoveries
     discoveries.forEach((discovery) => {
-      const data = discovery.data || {};
-      if (data.pdfUrl) {
+      const pdfUrl = discovery.pdfUrl || discovery.data?.pdfUrl;
+      if (pdfUrl) {
         allPdfUrls.push({
           type: "discovery",
           discoveryId: discovery.id,
-          diagnosticId: data.diagnosticId || null,
+          diagnosticId:
+            discovery.diagnosticId || discovery.data?.diagnosticId || null,
           title: discovery.title || `Discovery Report ${discovery.id}`,
-          url: data.pdfUrl,
+          url: pdfUrl,
           createdAt: discovery.createdAt,
           isCurrent: false,
         });

@@ -1425,14 +1425,22 @@ const safeFindDiagnostic = async (options = {}) => {
   // These columns might not exist in the database yet (old flow compatibility)
   const safeOptions = {
     ...options,
-    attributes: ['id', 'userId', 'email', 'title', 'data', 'createdAt', 'updatedAt'],
+    attributes: [
+      "id",
+      "userId",
+      "email",
+      "title",
+      "data",
+      "createdAt",
+      "updatedAt",
+    ],
   };
-  
+
   try {
     return await Diagnostic.findOne(safeOptions);
   } catch (err) {
     // If still fails, try without attributes (fallback)
-    if (err.message && err.message.includes('does not exist')) {
+    if (err.message && err.message.includes("does not exist")) {
       return await Diagnostic.findOne(options);
     }
     throw err;
@@ -1757,10 +1765,10 @@ Rules:
 `;
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 3,
+      max_completion_tokens: 3,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
     return txt.includes("yes");

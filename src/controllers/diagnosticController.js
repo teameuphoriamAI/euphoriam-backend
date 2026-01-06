@@ -13,6 +13,7 @@ const {
 const {
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
+  sanitizeReportText,
   // Helper functions
   loadDiagnosticState,
   loadLatestDiscoveryMetrics,
@@ -127,10 +128,10 @@ Rules:
 `;
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 3,
+      max_completion_tokens: 20,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
     return txt.includes("yes");

@@ -106,10 +106,10 @@ Rules:
 `;
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 3,
+      max_completion_tokens: 3,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
     return txt.includes("yes");
@@ -258,17 +258,21 @@ export async function detectUserWantsToEndOrGenerateReport({
   transcript = [],
 }) {
   const lowerMessage = (userMessage || "").toLowerCase();
-  
+
   // Quick check for explicit email/report requests (before AI check)
-  const explicitEmailReportRequest = 
+  const explicitEmailReportRequest =
     /(email|send).*(me|the|my).*(report|it)/i.test(userMessage) ||
-    /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(userMessage) ||
-    /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(userMessage);
-  
+    /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
+      userMessage
+    ) ||
+    /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(
+      userMessage
+    );
+
   if (explicitEmailReportRequest) {
     return true; // Immediately return true for explicit requests
   }
-  
+
   const prompt = `
 You are a binary classifier. Analyze the user's message and determine if they want to:
 1. End the chat/conversation
@@ -293,10 +297,10 @@ Reply:`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 3,
+      max_completion_tokens: 3,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "")
       .toLowerCase()
@@ -348,10 +352,10 @@ Reply:`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 3,
+      max_completion_tokens: 3,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "")
       .toLowerCase()
@@ -408,10 +412,10 @@ Reply:`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 3,
+      max_completion_tokens: 3,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "")
       .toLowerCase()

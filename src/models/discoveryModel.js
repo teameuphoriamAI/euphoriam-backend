@@ -20,7 +20,8 @@ const Discovery = sequelize.define(
     discoveryType: {
       type: DataTypes.STRING,
       allowNull: true,
-      comment: "Type of discovery: 'alignment', 'freedom', 'prosperity', or 'integrated' (all three)",
+      comment:
+        "Type of discovery: 'alignment', 'freedom', 'prosperity', or 'integrated' (all three)",
     },
     email: {
       type: DataTypes.STRING,
@@ -72,5 +73,3 @@ const Discovery = sequelize.define(
 );
 
 module.exports = { Discovery };
-
-

@@ -96,9 +96,19 @@ const findOrCreateCreatorUser = async ({ email, name, assessmentIds = [] }) => {
 
 // Lightweight AI check to decide if a user reply is an answer to the last question.
 const isAiLikelyAnswer = async ({ question, reply }) => {
+  console.log("[isAiLikelyAnswer] START", { question, reply });
+
   const t = (reply || "").trim().toLowerCase();
-  if (!t) return false;
-  if (isQuestion(t)) return false;
+  if (!t) {
+    console.log("[isAiLikelyAnswer] ❌ Empty reply");
+    return false;
+  }
+
+  if (isQuestion(t)) {
+    console.log("[isAiLikelyAnswer] ❌ Reply detected as question");
+    return false;
+  }
+
   // Hard fail on clarify/intents
   const clarifyPhrases = [
     "elaborate",
@@ -109,12 +119,147 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
     "do not understand",
     "not sure",
     "what do you mean",
-    "?", // ends with question mark
+    "?",
   ];
-  if (clarifyPhrases.some((p) => t.includes(p))) return false;
+
+  const clarifier = clarifyPhrases.find((p) => t.includes(p));
+  if (clarifier) {
+    console.log(
+      "[isAiLikelyAnswer] ❌ Clarification intent detected:",
+      clarifier
+    );
+    return false;
+  }
+
+  const normalizedReply = t.trim();
+
+  // Simple yes/no answers
+  const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
+  if (simpleAnswers.includes(normalizedReply)) {
+    console.log("[isAiLikelyAnswer] ✅ Simple yes/no detected");
+    return true;
+  }
+
+  // Single letter answers (A-F)
+  const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
+  if (singleLetterAnswers.includes(normalizedReply)) {
+    const questionText = (question || "").toLowerCase();
+    const hasMultipleChoice =
+      /\([a-f]\)/i.test(question) ||
+      /^[a-f]\)/i.test(question) ||
+      /\*\*[a-f]\)/i.test(question) ||
+      /\[a-f\]/i.test(question) ||
+      /pick\s+[a-f]/i.test(question) ||
+      /choose\s+[a-f]/i.test(question) ||
+      /reply\s+with\s+[a-f]/i.test(question) ||
+      /option\s+[a-f]/i.test(question);
+
+    console.log("[isAiLikelyAnswer] Single-letter answer", {
+      normalizedReply,
+      hasMultipleChoice,
+    });
+
+    if (hasMultipleChoice) {
+      console.log(
+        "[isAiLikelyAnswer] ✅ Accepted single-letter multiple-choice answer"
+      );
+      return true;
+    }
+  }
+
+  // Single number answers (1–6)
+  const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
+  if (singleNumberAnswers.includes(normalizedReply)) {
+    const questionText = (question || "").toLowerCase();
+    const hasNumberedOptions =
+      /\([1-6]\)/i.test(question) ||
+      /^[1-6]\)/i.test(question) ||
+      /\*\*[1-6]\)/i.test(question) ||
+      /\[1-6\]/i.test(question) ||
+      /option\s+[1-6]/i.test(question);
+
+    console.log("[isAiLikelyAnswer] Single-number answer", {
+      normalizedReply,
+      hasNumberedOptions,
+    });
+
+    if (hasNumberedOptions) {
+      console.log("[isAiLikelyAnswer] ✅ Accepted numbered option answer");
+      return true;
+    }
+  }
+
+  // Move-on / skip intent
+  const moveOnPhrases = [
+    "move on",
+    "next question",
+    "next",
+    "skip",
+    "move to next",
+    "continue",
+    "proceed",
+    "go to next",
+  ];
+
+  const moveOnMatch = moveOnPhrases.find((p) => normalizedReply.includes(p));
+  if (moveOnMatch) {
+    console.log("[isAiLikelyAnswer] ✅ Move-on intent detected:", moveOnMatch);
+    return true;
+  }
+
+  // Single-word descriptive answers
+  const singleWordAnswers = [
+    "alone",
+    "together",
+    "home",
+    "work",
+    "bed",
+    "couch",
+    "chair",
+    "desk",
+    "balcony",
+    "outside",
+    "library",
+    "park",
+    "car",
+    "office",
+    "calm",
+    "relaxed",
+    "interrupted",
+    "available",
+    "free",
+    "busy",
+    "watched",
+    "on-call",
+  ];
+
+  if (singleWordAnswers.includes(normalizedReply)) {
+    console.log(
+      "[isAiLikelyAnswer] ✅ Single-word descriptive answer detected"
+    );
+    return true;
+  }
+
+  // Descriptive multi-word patterns
+  const descriptiveAnswerPatterns = [
+    /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
+    /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
+    /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
+    /^(yes|no|maybe|sometimes|often|rarely|never|always)\s+(alone|interrupted|available)/i,
+  ];
+
+  if (descriptiveAnswerPatterns.some((p) => p.test(reply))) {
+    console.log("[isAiLikelyAnswer] ✅ Descriptive pattern matched");
+    return true;
+  }
+
   const alpha = t.match(/[A-Za-z]/g);
-  // Relaxed: Allow short answers to pass to the AI classifier
-  if (!alpha || alpha.length < 1) return false;
+  if (!alpha || alpha.length < 1) {
+    console.log("[isAiLikelyAnswer] ❌ No alphabetic characters");
+    return false;
+  }
+
+  console.log("[isAiLikelyAnswer] 🤖 Escalating to AI classifier");
 
   const prompt = `
 You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
@@ -126,6 +271,7 @@ Rules:
 - Reply only "yes" or "no".
 - "yes" if the reply attempts to answer; "no" if it is just a question, "I don't know", or unrelated.
 `;
+
   try {
     const resp = await openai.chat.completions.create({
       model: "gpt-5.2",
@@ -133,10 +279,19 @@ Rules:
       temperature: 0,
       max_completion_tokens: 20,
     });
+
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
-    return txt.includes("yes");
+    const result = txt.includes("yes");
+
+    console.log("[isAiLikelyAnswer] 🤖 AI response:", txt);
+    console.log("[isAiLikelyAnswer] RESULT:", result);
+
+    return result;
   } catch (err) {
-    console.error("[isAiLikelyAnswer] fallback to heuristic", err);
+    console.error(
+      "[isAiLikelyAnswer] ⚠️ AI failed — using heuristic fallback",
+      err
+    );
     return false;
   }
 };
@@ -205,6 +360,9 @@ const persistDiscoveryRecord = async ({
       data: {
         createdAt: new Date().toISOString(),
         type: "diagnostic_followup",
+        // Save full reports in JSONB data field (not truncated)
+        previousReport: previousReport || null, // Full previous report
+        newReport: newReport || null, // Full new report
       },
     });
   } catch (err) {
@@ -326,6 +484,14 @@ const handleDiscoveryMode = async ({
     });
     const previousDiscovery = previousDiscoveries[0];
 
+    // Get full prior report for saving to DB (not truncated snippet)
+    // Try to get from latest discovery first, then from existing diagnostic
+    const fullPriorReport =
+      previousDiscovery?.data?.newReport ||
+      previousDiscovery?.data?.previousReport ||
+      existingDiagnostic?.data?.aiReport ||
+      null;
+
     // Generate discovery report
     const reportDate = new Date().toLocaleDateString("en-US", {
       month: "short",
@@ -346,9 +512,10 @@ ${
   previousDiscovery
     ? `Previous discovery report (reference):
 ${truncateForContext(
-  previousDiscovery.newReportSnippet ||
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
     previousDiscovery.data?.newReportSnippet ||
-    previousDiscovery.data?.newReport ||
     "",
   4000
 )}`
@@ -364,6 +531,21 @@ Report Type: Structural Update Report
 Date: ${reportDate}
 
 CRITICAL: You MUST generate the report in the EXACT format shown below. This is a structural update report based on the conversation interaction.
+
+**METRICS CALCULATION RULE:**
+- Calculate UPDATED metrics based on the NEW conversation transcript above
+- Compare previous metrics (Gravity: ~${
+      diagnosticMetrics.gravity || "N/A"
+    }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%, Signal Coherence: ~${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%, Signal Output: ~${
+      diagnosticMetrics.signalOutput || "N/A"
+    }%) with evidence from the new conversation
+- Calculate what changed based on the new responses
+- Output updated metrics in the METRICS GAUGE section with actual calculated values
+- DO NOT use placeholders - calculate actual values based on evidence from the new conversation
 
 Generate a FULL DISCOVERY REPORT following this EXACT format:
 
@@ -554,7 +736,19 @@ We'll stop here.
 
 ---
 
-Generate the full report in this exact format. Use actual insights from the conversation transcript, not placeholders.`;
+Generate the full report in this exact format. Use actual insights from the conversation transcript, not placeholders.
+
+**At the END of the report, after the closing message, add a METRICS JSON block in this exact format (for system parsing):**
+
+METRICS_JSON_START
+{
+  "qgcActivation": [number 0-100 - calculate from new conversation],
+  "consciousnessLevel": [number 1.0-5.0 - calculate from new conversation],
+  "gravity": [number 0-100 - calculate from new conversation],
+  "signalCoherence": [number 0-100 - calculate from new conversation],
+  "signalOutput": [number 0-100 - calculate from new conversation]
+}
+METRICS_JSON_END`;
 
     let discoveryReport = "";
     try {
@@ -588,6 +782,64 @@ Generate the full report in this exact format. Use actual insights from the conv
     }
 
     if (discoveryReport) {
+      // Extract metrics from the generated discovery report
+      const {
+        extractMetricsFromReport,
+      } = require("../helpers/euphoriamChatbot");
+
+      // First try to extract from METRICS_JSON block
+      let extractedMetrics = {};
+      const metricsJsonMatch = discoveryReport.match(
+        /METRICS_JSON_START\s*([\s\S]*?)\s*METRICS_JSON_END/
+      );
+      if (metricsJsonMatch) {
+        try {
+          extractedMetrics = JSON.parse(metricsJsonMatch[1].trim());
+          console.log(
+            "[discovery] Extracted metrics from JSON block:",
+            extractedMetrics
+          );
+          // Remove the JSON block from report text
+          discoveryReport = discoveryReport
+            .replace(/METRICS_JSON_START[\s\S]*?METRICS_JSON_END/, "")
+            .trim();
+        } catch (e) {
+          console.error("[discovery] Failed to parse metrics JSON:", e);
+        }
+      }
+
+      // If no JSON block, try regex extraction
+      if (!extractedMetrics || Object.keys(extractedMetrics).length === 0) {
+        extractedMetrics = extractMetricsFromReport(discoveryReport);
+        console.log(
+          "[discovery] Extracted metrics from report text (regex):",
+          extractedMetrics
+        );
+      }
+
+      // Use extracted metrics (from new responses) or fall back to existing metrics
+      const finalMetrics = {
+        ...diagnosticMetrics,
+        ...extractedMetrics,
+        // Prefer extracted metrics (calculated from new responses)
+        gravity: extractedMetrics.gravity ?? diagnosticMetrics?.gravity,
+        signalCoherence:
+          extractedMetrics.signalCoherence ??
+          diagnosticMetrics?.signalCoherence,
+        signalOutput:
+          extractedMetrics.signalOutput ?? diagnosticMetrics?.signalOutput,
+        consciousnessLevel:
+          extractedMetrics.consciousnessLevel ??
+          diagnosticMetrics?.consciousnessLevel,
+        qgcActivation:
+          extractedMetrics.qgcActivation ?? diagnosticMetrics?.qgcActivation,
+      };
+
+      console.log(
+        "[discovery] Final metrics for discovery report:",
+        finalMetrics
+      );
+
       const discoveryTypeValue =
         discoveryType || req.body.discoveryType || "integrated";
 
@@ -596,13 +848,14 @@ Generate the full report in this exact format. Use actual insights from the conv
         : await User.findOne({ where: { email } });
 
       // Save discovery record immediately (before PDF/email)
+      // Pass full reports (not truncated) so they can be saved in JSONB data field
       await persistDiscoveryRecord({
         userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
         email,
-        title: `Discovery Follow-up – ${userName}`,
+        title: `Diagnostics Follow-up – ${userName}`,
         transcript: updatedTranscript,
-        previousReport: priorReportSnippet,
-        newReport: discoveryReport,
+        previousReport: fullPriorReport, // Full report, not truncated snippet
+        newReport: discoveryReport, // Full new report
         diagnosticId: existingDiagnostic?.id || null,
         pdfUrl: null, // Will be updated after PDF is generated
         discoveryType: discoveryTypeValue,
@@ -623,11 +876,23 @@ Generate the full report in this exact format. Use actual insights from the conv
         });
       }
 
+      // Check if user explicitly requested email
+      const lastUserMessage = lastUser?.content || "";
+      const lowerMessage = lastUserMessage.toLowerCase();
+      const explicitlyWantsEmail =
+        /(email|send).*(me|the|my).*(report|it)/i.test(lowerMessage) ||
+        /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
+          lowerMessage
+        ) ||
+        /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send)/i.test(
+          lowerMessage
+        );
+
       const userWantsEmail = checkWantsEmail(
         updatedTranscript,
         lastUser?.content
       );
-      let shouldEmail = userWantsEmail;
+      let shouldEmail = explicitlyWantsEmail || userWantsEmail;
 
       // Send response immediately - don't wait for PDF/email
       const response = successResponse(res, "Discovery chat saved", {
@@ -654,7 +919,7 @@ Generate the full report in this exact format. Use actual insights from the conv
         try {
           const discoveryForPdf = {
             id: existingDiagnostic?.id || Date.now(),
-            title: `Discovery Follow-up – ${userName}`,
+            title: `Diagnostics Follow-up – ${userName}`,
             userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
             data: {
               profile: {
@@ -662,7 +927,7 @@ Generate the full report in this exact format. Use actual insights from the conv
                 email: email,
               },
               aiReport: discoveryReport,
-              metrics: diagnosticMetrics,
+              metrics: finalMetrics, // Use metrics calculated from new responses
             },
           };
 
@@ -822,6 +1087,14 @@ const handleDiscoveryFinalize = async ({
   });
   const previousDiscovery = previousDiscoveries[0];
 
+  // Get full prior report for saving to DB (not truncated snippet)
+  // Try to get from latest discovery first, then from existing diagnostic
+  const fullPriorReport =
+    previousDiscovery?.data?.newReport ||
+    previousDiscovery?.data?.previousReport ||
+    existingDiagnostic?.data?.aiReport ||
+    null;
+
   // Generate a FULL discovery report using prior diagnostic + new transcript
   const reportDate = new Date().toLocaleDateString("en-US", {
     month: "short",
@@ -843,9 +1116,10 @@ ${
   previousDiscovery
     ? `Previous discovery report (reference):
 ${truncateForContext(
-  previousDiscovery.newReportSnippet ||
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
     previousDiscovery.data?.newReportSnippet ||
-    previousDiscovery.data?.newReport ||
     "",
   4000
 )}`
@@ -1060,12 +1334,13 @@ Generate the full report in this exact format. Use actual insights from the conv
     : await User.findOne({ where: { email } });
 
   // Save discovery record immediately (report will be generated in background)
+  // Pass full report (not truncated snippet) so it can be saved in JSONB data field
   await persistDiscoveryRecord({
     userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
     email,
-    title: `Discovery Follow-up – ${name || email?.split("@")[0] || "User"}`,
+    title: `Diagnostic Follow-up – ${name || email?.split("@")[0] || "User"}`,
     transcript: transcriptForFinal,
-    previousReport: priorReportSnippet,
+    previousReport: fullPriorReport, // Full report, not truncated snippet
     newReport: null, // Will be updated after report is generated
     diagnosticId: existingDiagnostic?.id || null,
     pdfUrl: null, // Will be updated after PDF is generated
@@ -1139,6 +1414,10 @@ Generate the full report in this exact format. Use actual insights from the conv
         if (latestDiscovery) {
           await latestDiscovery.update({
             newReportSnippet: truncateForContext(discoveryReport, 1500),
+            data: {
+              ...(latestDiscovery.data || {}),
+              newReport: discoveryReport, // Save full report in JSONB
+            },
           });
         }
       }
@@ -1154,7 +1433,7 @@ Generate the full report in this exact format. Use actual insights from the conv
       try {
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Discovery Follow-up – ${
+          title: `Diagnostics Follow-up – ${
             name || email?.split("@")[0] || "User"
           }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
@@ -1363,23 +1642,43 @@ const handleDiagnosticFinalize = async ({
     const promptContent =
       typeof prompt === "string"
         ? prompt
-        : prompt?.fullPrompt || prompt?.content;
+        : prompt?.fullPrompt || prompt?.content || "";
+
+    // Ensure promptContent is always a string, never null or undefined
+    const safePromptContent =
+      promptContent && typeof promptContent === "string" ? promptContent : "";
+
+    const userPromptContent = buildFinalReportPrompt({
+      customerContext: null,
+      intakeAnswers: transcriptForFinal,
+      introPageText: introText,
+      retrieved,
+      previousReport: priorReportSnippet,
+    });
+
+    // Ensure user content is always a string
+    const safeUserContent =
+      userPromptContent && typeof userPromptContent === "string"
+        ? userPromptContent
+        : "";
+
+    if (!safePromptContent || !safeUserContent) {
+      console.error(
+        "[diagnostic] Invalid prompt or user content (background):",
+        { promptContent: safePromptContent, userContent: safeUserContent }
+      );
+      return; // Exit early in background mode
+    }
 
     let reportText = "";
     try {
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
         messages: [
-          { role: "system", content: promptContent },
+          { role: "system", content: safePromptContent },
           {
             role: "user",
-            content: buildFinalReportPrompt({
-              customerContext: null,
-              intakeAnswers: transcriptForFinal,
-              introPageText: introText,
-              retrieved,
-              previousReport: priorReportSnippet,
-            }),
+            content: safeUserContent,
           },
         ],
         temperature: 0.15,
@@ -1451,6 +1750,10 @@ const handleDiagnosticFinalize = async ({
       if (latestDiscovery) {
         await latestDiscovery.update({
           newReportSnippet: truncateForContext(reportText, 1500),
+          data: {
+            ...(latestDiscovery.data || {}),
+            newReport: reportText, // Save full report in JSONB
+          },
         });
       }
     } catch (err) {
@@ -1603,13 +1906,94 @@ const handleDiagnosticMode = async ({
   wantsNewDiagnostic,
   hasExistingReport,
 }) => {
+  // Count questions in the ORIGINAL transcript (before nextMessage) to see what's been answered
+  const {
+    distinctQuestionNumbers: transcriptDistinctQuestionNumbers,
+    maxQuestionNumber: transcriptMaxQuestionNumber,
+    distinctQuestionsAnswered: transcriptDistinctQuestionsAnswered,
+  } = trackQuestionNumbers(transcript);
+
+  // Count questions in updatedTranscript to see if Q12 was just asked (not answered yet)
+  const {
+    distinctQuestionNumbers: updatedDistinctQuestionNumbers,
+    maxQuestionNumber: updatedMaxQuestionNumber,
+    distinctQuestionsAnswered: updatedDistinctQuestionsAnswered,
+  } = trackQuestionNumbers(updatedTranscript);
+
+  // CRITICAL: Only count questions that have been ANSWERED, not just asked
+  // Use transcriptDistinctQuestionsAnswered (before nextMessage) to see what user has actually answered
+  // If updatedTranscript has more questions, it means a new question was just asked but not answered yet
+  const questionsAnswered = transcriptDistinctQuestionsAnswered;
+  const newQuestionJustAsked =
+    updatedDistinctQuestionsAnswered > transcriptDistinctQuestionsAnswered;
+
+  // Check if we have 12 distinct questions ANSWERED (not just asked)
+  const hasAllQuestionsAnswered = questionsAnswered >= targetCount;
+
+  console.log("[diagnostic] Auto-finalization check:", {
+    hasExistingReport,
+    wantsNewDiagnostic,
+    answeredCount,
+    targetCount,
+    pendingQuestion,
+    aiAnswered,
+    distinctQuestionsAnswered,
+    questionsAnswered, // Questions actually answered by user
+    transcriptDistinctQuestionsAnswered,
+    updatedDistinctQuestionsAnswered,
+    newQuestionJustAsked, // True if Q12 was just asked but not answered
+    maxQuestionNumber: transcriptMaxQuestionNumber,
+    updatedMaxQuestionNumber,
+    hasAllQuestionsAnswered,
+    transcriptLength: transcript.length,
+    updatedTranscriptLength: updatedTranscript.length,
+    lastUserContent: lastUser?.content,
+    lastAssistantContent: lastAssistant?.content,
+  });
+
+  // Check if assistant's message indicates completion (fallback check)
+  const assistantSaysComplete =
+    nextMessage?.content &&
+    typeof nextMessage.content === "string" &&
+    /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate)/i.test(
+      nextMessage.content
+    );
+
   // Auto-finalization: If we've gathered all answers, auto-generate the diagnostic/PDF
-  if (
-    (!hasExistingReport || wantsNewDiagnostic) &&
-    answeredCount >= targetCount &&
-    !pendingQuestion &&
-    aiAnswered
-  ) {
+  // Key conditions:
+  // 1. We have 12+ distinct questions ANSWERED (not just asked)
+  // 2. The last user message was a valid answer (aiAnswered = true)
+  // 3. There's no pending question (user has answered the last question)
+  // 4. No new question was just asked (we want to wait for user to answer Q12)
+  // OR if assistant explicitly says they have enough
+  //
+  // Allow auto-finalization if:
+  // - No existing report (new user) OR
+  // - User wants new diagnostic OR
+  // - User has answered 12 questions (regardless of existing report - generate discovery report)
+  const shouldAutoFinalize =
+    hasAllQuestionsAnswered && // 12 questions ANSWERED
+    !newQuestionJustAsked && // Q12 wasn't just asked (wait for answer)
+    !pendingQuestion && // User has answered the last question
+    aiAnswered && // The last user message was a valid answer
+    (questionsAnswered >= targetCount || assistantSaysComplete) && // Double-check: 12 answered OR assistant says complete
+    (!hasExistingReport || wantsNewDiagnostic || questionsAnswered >= 12); // Allow if new user, wants new diagnostic, OR answered 12 questions
+
+  if (shouldAutoFinalize) {
+    console.log(
+      "[diagnostic] ✅ Auto-finalization triggered - generating report",
+      {
+        transcriptDistinctQuestionsAnswered,
+        updatedDistinctQuestionsAnswered,
+        targetCount,
+        pendingQuestion,
+        aiAnswered,
+        hasAllQuestionsAnswered,
+        questionsAnswered,
+        assistantSaysComplete,
+        nextMessagePreview: nextMessage?.content?.substring(0, 100),
+      }
+    );
     const metrics = {};
 
     const finalizeRetrieved = lastUser?.content
@@ -1619,20 +2003,58 @@ const handleDiagnosticMode = async ({
     const promptContent =
       typeof prompt === "string"
         ? prompt
-        : prompt?.fullPrompt || prompt?.content;
+        : prompt?.fullPrompt || prompt?.content || "";
+
+    // Ensure promptContent is always a string, never null or undefined
+    const safePromptContent =
+      promptContent && typeof promptContent === "string" ? promptContent : "";
+
+    // Use updatedTranscript to include all messages, but filter out the assistant's "I have enough" message
+    // if it's just an acknowledgment (we want the actual Q&A pairs)
+    const transcriptForReport =
+      updatedTranscript && updatedTranscript.length > 0
+        ? updatedTranscript
+        : transcript;
+
+    console.log("[diagnostic] Using transcript for report generation:", {
+      transcriptLength: transcript.length,
+      updatedTranscriptLength: updatedTranscript.length,
+      transcriptForReportLength: transcriptForReport.length,
+    });
+
+    const userPromptContent = buildFinalReportPrompt({
+      customerContext: null,
+      intakeAnswers: transcriptForReport,
+      introPageText: introText,
+      retrieved: finalizeRetrieved,
+      previousReport: priorReportSnippet,
+    });
+
+    // Ensure user content is always a string
+    const safeUserContent =
+      userPromptContent && typeof userPromptContent === "string"
+        ? userPromptContent
+        : "";
+
+    if (!safePromptContent || !safeUserContent) {
+      console.error("[diagnostic] Invalid prompt or user content:", {
+        promptContent: safePromptContent,
+        userContent: safeUserContent,
+      });
+      return errorResponse(
+        res,
+        "Failed to generate diagnostic: missing prompt content",
+        500
+      );
+    }
+
     const finalizeResponse = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [
-        { role: "system", content: promptContent },
+        { role: "system", content: safePromptContent },
         {
           role: "user",
-          content: buildFinalReportPrompt({
-            customerContext: null,
-            intakeAnswers: transcript,
-            introPageText: introText,
-            retrieved: finalizeRetrieved,
-            previousReport: priorReportSnippet,
-          }),
+          content: safeUserContent,
         },
       ],
       temperature: 0.15,
@@ -1642,7 +2064,62 @@ const handleDiagnosticMode = async ({
     let reportText = (
       finalizeResponse?.choices?.[0]?.message?.content || ""
     ).trim();
-    reportText = sanitizeReportText(reportText, metrics);
+
+    // Extract metrics from the generated report text
+    // First try to extract from METRICS_JSON block at the end
+    let extractedMetrics = {};
+    const metricsJsonMatch = reportText.match(
+      /METRICS_JSON_START\s*([\s\S]*?)\s*METRICS_JSON_END/
+    );
+    if (metricsJsonMatch) {
+      try {
+        extractedMetrics = JSON.parse(metricsJsonMatch[1].trim());
+        console.log(
+          "[diagnostic] Extracted metrics from JSON block:",
+          extractedMetrics
+        );
+        // Remove the JSON block from report text
+        reportText = reportText
+          .replace(/METRICS_JSON_START[\s\S]*?METRICS_JSON_END/, "")
+          .trim();
+      } catch (e) {
+        console.error("[diagnostic] Failed to parse metrics JSON:", e);
+      }
+    }
+
+    // If no JSON block, try regex extraction
+    if (!extractedMetrics || Object.keys(extractedMetrics).length === 0) {
+      const {
+        extractMetricsFromReport,
+      } = require("../helpers/euphoriamChatbot");
+      extractedMetrics = extractMetricsFromReport(reportText);
+      console.log(
+        "[diagnostic] Extracted metrics from report text (regex):",
+        extractedMetrics
+      );
+    }
+
+    // Merge extracted metrics with any existing metrics
+    const finalMetrics = {
+      ...metrics,
+      ...extractedMetrics,
+      // Use extracted values if available, otherwise keep existing
+      gravity: extractedMetrics.gravity ?? metrics.gravity,
+      signalCoherence:
+        extractedMetrics.signalCoherence ?? metrics.signalCoherence,
+      signalOutput: extractedMetrics.signalOutput ?? metrics.signalOutput,
+      consciousnessLevel:
+        extractedMetrics.consciousnessLevel ?? metrics.consciousnessLevel,
+      qgcActivation: extractedMetrics.qgcActivation ?? metrics.qgcActivation,
+    };
+
+    console.log("[diagnostic] Final metrics for saving:", {
+      extractedMetrics,
+      finalMetrics,
+      reportTextLength: reportText.length,
+    });
+
+    reportText = sanitizeReportText(reportText, finalMetrics);
 
     if (!email || typeof email !== "string" || !email.includes("@")) {
       console.error("[diagnostic] Invalid email:", email);
@@ -1662,7 +2139,7 @@ const handleDiagnosticMode = async ({
           name: userName,
           email: email.trim(),
         },
-        metrics,
+        metrics: finalMetrics, // Use extracted metrics
         previousReports,
         intakeTranscript: updatedTranscript,
         aiReport: reportText,
@@ -1783,7 +2260,17 @@ const handleDiagnosticMode = async ({
       /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
       !/(email|send|report)/i.test(lowerMessage);
 
-    const shouldEmail = explicitlyWantsEmail && !justEndingChat;
+    // For auto-finalization after 12 questions, always email the report
+    // User has completed the full intake, so they should receive their report
+    const shouldEmail =
+      explicitlyWantsEmail || (questionsAnswered >= 12 && !justEndingChat);
+
+    console.log("[diagnostic] Auto-finalization email decision:", {
+      explicitlyWantsEmail,
+      questionsAnswered,
+      shouldEmail,
+      justEndingChat,
+    });
 
     // Send response immediately - don't wait for PDF/email
     const response = successResponse(
@@ -1802,7 +2289,7 @@ const handleDiagnosticMode = async ({
           ? "Report generated. PDF and email processing in background."
           : "Report generated. PDF processing in background.",
         userMessage: shouldEmail
-          ? "Your diagnostic report has been generated. PDF are being processed in the background. You'll receive an email shortly."
+          ? "Your diagnostic report has been generated and will be emailed to you shortly. PDF is being processed in the background."
           : "Your diagnostic report has been generated and saved. PDF is being processed in the background. You can access it in your account anytime.",
         emailed: false, // Will be updated in background
       }
@@ -1857,7 +2344,7 @@ const handleDiagnosticMode = async ({
           );
         }
 
-        // Send email in background ONLY if user explicitly requested it
+        // Send email in background if user requested it OR if they completed 12 questions
         if (shouldEmail && pdfPath) {
           try {
             await sendEmail(
@@ -1866,7 +2353,12 @@ const handleDiagnosticMode = async ({
               diagnosticReportEmail(userName),
               pdfPath
             );
-            console.log("[diagnostic] Email sent successfully (background)");
+            console.log("[diagnostic] Email sent successfully (background)", {
+              email,
+              questionsAnswered,
+              explicitlyWantsEmail,
+              autoFinalized: true,
+            });
           } catch (err) {
             console.error(
               "[diagnostic] Email sending failed (background):",
@@ -1875,7 +2367,13 @@ const handleDiagnosticMode = async ({
           }
         } else if (!shouldEmail) {
           console.log(
-            "[diagnostic] Email not sent - user did not explicitly request it"
+            "[diagnostic] Email not sent - user did not request it and questionsAnswered < 12",
+            { questionsAnswered, explicitlyWantsEmail, autoFinalized: true }
+          );
+        } else if (!pdfPath) {
+          console.error(
+            "[diagnostic] Email not sent - PDF generation failed or path is missing",
+            { autoFinalized: true }
           );
         }
       } catch (err) {
@@ -1940,18 +2438,140 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     const transcript = existingState?.transcript || [];
     const intakeState = existingState || {};
 
+    // Load metrics for discovery mode (extract from report if needed)
+    let metricsForResponse = diagnosticMetrics;
+    if (hasExistingReport) {
+      const { latestDiscoveryMetrics } = await loadLatestDiscoveryMetrics(
+        existingDiagnostic,
+        diagnosticMetrics
+      );
+      metricsForResponse = latestDiscoveryMetrics;
+      console.log("[diagnostic] Loaded metrics for incomplete chat:", {
+        hasExistingReport,
+        diagnosticMetricsKeys: Object.keys(diagnosticMetrics || {}),
+        latestDiscoveryMetricsKeys: Object.keys(latestDiscoveryMetrics || {}),
+        metricsForResponseKeys: Object.keys(metricsForResponse || {}),
+        hasReport: Boolean(existingDiagnostic?.data?.aiReport),
+        reportLength: existingDiagnostic?.data?.aiReport?.length || 0,
+      });
+    }
+
     // Check if there's an incomplete chat (not completed)
-    const isCompleted = intakeState?.completedAt || false;
+    // A chat is completed if:
+    // 1. completedAt or finalizedAt exists, OR
+    // 2. All 12 questions are answered (distinctQuestionsAnswered >= 12)
+    const isCompleted =
+      intakeState?.completedAt || intakeState?.finalizedAt || false;
+
+    // Count questions to check if all 12 are answered
+    let allQuestionsAnswered = false;
+    if (transcript && transcript.length > 0) {
+      const { distinctQuestionsAnswered } = trackQuestionNumbers(transcript);
+      allQuestionsAnswered = distinctQuestionsAnswered >= 12;
+
+      // Also check if the last assistant message indicates report generation
+      const lastAssistant = [...transcript]
+        .reverse()
+        .find((m) => m?.role === "assistant");
+      const indicatesCompletion =
+        lastAssistant?.content &&
+        /(generate.*report|going to generate|full.*diagnostic.*report)/i.test(
+          lastAssistant.content
+        );
+
+      if (indicatesCompletion && allQuestionsAnswered) {
+        // Report generation was triggered but may not have completed
+        // Still consider it completed for UI purposes
+        console.log(
+          "[diagnostic] Chat appears completed - all questions answered and report generation indicated"
+        );
+      }
+    }
+
     const hasIncompleteChat =
-      transcript && transcript.length > 0 && !isCompleted;
+      transcript &&
+      transcript.length > 0 &&
+      !isCompleted &&
+      !allQuestionsAnswered;
+
+    // If chat is completed (finalizedAt exists) or all 12 questions answered, check if report exists
+    if (
+      (isCompleted || allQuestionsAnswered) &&
+      transcript &&
+      transcript.length > 0
+    ) {
+      // Check if diagnostic has a report
+      const hasReport =
+        existingDiagnostic?.data?.aiReport || existingDiagnostic?.report;
+
+      if (hasReport) {
+        // Report exists - return completed status and clear transcript for discovery mode
+        console.log(
+          "[diagnostic] Chat completed with existing report - switching to discovery mode"
+        );
+
+        // Update intakeState in database to clear transcript and set mode to discovery
+        if (existingDiagnostic) {
+          const updatedIntakeState = {
+            ...intakeState,
+            transcript: [], // Clear transcript
+            completedAt:
+              intakeState?.finalizedAt ||
+              intakeState?.completedAt ||
+              new Date().toISOString(),
+            mode: "discovery", // Set mode to discovery
+          };
+
+          await existingDiagnostic.update({
+            data: {
+              ...(existingDiagnostic.data || {}),
+              intakeState: updatedIntakeState,
+            },
+          });
+        }
+
+        return successResponse(res, "Diagnostic completed", {
+          hasIncompleteChat: false,
+          hasExistingReport: true,
+          mode: "discovery", // Switch to discovery mode since diagnostic is complete
+          transcript: [], // Clear transcript - start fresh discovery session
+          intakeState: {
+            ...intakeState,
+            transcript: [], // Clear transcript in intakeState too
+            completedAt:
+              intakeState?.finalizedAt ||
+              intakeState?.completedAt ||
+              new Date().toISOString(),
+            mode: "discovery", // Set mode to discovery
+          },
+          diagnosticMetrics: metricsForResponse,
+          canResume: false,
+          status: "completed",
+          statusMessage:
+            "Your diagnostic report has been completed. You can start a new discovery session.",
+        });
+      } else if (allQuestionsAnswered && !isCompleted) {
+        // All 12 questions answered but report not generated yet - trigger generation
+        console.log(
+          "[diagnostic] All 12 questions answered but report not generated - triggering generation"
+        );
+        // This will be handled by the normal flow below, which will trigger auto-finalization
+      }
+    }
 
     if (hasIncompleteChat) {
       const isIncompleteDiagnostic = !hasExistingReport;
       const isIncompleteDiscovery =
         hasExistingReport && intakeState.mode === "discovery";
 
+      // If all 12 questions are answered or finalizedAt exists, switch to discovery mode
+      // (diagnostic is complete, user can now do discovery sessions)
+      const diagnosticComplete = allQuestionsAnswered || isCompleted;
+
       // Determine mode
-      const mode = isIncompleteDiscovery
+      const mode = diagnosticComplete
+        ? "discovery" // Diagnostic complete - switch to discovery mode
+        : isIncompleteDiscovery
         ? "discovery"
         : isIncompleteDiagnostic
         ? "diagnostic"
@@ -1965,17 +2585,18 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       let distinctQuestionNumbers = [];
       let maxQuestionNumber = 0;
 
+      // Always calculate question count, not just for incomplete diagnostic
+      const {
+        distinctQuestionNumbers: questionNumbers,
+        maxQuestionNumber: maxQNum,
+        distinctQuestionsAnswered,
+      } = trackQuestionNumbers(transcript);
+
+      distinctQuestionNumbers = questionNumbers;
+      maxQuestionNumber = maxQNum;
+      answeredCount = distinctQuestionsAnswered || 0;
+
       if (isIncompleteDiagnostic) {
-        const {
-          distinctQuestionNumbers: questionNumbers,
-          maxQuestionNumber: maxQNum,
-          distinctQuestionsAnswered,
-        } = trackQuestionNumbers(transcript);
-
-        distinctQuestionNumbers = questionNumbers;
-        maxQuestionNumber = maxQNum;
-        answeredCount = distinctQuestionsAnswered || 0;
-
         const lastAssistant = [...transcript]
           .reverse()
           .find((m) => m?.role === "assistant");
@@ -2007,7 +2628,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           distinctQuestionNumbers,
           maxQuestionNumber,
         },
-        diagnosticMetrics,
+        diagnosticMetrics: metricsForResponse,
         canResume: true,
         status: "resumable",
         statusMessage:
@@ -2024,10 +2645,11 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   // Extract report date
   const reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
 
-  // Prepare prior report snippet
-  const priorReportSnippet = latestDiscoveryReport
-    ? truncateForContext(latestDiscoveryReport, 12000)
-    : truncateForContext(existingReport, 12000);
+  // Get full prior report (for saving to DB) and truncated snippet (for prompts)
+  const fullPriorReport = latestDiscoveryReport || existingReport || null;
+  const priorReportSnippet = fullPriorReport
+    ? truncateForContext(fullPriorReport, 12000)
+    : null;
 
   // Prepare previous reports
   const previousReports = preparePreviousReports(
@@ -2233,28 +2855,58 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     });
 
     // Build messages array for AI (rename to avoid shadowing the messages parameter)
-    let aiMessages = [{ role: "system", content: systemPrompt }];
+    // Ensure systemPrompt is a string
+    const safeSystemPrompt =
+      systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
+    if (!safeSystemPrompt) {
+      console.error("[diagnostic] Invalid system prompt");
+      return errorResponse(
+        res,
+        "Failed to generate response: missing system prompt",
+        500
+      );
+    }
+
+    let aiMessages = [{ role: "system", content: safeSystemPrompt }];
 
     // Include prior report in system context for both modes (needed for discovery mode to answer questions about it)
     if (priorReportSnippet) {
+      const priorReportContent = isDiscoveryMode
+        ? `Previous diagnostic report for ${name} (you have full access to this - use it to answer questions about what the report revealed, their patterns, insights, etc.):\n${priorReportSnippet}`
+        : `Existing diagnostic report for ${name} (reference for continuity; do not re-emit the full report here):\n${priorReportSnippet}`;
       aiMessages.push({
         role: "system",
-        content: isDiscoveryMode
-          ? `Previous diagnostic report for ${name} (you have full access to this - use it to answer questions about what the report revealed, their patterns, insights, etc.):\n${priorReportSnippet}`
-          : `Existing diagnostic report for ${name} (reference for continuity; do not re-emit the full report here):\n${priorReportSnippet}`,
+        content:
+          priorReportContent && typeof priorReportContent === "string"
+            ? priorReportContent
+            : "",
       });
     }
 
-    aiMessages.push(
-      ...transcript.map((m) => ({
+    // Filter out messages with null/undefined content and ensure all content is strings
+    const validTranscriptMessages = transcript
+      .filter((m) => m && m.content && typeof m.content === "string")
+      .map((m) => ({
         role: m.role === "assistant" ? "assistant" : "user",
-        content: m.content,
-      })),
-      {
-        role: "user",
-        content: userPrompt,
-      }
-    );
+        content: String(m.content), // Ensure it's a string
+      }));
+
+    // Ensure userPrompt is a string
+    const safeUserPrompt =
+      userPrompt && typeof userPrompt === "string" ? userPrompt : "";
+    if (!safeUserPrompt) {
+      console.error("[diagnostic] Invalid user prompt");
+      return errorResponse(
+        res,
+        "Failed to generate response: missing user prompt",
+        500
+      );
+    }
+
+    aiMessages.push(...validTranscriptMessages, {
+      role: "user",
+      content: safeUserPrompt,
+    });
 
     // Check if user is asking about diagnostic report (needs more tokens)
     const lastUserMsg =

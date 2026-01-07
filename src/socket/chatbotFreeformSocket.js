@@ -135,21 +135,36 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     const promptContent =
       typeof prompt === "string"
         ? prompt
-        : prompt?.fullPrompt || prompt?.content;
+        : prompt?.fullPrompt || prompt?.content || "";
+    
+    // Ensure promptContent is always a string, never null or undefined
+    const safePromptContent = promptContent && typeof promptContent === "string" ? promptContent : "";
+    
+    const userPromptContent = buildFinalReportPrompt({
+      // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
+      customerContext: null, // Not using Kajabi data for now
+      intakeAnswers: session.transcript,
+      introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
+      retrieved,
+      previousReport: session.priorReportSnippet,
+    });
+    
+    // Ensure user content is always a string
+    const safeUserContent = userPromptContent && typeof userPromptContent === "string" ? userPromptContent : "";
+    
+    if (!safePromptContent || !safeUserContent) {
+      console.error("[socket] Invalid prompt or user content:", { promptContent: safePromptContent, userContent: safeUserContent });
+      socket.emit("error", { message: "Failed to generate diagnostic: missing prompt content" });
+      return;
+    }
+    
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [
-        { role: "system", content: promptContent },
+        { role: "system", content: safePromptContent },
         {
           role: "user",
-          content: buildFinalReportPrompt({
-            // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
-            customerContext: null, // Not using Kajabi data for now
-            intakeAnswers: session.transcript,
-            introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
-            retrieved,
-            previousReport: session.priorReportSnippet,
-          }),
+          content: safeUserContent,
         },
       ],
       temperature: 0.15,
@@ -238,8 +253,8 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
       email: session.email,
       title: `Discovery Chat – ${userName}`,
       transcript: session.transcript,
-      previousReport: truncateForContext(existing.data.aiReport, 4000),
-      newReport: updatedReportText,
+      previousReport: existing.data.aiReport || null, // Pass full report, not truncated
+      newReport: updatedReportText, // Full new report
       diagnosticId: existing.id,
       pdfUrl: pdfUrl || existing.data.pdf?.url || null,
     });
@@ -342,10 +357,11 @@ const wireChatbotFreeform = (io) => {
             latestDiscovery = discoveries[0] || null;
 
             if (latestDiscovery) {
-              // Get the latest discovery report (newReportSnippet or newReport)
+              // Get the latest discovery report (prioritize full report in data field)
               latestDiscoveryReport =
-                latestDiscovery.data?.newReportSnippet ||
                 latestDiscovery.data?.newReport ||
+                latestDiscovery.data?.previousReport ||
+                latestDiscovery.data?.newReportSnippet ||
                 null;
 
               // Extract metrics from latest discovery report if available
@@ -549,17 +565,32 @@ CRITICAL RULES:
 - Let the conversation flow organically based on what they share`
           : EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT;
 
+      // Filter out messages with null/undefined content and ensure all content is strings
+      const validTranscriptMessages = session.transcript
+        .filter((m) => m && m.content && typeof m.content === "string")
+        .map((m) => ({
+          role: m.role === "assistant" ? "assistant" : "user",
+          content: String(m.content), // Ensure it's a string
+        }));
+      
+      // Ensure systemPrompt and chatPrompt are strings
+      const safeSystemPrompt = systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
+      const safeChatPrompt = chatPrompt && typeof chatPrompt === "string" ? chatPrompt : "";
+      
+      if (!safeSystemPrompt || !safeChatPrompt) {
+        console.error("[socket] Invalid system or chat prompt:", { systemPrompt: safeSystemPrompt, chatPrompt: safeChatPrompt });
+        socket.emit("error", { message: "Failed to generate response: missing prompt content" });
+        return;
+      }
+      
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
         messages: [
-          { role: "system", content: systemPrompt },
-          ...session.transcript.map((m) => ({
-            role: m.role === "assistant" ? "assistant" : "user",
-            content: m.content,
-          })),
+          { role: "system", content: safeSystemPrompt },
+          ...validTranscriptMessages,
           {
             role: "user",
-            content: chatPrompt,
+            content: safeChatPrompt,
           },
         ],
         temperature: session.mode === "discovery" ? 0.7 : 0.3,
@@ -654,22 +685,35 @@ CRITICAL RULES:
       const promptContent =
         typeof prompt === "string"
           ? prompt
-          : prompt?.fullPrompt || prompt?.content;
+          : prompt?.fullPrompt || prompt?.content || "";
+      
+      // Ensure promptContent is always a string, never null or undefined
+      const safePromptContent = promptContent && typeof promptContent === "string" ? promptContent : "";
+      
+      const userPromptContent = buildFinalReportPrompt({
+        // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
+        customerContext: null, // Not using Kajabi data for now
+        intakeAnswers: session.transcript,
+        introPageText: session.introPageText,
+        retrieved,
+        previousReport: session.priorReportSnippet,
+      });
+      
+      // Ensure user content is always a string
+      const safeUserContent = userPromptContent && typeof userPromptContent === "string" ? userPromptContent : "";
+      
+      if (!safePromptContent || !safeUserContent) {
+        console.error("[socket] Invalid prompt or user content (background):", { promptContent: safePromptContent, userContent: safeUserContent });
+        return; // Exit early in background mode
+      }
 
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
         messages: [
-          { role: "system", content: prompt },
+          { role: "system", content: safePromptContent },
           {
             role: "user",
-            content: buildFinalReportPrompt({
-              // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
-              customerContext: null, // Not using Kajabi data for now
-              intakeAnswers: session.transcript,
-              introPageText: session.introPageText,
-              retrieved,
-              previousReport: session.priorReportSnippet,
-            }),
+            content: safeUserContent,
           },
         ],
         temperature: 0.15,

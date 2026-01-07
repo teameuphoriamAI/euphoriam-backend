@@ -90,6 +90,136 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
     "?", // ends with question mark
   ];
   if (clarifyPhrases.some((p) => t.includes(p))) return false;
+
+  // Heuristic: Recognize common simple answers immediately
+  const normalizedReply = t.trim();
+  const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
+  if (simpleAnswers.includes(normalizedReply)) {
+    return true; // Accept yes/no answers immediately
+  }
+
+  // Single letter answers (A, B, C, etc.) - only accept if question has multiple choice options
+  const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
+  if (singleLetterAnswers.includes(normalizedReply)) {
+    // Check if the question contains multiple choice indicators
+    const questionText = (question || "").toLowerCase();
+    const hasMultipleChoice =
+      /\([a-f]\)/i.test(question) || // (A), (B), (C)
+      /^[a-f]\)/i.test(question) || // A), B), C) at start of line
+      /\*\*[a-f]\)/i.test(question) || // **A), **B), **C)
+      /\[a-f\]/i.test(question) || // [A], [B], [C]
+      /pick\s+[a-f]/i.test(question) || // "pick A", "pick B"
+      /choose\s+[a-f]/i.test(question) || // "choose A", "choose B"
+      /reply\s+with\s+[a-f]/i.test(question) || // "reply with A"
+      /option\s+[a-f]/i.test(question); // "option A"
+
+    if (hasMultipleChoice) {
+      return true; // Accept single letter only if question has multiple choice options
+    }
+    // If no multiple choice detected, don't accept single letter - let AI classifier decide
+  }
+
+  // Single number answers (1, 2, 3, etc.) - only accept if question has numbered options
+  const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
+  if (singleNumberAnswers.includes(normalizedReply)) {
+    const questionText = (question || "").toLowerCase();
+    const hasNumberedOptions =
+      /\([1-6]\)/i.test(question) || // (1), (2), (3)
+      /^[1-6]\)/i.test(question) || // 1), 2), 3) at start of line
+      /\*\*[1-6]\)/i.test(question) || // **1), **2), **3)
+      /\[1-6\]/i.test(question) || // [1], [2], [3]
+      /option\s+[1-6]/i.test(question); // "option 1"
+
+    if (hasNumberedOptions) {
+      return true; // Accept single number only if question has numbered options
+    }
+    // If no numbered options detected, don't accept single number - let AI classifier decide
+  }
+
+  // Check for "move on", "next", "skip" type responses that indicate user wants to proceed
+  const moveOnPhrases = [
+    "move on",
+    "next question",
+    "next",
+    "skip",
+    "move to next",
+    "continue",
+    "proceed",
+    "go to next",
+  ];
+  if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
+    return true; // Accept move-on requests as answers
+  }
+
+  // Heuristic: Recognize common single-word location/state answers
+  const singleWordAnswers = [
+    "alone",
+    "together",
+    "home",
+    "work",
+    "bed",
+    "couch",
+    "chair",
+    "desk",
+    "balcony",
+    "outside",
+    "library",
+    "park",
+    "car",
+    "office",
+    "calm",
+    "relaxed",
+    "interrupted",
+    "available",
+    "free",
+    "busy",
+    "watched",
+    "on-call",
+  ];
+  if (singleWordAnswers.includes(normalizedReply)) {
+    return true; // Accept single-word descriptive answers immediately
+  }
+
+  // Heuristic: Recognize common descriptive answers (2-4 words that are likely answers)
+  // These are short, descriptive responses that answer location/state questions
+  const descriptiveAnswerPatterns = [
+    /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
+    /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
+    /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
+    /^(yes|no|maybe|sometimes|often|rarely|never|always)\s+(alone|interrupted|available)/i,
+  ];
+  if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
+    return true; // Accept descriptive answers immediately
+  }
+
+  // Heuristic: Short answers (2-4 words) that don't contain question words are likely answers
+  const words = normalizedReply.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length >= 2 && words.length <= 4) {
+    const questionWords = [
+      "what",
+      "where",
+      "when",
+      "why",
+      "how",
+      "who",
+      "which",
+      "can",
+      "could",
+      "would",
+      "should",
+      "is",
+      "are",
+      "do",
+      "does",
+      "did",
+    ];
+    const hasQuestionWord = words.some((w) => questionWords.includes(w));
+    if (!hasQuestionWord && !normalizedReply.includes("?")) {
+      // Likely a descriptive answer - pass to AI classifier but be more lenient
+      // This will be handled by the AI classifier below
+    }
+  }
+
   const alpha = t.match(/[A-Za-z]/g);
   // Relaxed: Allow short answers to pass to the AI classifier
   if (!alpha || alpha.length < 1) return false;
@@ -115,6 +245,122 @@ Rules:
     return txt.includes("yes");
   } catch (err) {
     console.error("[isAiLikelyAnswer] fallback to heuristic", err);
+    // Fallback: If AI fails, use heuristic for simple answers
+    const normalizedReply = t.trim();
+    const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
+    if (simpleAnswers.includes(normalizedReply)) {
+      return true;
+    }
+
+    // Single letter answers - only accept if question has multiple choice
+    const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
+    if (singleLetterAnswers.includes(normalizedReply)) {
+      const questionText = (question || "").toLowerCase();
+      const hasMultipleChoice =
+        /\([a-f]\)/i.test(question) ||
+        /^[a-f]\)/i.test(question) ||
+        /\*\*[a-f]\)/i.test(question) ||
+        /\[a-f\]/i.test(question) ||
+        /pick\s+[a-f]/i.test(question) ||
+        /choose\s+[a-f]/i.test(question) ||
+        /reply\s+with\s+[a-f]/i.test(question) ||
+        /option\s+[a-f]/i.test(question);
+      if (hasMultipleChoice) {
+        return true;
+      }
+    }
+
+    // Single number answers - only accept if question has numbered options
+    const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
+    if (singleNumberAnswers.includes(normalizedReply)) {
+      const questionText = (question || "").toLowerCase();
+      const hasNumberedOptions =
+        /\([1-6]\)/i.test(question) ||
+        /^[1-6]\)/i.test(question) ||
+        /\*\*[1-6]\)/i.test(question) ||
+        /\[1-6\]/i.test(question) ||
+        /option\s+[1-6]/i.test(question);
+      if (hasNumberedOptions) {
+        return true;
+      }
+    }
+    const moveOnPhrases = [
+      "move on",
+      "next question",
+      "next",
+      "skip",
+      "move to next",
+      "continue",
+      "proceed",
+      "go to next",
+    ];
+    if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
+      return true;
+    }
+    // Fallback: Check for single-word location/state answers
+    const singleWordAnswers = [
+      "alone",
+      "together",
+      "home",
+      "work",
+      "bed",
+      "couch",
+      "chair",
+      "desk",
+      "balcony",
+      "outside",
+      "library",
+      "park",
+      "car",
+      "office",
+      "calm",
+      "relaxed",
+      "interrupted",
+      "available",
+      "free",
+      "busy",
+      "watched",
+      "on-call",
+    ];
+    if (singleWordAnswers.includes(normalizedReply)) {
+      return true;
+    }
+    // Fallback: Check for descriptive answers
+    const descriptiveAnswerPatterns = [
+      /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
+      /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
+      /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
+    ];
+    if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
+      return true;
+    }
+    // Fallback: Short answers (2-4 words) without question words are likely answers
+    const words = normalizedReply.split(/\s+/).filter((w) => w.length > 0);
+    if (words.length >= 2 && words.length <= 4) {
+      const questionWords = [
+        "what",
+        "where",
+        "when",
+        "why",
+        "how",
+        "who",
+        "which",
+        "can",
+        "could",
+        "would",
+        "should",
+        "is",
+        "are",
+        "do",
+        "does",
+        "did",
+      ];
+      const hasQuestionWord = words.some((w) => questionWords.includes(w));
+      if (!hasQuestionWord && !normalizedReply.includes("?")) {
+        // Likely a descriptive answer - accept it
+        return true;
+      }
+    }
     return false;
   }
 };
@@ -259,6 +505,23 @@ export async function detectUserWantsToEndOrGenerateReport({
 }) {
   const lowerMessage = (userMessage || "").toLowerCase();
 
+  // FIRST: Check if user wants a new diagnostic - if so, they DON'T want to end/generate report
+  // They want to start a new diagnostic instead
+  const wantsNewDiagnostic =
+    /(do|start|create|generate|redo|medo|new|another|fresh|again).*(diagnostic|report|dignostic)/i.test(
+      lowerMessage
+    ) ||
+    /(diagnostic|report|dignostic).*(again|new|redo|medo|fresh|another|start over|over again)/i.test(
+      lowerMessage
+    ) ||
+    /(want|need|would like|let's|let me).*(new|another|fresh|redo|medo).*(diagnostic|report|dignostic)/i.test(
+      lowerMessage
+    );
+
+  if (wantsNewDiagnostic) {
+    return false; // User wants new diagnostic, NOT to end/generate report
+  }
+
   // Quick check for explicit email/report requests (before AI check)
   const explicitEmailReportRequest =
     /(email|send).*(me|the|my).*(report|it)/i.test(userMessage) ||
@@ -267,14 +530,18 @@ export async function detectUserWantsToEndOrGenerateReport({
     ) ||
     /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(
       userMessage
-    );
+    ) ||
+    /(end|finish|stop).*(chat|conversation|now)/i.test(userMessage) ||
+    /end chat now/i.test(userMessage);
 
   if (explicitEmailReportRequest) {
     return true; // Immediately return true for explicit requests
   }
 
+  // Only use AI classifier for ambiguous cases - be very conservative
+  // Removed casual ending phrases check - it was too aggressive and matching ambiguous phrases
   const prompt = `
-You are a binary classifier. Analyze the user's message and determine if they want to:
+You are a binary classifier. Analyze the user's message and determine if they EXPLICITLY want to:
 1. End the chat/conversation
 2. Generate a report
 3. Get a report
@@ -284,14 +551,30 @@ You are a binary classifier. Analyze the user's message and determine if they wa
 
 User's latest message: "${userMessage || ""}"
 
-Recent conversation context (last 3 messages):
-${JSON.stringify(transcript.slice(-3), null, 2)}
+Recent conversation context (last 5 messages):
+${JSON.stringify(transcript.slice(-5), null, 2)}
 
-Rules:
+CRITICAL RULES:
 - Reply ONLY "yes" or "no"
-- "yes" if the user is asking to end, finish, stop, generate report, get report, email report, send report, or wants their report
-- "no" if they're just answering questions or continuing the conversation
-- Be sensitive to variations like "give me my report", "I want the report", "can I get a report", "email me the report", "send the report", "end this", "finish up", etc.
+- Return "yes" ONLY if the user EXPLICITLY requests to end, finish, stop, generate report, get report, email report, or send report
+- Return "yes" ONLY for clear ending phrases like "that's it for today", "that's all for today", "I'm done for today", "finish up", "end this", "generate my report", "email me the report"
+- Return "no" if the message is ambiguous, unclear, or could mean something else
+- Return "no" if they're just answering questions, continuing conversation, or asking questions
+- Return "no" if they want to start a NEW diagnostic or do diagnostics AGAIN (e.g., "do my diagnostics again", "start a new diagnostic", "redo my diagnostic") - these are requests to START something new, not END
+- Return "no" if the message is a statement, question, or response that doesn't clearly indicate ending intent
+- When in doubt, return "no" - only return "yes" for very clear and explicit ending requests
+- Phrases like "I'm good", "we're good", "all set", "I think that's it" are ambiguous and should return "no" unless the context clearly shows ending intent
+
+Examples:
+- "email me the report" → yes
+- "generate my report" → yes
+- "that's it for today" → yes
+- "I'm done for now" → yes
+- "do my diagnostics again" → no (wants to start new, not end)
+- "I think that's it" → no (ambiguous, could mean "that's my answer")
+- "I'm good" → no (ambiguous)
+- "all set" → no (ambiguous)
+- Any question or statement → no (unless explicitly about ending/generating report)
 
 Reply:`;
 
@@ -300,7 +583,7 @@ Reply:`;
       model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 3,
+      max_completion_tokens: 30,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "")
       .toLowerCase()

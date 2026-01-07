@@ -237,28 +237,64 @@ const buildFinalReportPrompt = ({
     ? `\nPrevious diagnostic report (reference; keep continuity and update with any new answers):\n${previousReport}\n`
     : "";
 
+  // Determine if this is a first-time user or returning user
+  const isFirstTimeUser = !previousReport || previousReport.trim().length === 0;
+  
   return `
 You are Euphoriam AI generating a FULL diagnostic report that must follow all hard rules.
 
 // Customer Context (source of truth): // Commented out - not using Kajabi data for now
 // ${JSON.stringify(customerContext, null, 2)}
 
-Intake Answers (first-time or returning updates):
-${JSON.stringify(intakeAnswers, null, 2)}
+${isFirstTimeUser 
+  ? `FIRST-TIME USER: This is a first-time diagnostic. Use the 12 question answers from the transcript below to calculate ALL metrics.
+Intake Answers (12 questions - use these to calculate metrics):
+${JSON.stringify(intakeAnswers, null, 2)}`
+  : `RETURNING USER: This is an update. Use BOTH the previous report AND the new Q&A to calculate updated metrics.
+Previous Report (use existing metrics as baseline):
+${previousReport}
+
+New Q&A/Updates (use these along with previous report to calculate updated metrics):
+${JSON.stringify(intakeAnswers, null, 2)}`}
 
 Instructions:
 - Obey every HARD RULE from the system prompt.
 - Use the Intro Page text exactly as provided:
 ${introBlock}
 - Never reveal the Euphoriam formula or variables; only show Signal Output as "Signal Output: X%".
+- **CRITICAL: Calculate metrics from the evidence provided above.**
+- **METRICS CALCULATION RULE:**
+  ${isFirstTimeUser 
+    ? `For FIRST-TIME USER: Calculate metrics based ONLY on the 12 question answers in the transcript. Analyze each answer for evidence of:
+    - Gravity: resistance patterns, avoidance behavior, old identity pull
+    - Signal Coherence: alignment between what they want and what they do
+    - QGC Activation: authentic genius, true desires vs borrowed goals
+    - Consciousness Level: capacity to hold new identity, stability under pressure
+    - Signal Output: overall broadcast strength (calculate based on coherence + QGC - gravity)`
+    : `For RETURNING USER: Calculate UPDATED metrics by comparing:
+    - Previous report metrics (baseline)
+    - New Q&A answers (what changed)
+    - Evidence of shifts, progress, or regression
+    Update metrics based on changes detected in the new answers compared to the previous report.`}
+- **DO NOT use placeholders like "[Extract from report]" or "Unknown" for metrics. Calculate actual values based on the evidence provided.**
 - Show the Metrics Gauge exactly in the required block format (using █ and ░) followed immediately by the Metrics Interpretation Table.
 - Follow the required section order and include title page, intro page, all sections, recommendations, evolution notes, final summary, and End of Report footer with copyright note.
 - Use divider lines as either "----------------------------------------" (ASCII) or "────────────────────────────────────────" (unicode); do NOT use %%%% or other ad-hoc separators.
 - Keep sections clearly delineated (no "%%%%" separators) and match the sample style with clean section headers.
 - Keep the tone warm, grounded, slow, human, intuitive, precise. One question at a time does not apply here because you are generating the full report.
-- Do not invent data that is not present; if missing, state "Unknown".
+- **At the END of the report, after the copyright note, add a METRICS JSON block in this exact format (for system parsing):**
+  
+METRICS_JSON_START
+{
+  "qgcActivation": [number 0-100],
+  "consciousnessLevel": [number 1.0-5.0],
+  "gravity": [number 0-100],
+  "signalCoherence": [number 0-100],
+  "signalOutput": [number 0-100]
+}
+METRICS_JSON_END
 ${contextBlock}
-${previousReportBlock}
+${!isFirstTimeUser ? '' : previousReportBlock}
 
 Return the full PDF-ready content block as plain text (no JSON, no markdown fences).`;
 };
@@ -754,37 +790,30 @@ ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
       return "█".repeat(filled) + "░".repeat(empty);
     };
 
+    // Format metrics gauge in single-line format (matching PDF format)
+    const formatMetricLine = (label, value, isPercentage = true) => {
+      if (value === null || value === undefined) return null;
+      const displayValue = Number(value);
+      const percentage = isPercentage ? displayValue : (displayValue / 5) * 100;
+      const gauge = createProgressBar(percentage);
+      const valueText = isPercentage ? `${Math.round(displayValue)}%` : `${displayValue}`;
+      const labelWidth = 20;
+      const spacesNeeded = Math.max(0, labelWidth - label.length);
+      const spacing = " ".repeat(spacesNeeded);
+      return `${label}${spacing} ${gauge} ${valueText}`;
+    };
+
     const formattedMetricsSection =
       gravity !== null &&
       signalCoherence !== null &&
       signalOutput !== null &&
       consciousnessLevel !== null &&
       qgcActivation !== null
-        ? `QGC Activation:
-${createProgressBar(qgcActivation)}
-${qgcActivation}%
-
-Consciousness Level:
-${createProgressBar((consciousnessLevel / 5) * 100)}
-${Math.round((consciousnessLevel / 5) * 100)}%
-
-Gravity:
-${createProgressBar(gravity)}
-${gravity}%
-
-Signal Coherence:
-${createProgressBar(signalCoherence)}
-${signalCoherence}%
-
-Signal Output:
-${createProgressBar(signalOutput)}
-${signalOutput}%
-
-* Extremely high Gravity (${gravity}%) → the old identity has a powerful stabilising pull
-* Perfect Signal Coherence (${signalCoherence}%) → no fragmentation, no inner chaos
-* Very low Signal Output (${signalOutput}%) → not because of weakness, but because entry hadn't happened yet
-* CL ${consciousnessLevel} → stabilisation phase
-* QGC ${qgcActivation}% → genuine creative intelligence present but contained`
+        ? `QGC Activation:      ${createProgressBar(qgcActivation)} ${qgcActivation}%
+Consciousness Level: ${createProgressBar((consciousnessLevel / 5) * 100)} ${Math.round((consciousnessLevel / 5) * 100)}%
+Gravity (Load):      ${createProgressBar(gravity)} ${gravity}%
+Signal Coherence:    ${createProgressBar(signalCoherence)} ${signalCoherence}%
+Signal Output:       ${createProgressBar(signalOutput)} ${signalOutput}%`
         : null;
 
     return `You are Euphoriam AI working with structure-aware precision.${discoveryTypeContext}
@@ -830,15 +859,18 @@ REQUIRED FORMAT - Follow this EXACTLY:
    
    Format your response EXACTLY like this:
    
-   "aWelcome back. I've loaded your last report.
+   "Welcome back. I've loaded your last report.
 
    I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
    Your structure at the last check-in was very clear:
 
 ${
-  formattedMetricsSection ||
-  `   * **[Extract Gravity % from report]** → [what it means]
+  formattedMetricsSection 
+    ? `## METRICS GAUGE (Current Snapshot)
+
+${formattedMetricsSection}`
+    : `   * **[Extract Gravity % from report]** → [what it means]
    * **[Extract Signal Coherence % from report]** → [what it means]
    * **[Extract Signal Output % from report]** → [what it means]
    * **CL [Extract from report]** → [what phase]
@@ -1466,7 +1498,64 @@ const loadDiagnosticState = async (email) => {
 };
 
 /**
+ * Extracts metrics from report text
+ */
+const extractMetricsFromReport = (reportText) => {
+    if (!reportText) return {};
+    
+    // Try multiple patterns for each metric to handle different report formats
+    // Pattern 1: "Gravity: 95%" or "Gravity 95%" or "Gravity: 95"
+    // Pattern 2: "**Gravity** 95%" (markdown bold)
+    // Pattern 3: "Gravity (Load): 95%" (with label)
+    const gravityMatch = reportText.match(
+      /Gravity(?:\s*\(Load\))?[:\s]+(\d+(?:\.\d+)?)%?/i
+    ) || reportText.match(/\*\*Gravity(?:\s*\(Load\))?\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
+    
+    const signalCoherenceMatch = reportText.match(
+      /Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i
+    ) || reportText.match(/\*\*Signal\s+Coherence\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
+    
+    const signalOutputMatch = reportText.match(
+      /Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i
+    ) || reportText.match(/\*\*Signal\s+Output\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
+    
+    // Consciousness Level can be "CL: 3.5" or "Consciousness Level: 3.5" or "CL 3.5"
+    const clMatch = reportText.match(
+      /(?:Consciousness\s+Level|CL)[:\s]+(\d+(?:\.\d+)?)/i
+    ) || reportText.match(/\*\*(?:Consciousness\s+Level|CL)\*\*[:\s]*(\d+(?:\.\d+)?)/i);
+    
+    // QGC can be "QGC Activation: 45%" or "QGC: 45%" or "Quantum Genius Codes: 45%"
+    const qgcMatch = reportText.match(
+      /(?:QGC(?:\s+Activation)?|Quantum\s+Genius\s+Codes)[:\s]+(\d+(?:\.\d+)?)%?/i
+    ) || reportText.match(/\*\*(?:QGC(?:\s+Activation)?|Quantum\s+Genius\s+Codes)\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
+
+    const extracted = {
+      gravity: gravityMatch ? parseFloat(gravityMatch[1]) : undefined,
+      signalCoherence: signalCoherenceMatch ? parseFloat(signalCoherenceMatch[1]) : undefined,
+      signalOutput: signalOutputMatch ? parseFloat(signalOutputMatch[1]) : undefined,
+      consciousnessLevel: clMatch ? parseFloat(clMatch[1]) : undefined,
+      qgcActivation: qgcMatch ? parseFloat(qgcMatch[1]) : undefined,
+    };
+    
+    // Log extraction results for debugging
+    if (Object.keys(extracted).some(key => extracted[key] !== undefined)) {
+      console.log("[extractMetricsFromReport] Extracted metrics:", extracted);
+    } else {
+      // Try to find METRICS GAUGE section in report
+      const metricsGaugeMatch = reportText.match(/METRICS\s+GAUGE[\s\S]{0,500}/i);
+      if (metricsGaugeMatch) {
+        console.log("[extractMetricsFromReport] Found METRICS GAUGE section but no metrics extracted. Section:", metricsGaugeMatch[0]);
+      } else {
+        console.log("[extractMetricsFromReport] No metrics found in report text (first 1000 chars):", reportText.substring(0, 1000));
+      }
+    }
+    
+    return extracted;
+};
+
+/**
  * Loads latest discovery metrics and report
+ * Priority: 1) Old discovery report metrics, 2) Last diagnostic report metrics
  */
 const loadLatestDiscoveryMetrics = async (
   existingDiagnostic,
@@ -1474,8 +1563,9 @@ const loadLatestDiscoveryMetrics = async (
 ) => {
   let latestDiscovery = null;
   let latestDiscoveryReport = null;
-  let latestDiscoveryMetrics = diagnosticMetrics;
+  let latestDiscoveryMetrics = {};
 
+  // First, try to get metrics from old discovery report (if exists)
   if (existingDiagnostic?.userId) {
     const discoveries = await Discovery.findAll({
       where: { userId: existingDiagnostic.userId },
@@ -1486,47 +1576,46 @@ const loadLatestDiscoveryMetrics = async (
 
     if (latestDiscovery) {
       latestDiscoveryReport =
-        latestDiscovery.data?.newReportSnippet ||
         latestDiscovery.data?.newReport ||
+        latestDiscovery.data?.previousReport ||
+        latestDiscovery.data?.newReportSnippet ||
         null;
 
       if (latestDiscoveryReport) {
         // Extract metrics from discovery report
-        const gravityMatch = latestDiscoveryReport.match(
-          /Gravity[:\s]+(\d+(?:\.\d+)?)%?/i
-        );
-        const signalCoherenceMatch = latestDiscoveryReport.match(
-          /Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i
-        );
-        const signalOutputMatch = latestDiscoveryReport.match(
-          /Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i
-        );
-        const clMatch = latestDiscoveryReport.match(
-          /Consciousness\s+Level[:\s]+(\d+(?:\.\d+)?)|CL[:\s]+(\d+(?:\.\d+)?)/i
-        );
-        const qgcMatch = latestDiscoveryReport.match(
-          /QGC[:\s]+(\d+(?:\.\d+)?)%?|Quantum\s+Genius\s+Codes[:\s]+(\d+(?:\.\d+)?)%?/i
-        );
-
-        latestDiscoveryMetrics = {
-          ...diagnosticMetrics,
-          gravity: gravityMatch
-            ? parseFloat(gravityMatch[1])
-            : diagnosticMetrics.gravity,
-          signalCoherence: signalCoherenceMatch
-            ? parseFloat(signalCoherenceMatch[1])
-            : diagnosticMetrics.signalCoherence,
-          signalOutput: signalOutputMatch
-            ? parseFloat(signalOutputMatch[1])
-            : diagnosticMetrics.signalOutput,
-          consciousnessLevel: clMatch
-            ? parseFloat(clMatch[1] || clMatch[2])
-            : diagnosticMetrics.consciousnessLevel,
-          qgcActivation: qgcMatch
-            ? parseFloat(qgcMatch[1] || qgcMatch[2])
-            : diagnosticMetrics.qgcActivation,
-        };
+        const extractedMetrics = extractMetricsFromReport(latestDiscoveryReport);
+        if (Object.keys(extractedMetrics).some(key => extractedMetrics[key] !== undefined)) {
+          latestDiscoveryMetrics = extractedMetrics;
+          console.log("[loadLatestDiscoveryMetrics] Using metrics from old discovery report:", extractedMetrics);
+        }
       }
+    }
+  }
+
+  // If no discovery metrics found, use last diagnostic report metrics
+  const hasDiscoveryMetrics = latestDiscoveryMetrics && 
+    (latestDiscoveryMetrics.gravity !== undefined ||
+     latestDiscoveryMetrics.signalCoherence !== undefined ||
+     latestDiscoveryMetrics.signalOutput !== undefined);
+  
+  if (!hasDiscoveryMetrics) {
+    // Try to extract from diagnostic report
+    if (existingDiagnostic?.data?.aiReport) {
+      const diagnosticReport = existingDiagnostic.data.aiReport;
+      const extractedMetrics = extractMetricsFromReport(diagnosticReport);
+      
+      if (Object.keys(extractedMetrics).some(key => extractedMetrics[key] !== undefined)) {
+        latestDiscoveryMetrics = extractedMetrics;
+        console.log("[loadLatestDiscoveryMetrics] Using metrics from last diagnostic report:", extractedMetrics);
+      } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
+        // Fallback to stored diagnostic metrics
+        latestDiscoveryMetrics = diagnosticMetrics;
+        console.log("[loadLatestDiscoveryMetrics] Using stored diagnostic metrics:", diagnosticMetrics);
+      }
+    } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
+      // No report but have stored metrics
+      latestDiscoveryMetrics = diagnosticMetrics;
+      console.log("[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (no report):", diagnosticMetrics);
     }
   }
 
@@ -1749,6 +1838,96 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
     "?", // ends with question mark
   ];
   if (clarifyPhrases.some((p) => t.includes(p))) return false;
+  
+  // Heuristic: Recognize common simple answers immediately
+  const normalizedReply = t.trim();
+  const simpleAnswers = [
+    "yes", "no", "y", "n", "yeah", "yep", "nope", "nah",
+  ];
+  if (simpleAnswers.includes(normalizedReply)) {
+    return true; // Accept yes/no answers immediately
+  }
+  
+  // Single letter answers (A, B, C, etc.) - only accept if question has multiple choice options
+  const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
+  if (singleLetterAnswers.includes(normalizedReply)) {
+    // Check if the question contains multiple choice indicators
+    const questionText = (question || "").toLowerCase();
+    const hasMultipleChoice = 
+      /\([a-f]\)/i.test(question) || // (A), (B), (C)
+      /^[a-f]\)/i.test(question) || // A), B), C) at start of line
+      /\*\*[a-f]\)/i.test(question) || // **A), **B), **C)
+      /\[a-f\]/i.test(question) || // [A], [B], [C]
+      /pick\s+[a-f]/i.test(question) || // "pick A", "pick B"
+      /choose\s+[a-f]/i.test(question) || // "choose A", "choose B"
+      /reply\s+with\s+[a-f]/i.test(question) || // "reply with A"
+      /option\s+[a-f]/i.test(question); // "option A"
+    
+    if (hasMultipleChoice) {
+      return true; // Accept single letter only if question has multiple choice options
+    }
+    // If no multiple choice detected, don't accept single letter - let AI classifier decide
+  }
+  
+  // Single number answers (1, 2, 3, etc.) - only accept if question has numbered options
+  const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
+  if (singleNumberAnswers.includes(normalizedReply)) {
+    const questionText = (question || "").toLowerCase();
+    const hasNumberedOptions = 
+      /\([1-6]\)/i.test(question) || // (1), (2), (3)
+      /^[1-6]\)/i.test(question) || // 1), 2), 3) at start of line
+      /\*\*[1-6]\)/i.test(question) || // **1), **2), **3)
+      /\[1-6\]/i.test(question) || // [1], [2], [3]
+      /option\s+[1-6]/i.test(question); // "option 1"
+    
+    if (hasNumberedOptions) {
+      return true; // Accept single number only if question has numbered options
+    }
+    // If no numbered options detected, don't accept single number - let AI classifier decide
+  }
+  
+  // Check for "move on", "next", "skip" type responses that indicate user wants to proceed
+  const moveOnPhrases = [
+    "move on", "next question", "next", "skip", "move to next",
+    "continue", "proceed", "go to next"
+  ];
+  if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
+    return true; // Accept move-on requests as answers
+  }
+  
+  // Heuristic: Recognize common single-word location/state answers
+  const singleWordAnswers = [
+    "alone", "together", "home", "work", "bed", "couch", "chair", "desk", 
+    "balcony", "outside", "library", "park", "car", "office", "calm", "relaxed",
+    "interrupted", "available", "free", "busy", "watched", "on-call"
+  ];
+  if (singleWordAnswers.includes(normalizedReply)) {
+    return true; // Accept single-word descriptive answers immediately
+  }
+  
+  // Heuristic: Recognize common descriptive answers (2-4 words that are likely answers)
+  // These are short, descriptive responses that answer location/state questions
+  const descriptiveAnswerPatterns = [
+    /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
+    /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
+    /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
+    /^(yes|no|maybe|sometimes|often|rarely|never|always)\s+(alone|interrupted|available)/i,
+  ];
+  if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
+    return true; // Accept descriptive answers immediately
+  }
+  
+  // Heuristic: Short answers (2-4 words) that don't contain question words are likely answers
+  const words = normalizedReply.split(/\s+/).filter(w => w.length > 0);
+  if (words.length >= 2 && words.length <= 4) {
+    const questionWords = ["what", "where", "when", "why", "how", "who", "which", "can", "could", "would", "should", "is", "are", "do", "does", "did"];
+    const hasQuestionWord = words.some(w => questionWords.includes(w));
+    if (!hasQuestionWord && !normalizedReply.includes("?")) {
+      // Likely a descriptive answer - pass to AI classifier but be more lenient
+      // This will be handled by the AI classifier below
+    }
+  }
+  
   const alpha = t.match(/[A-Za-z]/g);
   // Relaxed: Allow short answers to pass to the AI classifier
   if (!alpha || alpha.length < 1) return false;
@@ -1774,6 +1953,82 @@ Rules:
     return txt.includes("yes");
   } catch (err) {
     console.error("[isAiLikelyAnswer] fallback to heuristic", err);
+    // Fallback: If AI fails, use heuristic for simple answers
+    const normalizedReply = t.trim();
+    const simpleAnswers = [
+      "yes", "no", "y", "n", "yeah", "yep", "nope", "nah",
+    ];
+    if (simpleAnswers.includes(normalizedReply)) {
+      return true;
+    }
+    
+    // Single letter answers - only accept if question has multiple choice
+    const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
+    if (singleLetterAnswers.includes(normalizedReply)) {
+      const questionText = (question || "").toLowerCase();
+      const hasMultipleChoice = 
+        /\([a-f]\)/i.test(question) || 
+        /^[a-f]\)/i.test(question) || 
+        /\*\*[a-f]\)/i.test(question) || 
+        /\[a-f\]/i.test(question) || 
+        /pick\s+[a-f]/i.test(question) || 
+        /choose\s+[a-f]/i.test(question) || 
+        /reply\s+with\s+[a-f]/i.test(question) || 
+        /option\s+[a-f]/i.test(question);
+      if (hasMultipleChoice) {
+        return true;
+      }
+    }
+    
+    // Single number answers - only accept if question has numbered options
+    const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
+    if (singleNumberAnswers.includes(normalizedReply)) {
+      const questionText = (question || "").toLowerCase();
+      const hasNumberedOptions = 
+        /\([1-6]\)/i.test(question) || 
+        /^[1-6]\)/i.test(question) || 
+        /\*\*[1-6]\)/i.test(question) || 
+        /\[1-6\]/i.test(question) || 
+        /option\s+[1-6]/i.test(question);
+      if (hasNumberedOptions) {
+        return true;
+      }
+    }
+    const moveOnPhrases = [
+      "move on", "next question", "next", "skip", "move to next",
+      "continue", "proceed", "go to next"
+    ];
+    if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
+      return true;
+    }
+    // Fallback: Check for single-word location/state answers
+    const singleWordAnswers = [
+      "alone", "together", "home", "work", "bed", "couch", "chair", "desk", 
+      "balcony", "outside", "library", "park", "car", "office", "calm", "relaxed",
+      "interrupted", "available", "free", "busy", "watched", "on-call"
+    ];
+    if (singleWordAnswers.includes(normalizedReply)) {
+      return true;
+    }
+    // Fallback: Check for descriptive answers
+    const descriptiveAnswerPatterns = [
+      /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
+      /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
+      /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
+    ];
+    if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
+      return true;
+    }
+    // Fallback: Short answers (2-4 words) without question words are likely answers
+    const words = normalizedReply.split(/\s+/).filter(w => w.length > 0);
+    if (words.length >= 2 && words.length <= 4) {
+      const questionWords = ["what", "where", "when", "why", "how", "who", "which", "can", "could", "would", "should", "is", "are", "do", "does", "did"];
+      const hasQuestionWord = words.some(w => questionWords.includes(w));
+      if (!hasQuestionWord && !normalizedReply.includes("?")) {
+        // Likely a descriptive answer - accept it
+        return true;
+      }
+    }
     return false;
   }
 };
@@ -1870,14 +2125,19 @@ const buildChatPrompts = async ({
             priorReport: priorReportSnippet,
             distinctQuestionNumbers: distinctQuestionNumbers,
           })
-        : `The user has NOT answered the last question. Do NOT move to the next question. 
-Rephrase and clarify the SAME question only, briefly acknowledge their confusion, and invite them to answer that question now.
+        : `The user's reply may not fully answer the last question. 
 
 Last question: "${lastAssistant?.content || ""}"
 User reply: "${lastUser?.content || ""}"
 
-Return only the clarified form of that same question (plus a short acknowledgment), nothing else. 
-Do NOT emit a new question number; stay on the same question.`;
+IMPORTANT RULES:
+1. If the user's reply is CLEAR and UNDERSTANDABLE (even if short like "completely alone", "at home", "balcony", "yes", "no"), ACCEPT it and MOVE TO THE NEXT QUESTION immediately. Do NOT ask for confirmation.
+2. Only rephrase/clarify if the reply is truly unclear, ambiguous, or contradictory.
+3. DO NOT ask redundant confirmations like "Just to confirm..." or "Just to make sure..." - if you understand the answer, acknowledge it briefly and move forward.
+4. If the user has provided a clear answer, acknowledge it with "Got it" or similar and proceed to the next question.
+5. Only stay on the same question number if the answer is genuinely unclear or the user asked a clarifying question.
+
+Return your response following these rules.`;
 
     systemPrompt = EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT;
   }
@@ -2012,6 +2272,7 @@ module.exports = {
   validateChatbotRequest,
   loadDiagnosticState,
   loadLatestDiscoveryMetrics,
+  extractMetricsFromReport,
   extractReportDate,
   preparePreviousReports,
   checkWantsNewDiagnostic,

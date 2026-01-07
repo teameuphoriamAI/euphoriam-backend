@@ -197,13 +197,15 @@ const drawMetricsInterpretationTable = (doc) => {
   }
 
   doc.moveDown(2);
+  // Reset x position to left margin after drawing table
+  doc.x = doc.page.margins.left;
   doc.font("Helvetica").fontSize(11); // Reset to default font size
 };
 
 const isAllCapsHeader = (line) =>
   /^[A-Z0-9][A-Z0-9\s/&()'".:-]{6,}$/.test(line) && line === line.toUpperCase();
 
-const renderStyledReport = (doc, text) => {
+const renderStyledReport = (doc, text, metrics = {}) => {
   const lines = String(text || "").split(/\r?\n/);
 
   doc.font("Helvetica").fontSize(11);
@@ -211,10 +213,103 @@ const renderStyledReport = (doc, text) => {
 
   let skipUntilNextSection = false;
   let foundMetricsInterpretation = false;
+  let inMetricsGaugeSection = false;
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     const line = rawLine.trimEnd();
+
+    // Check if we've found the METRICS GAUGE section
+    if (/##\s+METRICS\s+GAUGE/i.test(line) || /METRICS\s+GAUGE/i.test(line)) {
+      inMetricsGaugeSection = true;
+      doc.moveDown(0.5);
+      doc.font("Helvetica-Bold").fontSize(14).text("METRICS GAUGE (Current Snapshot)");
+      doc.moveDown(0.3);
+      
+      // Render metrics with actual values - single line format
+      const renderGauge = (value) => {
+        const v = Math.max(0, Math.min(100, Number(value || 0)));
+        const totalBlocks = 12;
+        const filled = Math.round((v / 100) * totalBlocks);
+        const empty = totalBlocks - filled;
+        const filledBlock = "█".repeat(filled);
+        const emptyBlock = "░".repeat(empty);
+        return `${filledBlock}${emptyBlock}`;
+      };
+      
+      // Helper to render a single line metric with proper spacing
+      const renderMetricLine = (label, value, isPercentage = true) => {
+        // Check if value is actually defined (not undefined, null, or NaN)
+        const hasValue = value !== undefined && value !== null && !isNaN(value);
+        
+        if (!hasValue) {
+          // If no value, show "Unknown" with empty gauge
+          const labelWidth = 20;
+          const spacesNeeded = Math.max(0, labelWidth - label.length);
+          const spacing = " ".repeat(spacesNeeded);
+          const emptyGauge = "░░░░░░░░░░░░"; // 12 empty blocks
+          doc.font("Helvetica").fontSize(11);
+          doc.text(`${label}${spacing} ${emptyGauge} Unknown`);
+          return;
+        }
+        
+        const displayValue = Number(value);
+        const percentage = isPercentage ? displayValue : (displayValue / 5) * 100;
+        const gauge = renderGauge(percentage);
+        const valueText = isPercentage ? `${Math.round(displayValue)}%` : `${displayValue}`;
+        
+        // Use fixed-width font spacing for alignment
+        // Calculate spacing needed to align gauge bars
+        const labelWidth = 20; // Approximate character width for alignment
+        const spacesNeeded = Math.max(0, labelWidth - label.length);
+        const spacing = " ".repeat(spacesNeeded);
+        
+        doc.font("Helvetica").fontSize(11);
+        doc.text(`${label}${spacing} ${gauge} ${valueText}`);
+      };
+      
+      console.log("[diagnosticPdf] Rendering METRICS GAUGE with metrics:", metrics);
+      
+      renderMetricLine("QGC Activation:", metrics.qgcActivation, true);
+      doc.moveDown(0.2);
+      
+      renderMetricLine("Consciousness Level:", metrics.consciousnessLevel, false);
+      doc.moveDown(0.2);
+      
+      renderMetricLine("Gravity (Load):", metrics.gravity, true);
+      doc.moveDown(0.2);
+      
+      renderMetricLine("Signal Coherence:", metrics.signalCoherence, true);
+      doc.moveDown(0.2);
+      
+      renderMetricLine("Signal Output:", metrics.signalOutput, true);
+      doc.moveDown(0.5);
+      
+      continue;
+    }
+    
+    // Skip lines in METRICS GAUGE section until we hit the next section
+    if (inMetricsGaugeSection) {
+      if (
+        (!line.trim() && i + 1 < lines.length && 
+         (isAllCapsHeader(lines[i + 1]?.trim()) || 
+          lines[i + 1]?.trim().startsWith("SECTION") ||
+          lines[i + 1]?.trim().startsWith("PHASE") ||
+          lines[i + 1]?.trim().startsWith("##") ||
+          lines[i + 1]?.trim() === "----------------------------------------")) ||
+        line === "----------------------------------------" ||
+        /^SECTION\s+\d+\s+—\s+/.test(line) ||
+        /^PHASE\s+\d+\s+—\s+/.test(line) ||
+        /^##\s+/.test(line) ||
+        (isAllCapsHeader(line) && !/METRICS\s+GAUGE/i.test(line))
+      ) {
+        inMetricsGaugeSection = false;
+        // Continue processing this line
+      } else {
+        // Skip this line (it's part of the metrics gauge text we're replacing)
+        continue;
+      }
+    }
 
     // Check if we've found the Metrics Interpretation Table header
     if (
@@ -227,6 +322,8 @@ const renderStyledReport = (doc, text) => {
       doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE");
       doc.moveDown(0.3);
       drawMetricsInterpretationTable(doc);
+      // Reset document position to left margin after drawing table
+      doc.x = doc.page.margins.left;
       doc.font("Helvetica").fontSize(11); // Reset font
       continue;
     }
@@ -239,19 +336,26 @@ const renderStyledReport = (doc, text) => {
          (isAllCapsHeader(lines[i + 1]?.trim()) || 
           lines[i + 1]?.trim().startsWith("SECTION") ||
           lines[i + 1]?.trim().startsWith("PHASE") ||
+          lines[i + 1]?.trim().startsWith("##") ||
           lines[i + 1]?.trim() === "----------------------------------------")) ||
         line === "----------------------------------------" ||
         /^SECTION\s+\d+\s+—\s+/.test(line) ||
         /^PHASE\s+\d+\s+—\s+/.test(line) ||
+        /^##\s+/.test(line) ||
         (isAllCapsHeader(line) && line !== "METRICS INTERPRETATION TABLE")
       ) {
         skipUntilNextSection = false;
+        // Reset document position to left margin before processing next section
+        doc.x = doc.page.margins.left;
         // Continue processing this line
       } else {
         // Skip this line (it's part of the table text we're replacing)
         continue;
       }
     }
+
+    // Always ensure x position is at left margin before processing any line
+    doc.x = doc.page.margins.left;
 
     if (!line.trim()) {
       doc.moveDown(0.8);
@@ -316,6 +420,8 @@ const renderStyledReport = (doc, text) => {
     }
 
     if (isAllCapsHeader(line)) {
+      // Reset x position to left margin for headers
+      doc.x = doc.page.margins.left;
       doc.moveDown(0.2);
       doc.font("Helvetica-Bold").fontSize(12).text(line);
       doc.font("Helvetica").fontSize(11);
@@ -365,11 +471,22 @@ const generateDiagnosticPdf = (diagnostic) =>
       const data = diagnostic.data || {};
       const profile = data.profile || {};
       const aiReport = data.aiReport || {};
-      const metrics = data.metrics || {};
+      let metrics = data.metrics || {};
+
+      // If metrics are empty, try to extract from report text
+      if (typeof aiReport === "string" && (!metrics.gravity && !metrics.signalCoherence && !metrics.signalOutput)) {
+        const { extractMetricsFromReport } = require("../helpers/euphoriamChatbot");
+        const extractedMetrics = extractMetricsFromReport(aiReport);
+        if (Object.keys(extractedMetrics).some(key => extractedMetrics[key] !== undefined)) {
+          metrics = { ...metrics, ...extractedMetrics };
+          console.log("[diagnosticPdf] Extracted metrics from report:", extractedMetrics);
+        }
+      }
 
       if (typeof aiReport === "string") {
         console.log("[diagnosticPdf] aiReport typeof:", typeof aiReport);
         console.log("[diagnosticPdf] aiReport head:", aiReport.slice(0, 200));
+        console.log("[diagnosticPdf] Metrics for PDF:", metrics);
 
         // Allow: legacy divider-led reports, intro-led reports, or title pages
         // that contain the intro within the first chunk.
@@ -414,7 +531,7 @@ const generateDiagnosticPdf = (diagnostic) =>
           throw err;
         }
 
-        renderStyledReport(doc, aiReport);
+        renderStyledReport(doc, aiReport, metrics);
 
         // Optional metadata on a new page (after the report)
         doc.addPage();

@@ -38,7 +38,11 @@ const { sendEmail, sendEmailBasic } = require("../utils/email");
 const {
   diagnosticReportEmail,
 } = require("../utils/emailTemplate/initialDignosticReport");
-
+const {
+  detectUserWantsToEndOrGenerateReport,
+  detectConversationComplete,
+  detectBotSignaledEnd,
+} = require("../utils/validation");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 
 const isCreatorClubMember = (context = {}) => {
@@ -333,6 +337,7 @@ const persistDiscoveryRecord = async ({
   diagnosticId,
   pdfUrl,
   discoveryType = null, // 'alignment', 'freedom', 'prosperity', or 'integrated'
+  metrics = null, // Formula-based metrics including vortex signature
 }) => {
   const safeUserId =
     userId !== undefined && userId !== null && userId !== 0 ? userId : null;
@@ -363,6 +368,8 @@ const persistDiscoveryRecord = async ({
         // Save full reports in JSONB data field (not truncated)
         previousReport: previousReport || null, // Full previous report
         newReport: newReport || null, // Full new report
+        // Save formula-based metrics
+        metrics: metrics || null, // Includes: signalOutput, gravityDepth, vortexSignature, etc.
       },
     });
   } catch (err) {
@@ -374,8 +381,12 @@ const persistDiscoveryRecord = async ({
 const renderGauge = (value) => {
   const v = Math.max(0, Math.min(100, Number(value || 0)));
   const totalBlocks = 12;
-  const filled = Math.round((v / 100) * totalBlocks);
-  const empty = totalBlocks - filled;
+  // Clamp filled and empty to prevent negative values
+  const filled = Math.max(
+    0,
+    Math.min(totalBlocks, Math.round((v / 100) * totalBlocks))
+  );
+  const empty = Math.max(0, Math.min(totalBlocks, totalBlocks - filled));
   const filledBlock = "█".repeat(filled);
   const emptyBlock = "░".repeat(empty);
   return `${filledBlock}${emptyBlock} ${v}%`;
@@ -434,44 +445,49 @@ const handleDiscoveryMode = async ({
 }) => {
   // Discovery mode: Check if user wants to end/generate report
   // If nextMessage is null, it means we're skipping bot response to generate report directly
+  console.log('[handleDiscoveryMode] Checking if chat should end');
+  console.log('[handleDiscoveryMode] Input:', {
+    nextMessage: nextMessage ? 'exists' : 'null',
+    lastUser: lastUser ? lastUser.content?.substring(0, 100) : 'none',
+    lastAssistant: lastAssistant ? lastAssistant.content?.substring(0, 100) : 'none',
+  });
+  
   let wantsToEndOrGenerate = false;
   let conversationComplete = false;
 
   if (nextMessage === null && lastUser) {
     // Skip bot response - generate report immediately (already detected earlier)
+    console.log('[handleDiscoveryMode] ⚠️ nextMessage is null - forcing report generation');
     wantsToEndOrGenerate = true;
     conversationComplete = true;
   } else if (lastUser) {
-    const {
-      detectUserWantsToEndOrGenerateReport,
-      detectConversationComplete,
-      detectBotSignaledEnd,
-    } = require("../utils/validation");
-
+    console.log('[handleDiscoveryMode] Checking detectUserWantsToEndOrGenerateReport for:', lastUser.content?.substring(0, 100));
+    
     wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
       userMessage: lastUser.content,
       transcript: updatedTranscript,
     });
+    
+    console.log('[handleDiscoveryMode] detectUserWantsToEndOrGenerateReport result:', wantsToEndOrGenerate);
 
-    let botPreviouslySignaledEnd = false;
-    if (lastAssistant) {
-      botPreviouslySignaledEnd = await detectBotSignaledEnd({
-        lastAssistantMessage: lastAssistant,
-        transcript: transcript,
-      });
-    }
-
-    conversationComplete =
-      botPreviouslySignaledEnd ||
-      (await detectConversationComplete({
-        transcript: updatedTranscript,
-        lastUserMessage: lastUser,
-        lastAssistantMessage: lastAssistant,
-      }));
+    // In discovery mode, DISABLE auto-completion detection
+    // Only generate reports when user EXPLICITLY requests it
+    // Detailed answers, insights, or responses to questions should NOT trigger report generation
+    conversationComplete = false; // Disabled in discovery mode - only use explicit wantsToEndOrGenerate
+    console.log('[handleDiscoveryMode] conversationComplete set to false (disabled in discovery mode)');
+  } else {
+    console.log('[handleDiscoveryMode] No lastUser message - skipping end check');
   }
+
+  console.log('[handleDiscoveryMode] Final decision:', {
+    wantsToEndOrGenerate,
+    conversationComplete,
+    willGenerateReport: wantsToEndOrGenerate || conversationComplete
+  });
 
   // If user wants to end/generate report OR conversation is complete, generate discovery report
   if (wantsToEndOrGenerate || conversationComplete) {
+    console.log('[handleDiscoveryMode] 🚨 GENERATING REPORT - wantsToEndOrGenerate:', wantsToEndOrGenerate, 'conversationComplete:', conversationComplete);
     const userName = name || email?.split("@")[0] || "User";
 
     // Get previous discovery if exists
@@ -493,11 +509,11 @@ const handleDiscoveryMode = async ({
       null;
 
     // Generate discovery report
-    const reportDate = new Date().toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
+    // const reportDate = new Date().toLocaleDateString("en-US", {
+    //   month: "short",
+    //   day: "numeric",
+    //   year: "numeric",
+    // });
     const reportVersion = previousDiscovery ? "v3.2" : "v3.1";
 
     const discoveryPrompt = `
@@ -546,6 +562,10 @@ CRITICAL: You MUST generate the report in the EXACT format shown below. This is 
 - Calculate what changed based on the new responses
 - Output updated metrics in the METRICS GAUGE section with actual calculated values
 - DO NOT use placeholders - calculate actual values based on evidence from the new conversation
+- IMPORTANT: The system will calculate Signal Output automatically - you do NOT need to show how it's calculated
+- Include the calculated Signal Output value in the METRICS GAUGE section (just the number, no explanation of calculation)
+- NEVER reveal any formulas, equations, or calculation methods to the user
+- If you identify a vortex signature (EO + Lack + Avoid pattern), note it in the VORTEX STATUS section
 
 Generate a FULL DISCOVERY REPORT following this EXACT format:
 
@@ -746,7 +766,7 @@ METRICS_JSON_START
   "consciousnessLevel": [number 1.0-5.0 - calculate from new conversation],
   "gravity": [number 0-100 - calculate from new conversation],
   "signalCoherence": [number 0-100 - calculate from new conversation],
-  "signalOutput": [number 0-100 - calculate from new conversation]
+  "signalOutput": [number 0-100 - system calculates automatically, do NOT show calculation method]
 }
 METRICS_JSON_END`;
 
@@ -782,10 +802,22 @@ METRICS_JSON_END`;
     }
 
     if (discoveryReport) {
-      // Extract metrics from the generated discovery report
+      // Sanitize report to remove any formula references (IP protection)
       const {
         extractMetricsFromReport,
+        sanitizeReportText,
       } = require("../helpers/euphoriamChatbot");
+
+      // Sanitize report BEFORE extracting metrics (remove any formula references)
+      discoveryReport = sanitizeReportText(
+        discoveryReport,
+        diagnosticMetrics || {}
+      );
+
+      // Import metrics calculator for formula-based calculations
+      const {
+        updateMetricsFromDiscovery,
+      } = require("../helpers/metricsCalculator");
 
       // First try to extract from METRICS_JSON block
       let extractedMetrics = {};
@@ -817,23 +849,24 @@ METRICS_JSON_END`;
         );
       }
 
-      // Use extracted metrics (from new responses) or fall back to existing metrics
-      const finalMetrics = {
-        ...diagnosticMetrics,
-        ...extractedMetrics,
-        // Prefer extracted metrics (calculated from new responses)
-        gravity: extractedMetrics.gravity ?? diagnosticMetrics?.gravity,
-        signalCoherence:
-          extractedMetrics.signalCoherence ??
-          diagnosticMetrics?.signalCoherence,
-        signalOutput:
-          extractedMetrics.signalOutput ?? diagnosticMetrics?.signalOutput,
-        consciousnessLevel:
-          extractedMetrics.consciousnessLevel ??
-          diagnosticMetrics?.consciousnessLevel,
-        qgcActivation:
-          extractedMetrics.qgcActivation ?? diagnosticMetrics?.qgcActivation,
-      };
+      // Combine conversation text for formula-based calculation
+      const conversationText =
+        JSON.stringify(updatedTranscript, null, 2) + " " + discoveryReport;
+
+      // Calculate metrics using Euphoriam Formula
+      const finalMetrics = updateMetricsFromDiscovery({
+        conversationText,
+        existingMetrics: diagnosticMetrics || {},
+        extractedMetrics,
+      });
+
+      console.log("[discovery] Final metrics (formula-based):", {
+        signalOutput: finalMetrics.signalOutput,
+        signalZone: finalMetrics.signalZone,
+        gravityDepth: finalMetrics.gravityDepth,
+        vortexSignature: finalMetrics.vortexSignature,
+        integrationAngle: finalMetrics.integrationAngle,
+      });
 
       console.log(
         "[discovery] Final metrics for discovery report:",
@@ -859,6 +892,7 @@ METRICS_JSON_END`;
         diagnosticId: existingDiagnostic?.id || null,
         pdfUrl: null, // Will be updated after PDF is generated
         discoveryType: discoveryTypeValue,
+        metrics: finalMetrics, // Include formula-based metrics
       });
 
       // Clear intakeState transcript since report is completed
@@ -1095,7 +1129,7 @@ const handleDiscoveryFinalize = async ({
     existingDiagnostic?.data?.aiReport ||
     null;
 
-  // Generate a FULL discovery report using prior diagnostic + new transcript
+  // // Generate a FULL discovery report using prior diagnostic + new transcript
   const reportDate = new Date().toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -1961,22 +1995,22 @@ const handleDiagnosticMode = async ({
 
   // Auto-finalization: If we've gathered all answers, auto-generate the diagnostic/PDF
   // Key conditions:
-  // 1. We have 12+ distinct questions ANSWERED (not just asked)
+  // 1. We have 12+ distinct questions ANSWERED (not just asked) - ALWAYS require 12 for full diagnostic
   // 2. The last user message was a valid answer (aiAnswered = true)
   // 3. There's no pending question (user has answered the last question)
   // 4. No new question was just asked (we want to wait for user to answer Q12)
-  // OR if assistant explicitly says they have enough
+  // OR if assistant explicitly says they have enough AND user has answered 12 questions
   //
   // Allow auto-finalization if:
   // - No existing report (new user) OR
   // - User wants new diagnostic OR
   // - User has answered 12 questions (regardless of existing report - generate discovery report)
+  // IMPORTANT: Always require 12 questions for a full diagnostic, even if targetCount is 6 for discovery updates
   const shouldAutoFinalize =
-    hasAllQuestionsAnswered && // 12 questions ANSWERED
     !newQuestionJustAsked && // Q12 wasn't just asked (wait for answer)
     !pendingQuestion && // User has answered the last question
     aiAnswered && // The last user message was a valid answer
-    (questionsAnswered >= targetCount || assistantSaysComplete) && // Double-check: 12 answered OR assistant says complete
+    (questionsAnswered >= 12 || (assistantSaysComplete && questionsAnswered >= 12)) && // ALWAYS require 12 questions, even if assistant says complete
     (!hasExistingReport || wantsNewDiagnostic || questionsAnswered >= 12); // Allow if new user, wants new diagnostic, OR answered 12 questions
 
   if (shouldAutoFinalize) {
@@ -2643,7 +2677,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     await loadLatestDiscoveryMetrics(existingDiagnostic, diagnosticMetrics);
 
   // Extract report date
-  const reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
+   reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
 
   // Get full prior report (for saving to DB) and truncated snippet (for prompts)
   const fullPriorReport = latestDiscoveryReport || existingReport || null;
@@ -2762,8 +2796,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     const isFirstUserInteraction =
       transcript.filter((m) => m?.role === "user").length === 0;
 
-    // Check if user wants a new diagnostic
-    const { wantsNewDiagnostic, intakeInProgress } = checkWantsNewDiagnostic(
+    // Check if user wants a new diagnostic (using LLM for context understanding)
+    const { wantsNewDiagnostic, intakeInProgress } = await checkWantsNewDiagnostic(
       transcript,
       existingState
     );
@@ -2789,6 +2823,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     // EARLY CHECK: If in discovery mode and user wants to email/generate report, skip bot response and generate report immediately
     if (isDiscoveryMode && lastUser) {
+      console.log('[chatbotDiagnosticFreeform] 🔍 EARLY CHECK: Discovery mode - checking if user wants to end/generate report');
+      console.log('[chatbotDiagnosticFreeform] Last user message:', lastUser.content?.substring(0, 100));
+      
       const {
         detectUserWantsToEndOrGenerateReport,
       } = require("../utils/validation");
@@ -2797,8 +2834,11 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         userMessage: lastUser.content,
         transcript: transcript,
       });
+      
+      console.log('[chatbotDiagnosticFreeform] Early check result - wantsToEndOrGenerate:', wantsToEndOrGenerate);
 
       if (wantsToEndOrGenerate) {
+        console.log('[chatbotDiagnosticFreeform] ⚠️ EARLY CHECK TRIGGERED - User wants to end/generate report. Skipping bot response and generating report immediately.');
         // User wants report - generate it immediately without bot response
         const updatedTranscript = transcript;
         const lastAssistant = [...transcript]
@@ -2826,7 +2866,11 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           introText,
           discoveryType: req.body.discoveryType || null,
         });
+      } else {
+        console.log('[chatbotDiagnosticFreeform] ✅ EARLY CHECK PASSED - User does NOT want to end/generate report. Continuing with normal chat flow.');
       }
+    } else {
+      console.log('[chatbotDiagnosticFreeform] Skipping early check - not in discovery mode or no lastUser message');
     }
 
     // Check if intake has started
@@ -3901,7 +3945,7 @@ const listAll = async (_req, res) => {
 };
 
 const getById = async (req, res) => {
-  const diagnostic = await Diagnostic.findByPk(req.params.id);
+  const diagnostic = await Discovery.findByPk(req.params.id);
   if (!diagnostic) {
     return errorResponse(res, "Diagnostic not found", 404);
   }

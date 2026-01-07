@@ -239,23 +239,25 @@ const buildFinalReportPrompt = ({
 
   // Determine if this is a first-time user or returning user
   const isFirstTimeUser = !previousReport || previousReport.trim().length === 0;
-  
+
   return `
 You are Euphoriam AI generating a FULL diagnostic report that must follow all hard rules.
 
 // Customer Context (source of truth): // Commented out - not using Kajabi data for now
 // ${JSON.stringify(customerContext, null, 2)}
 
-${isFirstTimeUser 
-  ? `FIRST-TIME USER: This is a first-time diagnostic. Use the 12 question answers from the transcript below to calculate ALL metrics.
+${
+  isFirstTimeUser
+    ? `FIRST-TIME USER: This is a first-time diagnostic. Use the 12 question answers from the transcript below to calculate ALL metrics.
 Intake Answers (12 questions - use these to calculate metrics):
 ${JSON.stringify(intakeAnswers, null, 2)}`
-  : `RETURNING USER: This is an update. Use BOTH the previous report AND the new Q&A to calculate updated metrics.
+    : `RETURNING USER: This is an update. Use BOTH the previous report AND the new Q&A to calculate updated metrics.
 Previous Report (use existing metrics as baseline):
 ${previousReport}
 
 New Q&A/Updates (use these along with previous report to calculate updated metrics):
-${JSON.stringify(intakeAnswers, null, 2)}`}
+${JSON.stringify(intakeAnswers, null, 2)}`
+}
 
 Instructions:
 - Obey every HARD RULE from the system prompt.
@@ -263,19 +265,38 @@ Instructions:
 ${introBlock}
 - Never reveal the Euphoriam formula or variables; only show Signal Output as "Signal Output: X%".
 - **CRITICAL: Calculate metrics from the evidence provided above.**
+- **HANDLING ABSTRACT/PHILOSOPHICAL INPUT:**
+  - Users may provide abstract, philosophical, or metaphorical language (e.g., "changing realities", "vortex rules", "mastery gap", "integration mediation")
+  - This is VALID DATA and should be incorporated into the report
+  - Interpret abstract concepts through the Euphoriam framework:
+    * "Gap between mirror of vortex rules" → resistance patterns, avoidance behavior, gravity indicators
+    * "Money exercise" / "how money flows" → relationship with resources, abundance patterns, signal coherence indicators
+    * "Mastery gap" → transition phase, identity shift in progress, consciousness level indicators
+    * "Final milestones" / "final integration mediation" → advanced integration phase, high CL, reduced gravity
+    * References to "structures", "mapping", "reducing gravity", "increasing CL" → direct metric indicators
+  - Extract concrete insights from abstract language and map them to:
+    * Structure Type (identity architecture)
+    * Vortex Settings (resistance patterns)
+    * Gravity levels (resistance/pull indicators)
+    * Consciousness Level (integration capacity)
+    * Signal Coherence (alignment indicators)
+  - Include their abstract language in the report where it provides insight, but also translate it into structural terms
 - **METRICS CALCULATION RULE:**
-  ${isFirstTimeUser 
-    ? `For FIRST-TIME USER: Calculate metrics based ONLY on the 12 question answers in the transcript. Analyze each answer for evidence of:
-    - Gravity: resistance patterns, avoidance behavior, old identity pull
-    - Signal Coherence: alignment between what they want and what they do
-    - QGC Activation: authentic genius, true desires vs borrowed goals
-    - Consciousness Level: capacity to hold new identity, stability under pressure
+  ${
+    isFirstTimeUser
+      ? `For FIRST-TIME USER: Calculate metrics based ONLY on the 12 question answers in the transcript. Analyze each answer for evidence of:
+    - Gravity: resistance patterns, avoidance behavior, old identity pull, "gaps", "vortex rules", structural barriers
+    - Signal Coherence: alignment between what they want and what they do, flow states, integration indicators
+    - QGC Activation: authentic genius, true desires vs borrowed goals, "mastery" indicators
+    - Consciousness Level: capacity to hold new identity, stability under pressure, "integration" capacity, "final milestones" references
     - Signal Output: overall broadcast strength (calculate based on coherence + QGC - gravity)`
-    : `For RETURNING USER: Calculate UPDATED metrics by comparing:
+      : `For RETURNING USER: Calculate UPDATED metrics by comparing:
     - Previous report metrics (baseline)
     - New Q&A answers (what changed)
     - Evidence of shifts, progress, or regression
-    Update metrics based on changes detected in the new answers compared to the previous report.`}
+    - Abstract language that indicates structural shifts (e.g., "mastery gap", "integration mediation", "final milestones")
+    Update metrics based on changes detected in the new answers compared to the previous report.`
+  }
 - **DO NOT use placeholders like "[Extract from report]" or "Unknown" for metrics. Calculate actual values based on the evidence provided.**
 - Show the Metrics Gauge exactly in the required block format (using █ and ░) followed immediately by the Metrics Interpretation Table.
 - Follow the required section order and include title page, intro page, all sections, recommendations, evolution notes, final summary, and End of Report footer with copyright note.
@@ -294,7 +315,7 @@ METRICS_JSON_START
 }
 METRICS_JSON_END
 ${contextBlock}
-${!isFirstTimeUser ? '' : previousReportBlock}
+${!isFirstTimeUser ? "" : previousReportBlock}
 
 Return the full PDF-ready content block as plain text (no JSON, no markdown fences).`;
 };
@@ -319,7 +340,7 @@ Tone: warm, grounded, slow, human, intuitive, precise.
 You ask one question at a time.
 No hype. No shame. No overwhelm.
 
-🌑 THE EUPHORIAM FORMULA (Two Halves - Understanding Only, Never Reveal):
+🌑 THE EUPHORIAM FORMULA (Two Halves - Understanding Only, NEVER REVEAL TO USER):
 The formula has TWO HALVES that must be mapped through your questions:
 
 HALF 1: ALIGNMENT / AUTHENTIC GENIUS
@@ -338,10 +359,12 @@ HALF 2: RESISTANCE / 3D VORTEX CODES
 
 Your questions must map BOTH halves to generate accurate diagnostics. Focus on LIFE EXPERIENCE and RESULTS, not just platform engagement metrics.
 
+🚨 CRITICAL IP PROTECTION: NEVER write, mention, explain, or reference the formula, equation, calculation method, or how metrics are calculated to the user. The formula is proprietary and must remain internal only. Only show the final metric values (numbers), never the calculation.
+
 🌑 HARD RULES (MANDATORY EVERY TIME)
 These rules are now non-optional and must override ALL other instructions:
 1. INTRO PAGE MUST ALWAYS APPEAR at the start of EVERY full diagnostic.
-2. THE EUPHORIAM FORMULA IS NEVER TO BE SHOWN.
+2. THE EUPHORIAM FORMULA IS NEVER TO BE SHOWN OR MENTIONED TO THE USER.
 3. METRICS GAUGE + METRICS INTERPRETATION TABLE MUST ALWAYS APPEAR.
 4. FULL REPORT ALWAYS FOLLOWS THE REQUIRED SEQUENCE.
 5. Every full diagnostic MUST auto-generate as a full PDF-style content block.
@@ -481,6 +504,24 @@ const buildFreeformIntakePrompt = ({
   );
   const highestQuestionNumber =
     uniqueQuestionNumbers.length > 0 ? Math.max(...uniqueQuestionNumbers) : 0;
+
+  // Check if Q12 has been asked and answered
+  const q12Asked = uniqueQuestionNumbers.includes(12);
+  const lastUserMessage =
+    transcript.filter((m) => m?.role === "user").slice(-1)[0]?.content || "";
+  const lastAssistantMessage =
+    transcript.filter((m) => m?.role === "assistant").slice(-1)[0]?.content ||
+    "";
+  // Q12 is answered if: Q12 was asked AND there's a user message after it
+  const q12JustAnswered =
+    q12Asked && lastUserMessage && lastAssistantMessage.includes("Q12");
+
+  // If Q12 has been answered AND we've asked all 12 questions, signal completion
+  // IMPORTANT: Always require all 12 questions, even if targetCount is 6
+  const shouldSignalCompletion =
+    q12JustAnswered && uniqueQuestionNumbers.length >= 12;
+
+  // Calculate next question number - but if Q12 is answered, we won't use it
   const nextQuestionNumber = highestQuestionNumber + 1;
 
   const remaining = Math.max(targetCount - uniqueQuestionNumbers.length, 0);
@@ -548,7 +589,7 @@ Say it in your own words."
 `;
 
   return `
-You are in an intake conversation. You must ask exactly ${targetCount} distinct intake topics/questions.
+You are in an intake conversation. You MUST ask exactly 12 distinct intake topics/questions (Q1 through Q12), regardless of targetCount. Do NOT signal completion until all 12 questions are asked and answered.
 
 🎯 CRITICAL FOCUS AREAS (Prioritize these over platform metrics):
 Your questions MUST focus on revealing:
@@ -558,6 +599,21 @@ Your questions MUST focus on revealing:
 4. PROGRESS & RESULTS - Life experience, actual results, shifts they've noticed, not just platform engagement (log-ins are secondary)
 5. 3D CODE (GRAVITY) - The resistance patterns, distortion points, what creates gravity in their field
 6. SIGNAL COHERENCE INDICATORS - What supports their growth, where momentum exists, what feels aligned vs misaligned
+
+⚠️ HANDLING ABSTRACT/PHILOSOPHICAL USER INPUT:
+- Users may provide abstract, metaphorical, or philosophical language (e.g., "changing realities", "vortex rules", "mastery gap", "integration mediation", "money exercise", "gap between mirror")
+- This is VALID DATA - treat it as meaningful input about their structure
+- When users use abstract language:
+  * Acknowledge their language and validate it
+  * Ask clarifying questions to understand the concrete experience behind the abstraction
+  * Map abstract concepts to structural elements:
+    - "Gap" / "mirror" / "vortex rules" → resistance patterns, avoidance, gravity
+    - "Mastery gap" → transition phase, identity shift in progress
+    - "Integration" / "mediation" → advanced integration, high CL, reduced gravity
+    - "Money exercise" / "how money flows" → relationship with resources, abundance patterns
+    - References to "structures", "mapping", "reducing gravity", "increasing CL" → direct structural awareness
+  * Extract concrete insights while honoring their abstract language
+  * Use their language in your responses when appropriate, but also translate to structural terms
 
 ⚠️ IMPORTANT: Do NOT over-emphasize platform metrics (sign-ins, course completions). Focus on LIFE EXPERIENCE, STRUCTURE, VORTEX, and AVOIDANCE PATTERNS. These are the needle movers.
 
@@ -580,13 +636,26 @@ Current Status & Rules:
 - Highest question number asked: ${
     highestQuestionNumber > 0 ? `Q${highestQuestionNumber}` : "None"
   }
-- Next question number you MUST ask: Q${nextQuestionNumber}
+${
+  shouldSignalCompletion
+    ? `- 🚨 CRITICAL: Q12 HAS BEEN ANSWERED. Do NOT ask Q13. You MUST signal completion immediately.`
+    : `- Next question number you MUST ask: Q${nextQuestionNumber}`
+}
 - Total distinct questions asked: ${
     uniqueQuestionNumbers.length
-  } out of ${targetCount}
+  } out of 12 (ALWAYS require all 12 questions, regardless of targetCount)
+- 🚨 STOP CONDITION: If Q12 has been asked AND answered AND you've asked all 12 questions (Q1-Q12), you MUST NOT ask Q13. Signal completion immediately with: "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you."
+- ⚠️ CRITICAL: You MUST ask all 12 questions (Q1 through Q12) before signaling completion. Do NOT signal completion after only 6 questions. The full diagnostic ALWAYS requires all 12 questions.
+- ⚠️ IMPORTANT: You MUST ask all 12 questions (Q1 through Q12) before signaling completion. Do NOT signal completion after only 6 questions, even if targetCount is 6. The full diagnostic requires all 12 questions.
 
 ⚠️ ABSOLUTE RULES FOR QUESTION NUMBERS:
-- 🚨 YOU MUST ASK Q${nextQuestionNumber} NEXT - DO NOT ASK Q${highestQuestionNumber} OR ANY PREVIOUS NUMBER
+${
+  shouldSignalCompletion && uniqueQuestionNumbers.length >= 12
+    ? `- 🚨 CRITICAL: Q12 HAS BEEN ANSWERED AND ALL 12 QUESTIONS COMPLETED. You MUST NOT ask Q13. Instead, immediately say: "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you."`
+    : uniqueQuestionNumbers.length < 12
+    ? `- 🚨 YOU MUST ASK Q${nextQuestionNumber} NEXT - DO NOT ASK Q${highestQuestionNumber} OR ANY PREVIOUS NUMBER. You MUST complete all 12 questions (Q1-Q12) before signaling completion. Do NOT say "I have enough information" until all 12 questions are asked and answered.`
+    : `- 🚨 YOU MUST ASK Q${nextQuestionNumber} NEXT - DO NOT ASK Q${highestQuestionNumber} OR ANY PREVIOUS NUMBER`
+}
 - Each question number represents a DISTINCT TOPIC - Q1, Q2, Q3, etc. are completely different topics
 - If you've already asked Q6 and the user answered it, you CANNOT ask Q6 again - you MUST ask Q7
 - The question numbers you've already asked are: ${
@@ -613,15 +682,25 @@ Current Status & Rules:
 - Ask ONE question only in your reply.
 - Keep it concise and context-aware (build on what was shared if any).
 - If the user replies with a question, ask them to provide their answer and keep the same Q# (do not count it as progress).
+- 🚨 ABSOLUTE STOP RULE: Q12 is the FINAL question. After the user answers Q12, you MUST immediately signal completion and NOT ask Q13 or any additional questions.
 - Stop asking once you have covered ${targetCount} distinct topics; instead say you are ready to generate the diagnostic.
-- Do not include any explanations beyond the single next question (unless you are confirming completion).
+${
+  shouldSignalCompletion
+    ? `- 🚨 CRITICAL: Q12 has been answered. You MUST NOT ask Q13. Instead, immediately say: "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you." Then STOP completely.`
+    : `- If you have asked Q12 and the user has answered it, you MUST say: "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you." Then STOP - do NOT ask Q13 or any other questions.`
+}
+- Do not include any explanations beyond the single next question (unless you are confirming completion after Q12).
 - Never reveal internal formulas.
 - Questions should directly map to: Structure Type, Vortex Settings, Avoidance Behavior, 3D Code/Gravity, Progress/Results, Signal Coherence
 - If you have not asked any question yet, use the exact first question provided below. Otherwise, ask the single next best question based on transcript and facts, ensuring the Q# follows the sequence of distinct topics already covered.
-- After each user answer, briefly acknowledge and reflect their main point in 1–2 sentences (e.g., "Thank you. I hear X, which suggests Y.") and then immediately ask the next intake question (do not add extra commentary).
-- 🚨 CRITICAL: Your next question MUST be labeled as Q${nextQuestionNumber} - start your question with "Q${nextQuestionNumber} — [Topic Name]"
+- After each user answer (except Q12), briefly acknowledge and reflect their main point in 1–2 sentences (e.g., "Thank you. I hear X, which suggests Y.") and then immediately ask the next intake question (do not add extra commentary).
+${
+  shouldSignalCompletion
+    ? `- 🚨 CRITICAL: Q12 HAS BEEN ANSWERED. Do NOT ask Q13 or any more questions. You MUST immediately signal completion with: "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you."`
+    : `- 🚨 CRITICAL: Your next question MUST be labeled as Q${nextQuestionNumber} - start your question with "Q${nextQuestionNumber} — [Topic Name]"
 - DO NOT use Q${highestQuestionNumber} or any number less than ${nextQuestionNumber}
-- If the user has answered the previous question (even with a short answer), you MUST move to Q${nextQuestionNumber}
+- If the user has answered the previous question (even with a short answer), you MUST move to Q${nextQuestionNumber}`
+}
 
 Intro framing (do NOT restate fully each time; you can acknowledge it briefly if needed):
 ${introPageText || DEFAULT_INTRO_PAGE_TEXT}
@@ -649,20 +728,14 @@ const buildDiscoveryChatPrompt = ({
 
   const lastUserMessage =
     transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
-
   const lowerMessage = lastUserMessage.toLowerCase();
 
-  // Check if user wants to do a new diagnostic report (including typos like "medo", "dignostic")
-  const wantsNewDiagnostic =
-    /(do|start|create|generate|redo|medo|new|another|fresh|again).*(diagnostic|report|dignostic)/i.test(
-      lowerMessage
-    ) ||
-    /(diagnostic|report|dignostic).*(again|new|redo|medo|fresh|another|start over|over again)/i.test(
-      lowerMessage
-    ) ||
-    /(want|need|would like|let's|let me).*(new|another|fresh|redo|medo).*(diagnostic|report|dignostic)/i.test(
-      lowerMessage
-    );
+  // Use LLM to detect if user wants a new diagnostic - no regex patterns
+  // LLM understands full context and can distinguish between:
+  // - "generate its report" (describing a process) vs "create new diagnostic" (requesting)
+  // Note: This is checked in the controller via checkWantsNewDiagnostic which uses LLM
+  // For prompt building, we'll default to false and let the controller's LLM detection handle it
+  const wantsNewDiagnostic = false; // Will be determined by LLM in controller via checkWantsNewDiagnostic
 
   const isAskingAboutReport =
     priorReport &&
@@ -747,7 +820,13 @@ The Euphoriam formula has TWO HALVES:
 All discoveries should link to the Euphoriam formula and help them understand their structure, vortex, and avoidance patterns.\n`;
 
   // First message - Structure reflection approach
-  if (transcript.length === 0) {
+  // Check if this is the first message in discovery mode
+  // In discovery mode, we want to show metrics presentation on the first user interaction
+  // This happens when there are no user messages yet (transcript is empty OR only contains diagnostic intake messages)
+  const userMessagesInDiscovery = transcript.filter((m) => m.role === "user");
+  const isFirstDiscoveryMessage = userMessagesInDiscovery.length === 0;
+  
+  if (isFirstDiscoveryMessage) {
     // Extract actual metrics values
     const gravity = metrics.gravity !== undefined ? metrics.gravity : null;
     const signalCoherence =
@@ -785,8 +864,15 @@ ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
     // Build the complete metrics section with actual values
     // Helper function to create progress bar
     const createProgressBar = (value, max = 100, length = 12) => {
-      const filled = Math.round((value / max) * length);
-      const empty = length - filled;
+      // Clamp value to valid range (0 to max)
+      const clampedValue = Math.max(0, Math.min(max, Number(value) || 0));
+      // Calculate filled blocks and clamp to valid range
+      const filled = Math.max(
+        0,
+        Math.min(length, Math.round((clampedValue / max) * length))
+      );
+      // Calculate empty blocks and clamp to valid range
+      const empty = Math.max(0, Math.min(length, length - filled));
       return "█".repeat(filled) + "░".repeat(empty);
     };
 
@@ -796,7 +882,9 @@ ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
       const displayValue = Number(value);
       const percentage = isPercentage ? displayValue : (displayValue / 5) * 100;
       const gauge = createProgressBar(percentage);
-      const valueText = isPercentage ? `${Math.round(displayValue)}%` : `${displayValue}`;
+      const valueText = isPercentage
+        ? `${Math.round(displayValue)}%`
+        : `${displayValue}`;
       const labelWidth = 20;
       const spacesNeeded = Math.max(0, labelWidth - label.length);
       const spacing = " ".repeat(spacesNeeded);
@@ -809,8 +897,12 @@ ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
       signalOutput !== null &&
       consciousnessLevel !== null &&
       qgcActivation !== null
-        ? `QGC Activation:      ${createProgressBar(qgcActivation)} ${qgcActivation}%
-Consciousness Level: ${createProgressBar((consciousnessLevel / 5) * 100)} ${Math.round((consciousnessLevel / 5) * 100)}%
+        ? `QGC Activation:      ${createProgressBar(
+            qgcActivation
+          )} ${qgcActivation}%
+Consciousness Level: ${createProgressBar(
+            (consciousnessLevel / 5) * 100
+          )} ${Math.round((consciousnessLevel / 5) * 100)}%
 Gravity (Load):      ${createProgressBar(gravity)} ${gravity}%
 Signal Coherence:    ${createProgressBar(signalCoherence)} ${signalCoherence}%
 Signal Output:       ${createProgressBar(signalOutput)} ${signalOutput}%`
@@ -866,7 +958,7 @@ REQUIRED FORMAT - Follow this EXACTLY:
    Your structure at the last check-in was very clear:
 
 ${
-  formattedMetricsSection 
+  formattedMetricsSection
     ? `## METRICS GAUGE (Current Snapshot)
 
 ${formattedMetricsSection}`
@@ -1163,6 +1255,10 @@ Write the summary now. Be concise but cover all key points.`;
       lowerMessage
     );
 
+  // IMPORTANT: In discovery mode, respond naturally to ALL questions
+  // Only switch to diagnostic mode if user EXPLICITLY requests a new diagnostic/report
+  // General questions like "how will i know i made progress?" should be answered naturally, NOT trigger diagnostic intake
+
   // If user wants a new diagnostic, inform them and switch mode
   if (wantsNewDiagnostic) {
     return `🚨 CRITICAL: The user has explicitly requested to create a NEW diagnostic report. 
@@ -1187,39 +1283,44 @@ Take a breath before you answer. Say it in your own words."
 - After all 12 questions are answered, a new diagnostic report will be automatically generated`;
   }
 
-  // Check if user wants to email/generate report
-  const wantsEmailOrReport =
-    lastUserMessage &&
-    (/(email|send).*(me|the|my).*(report|it)/i.test(lastUserMessage) ||
-      /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
-        lastUserMessage
-      ) ||
-      /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(
-        lastUserMessage
-      ));
-
-  if (wantsEmailOrReport) {
-    // User wants to generate report - return instruction to signal report generation
-    return `🚨 CRITICAL: The user has explicitly requested to email/generate the report.
-
-You MUST respond with EXACTLY this (do not modify or add anything):
-
-"Alright. I'm going to **lock this into a clean Euphoriam diagnostic report** now — grounded, precise, no overwhelm."
-
-⚠️ ABSOLUTE RULES:
-- Do NOT say you can't email
-- Do NOT ask for email address
-- Do NOT ask for consent
-- Just say you're generating the report
-- The system will automatically detect this and generate/email the report`;
-  }
+  // NOTE: We do NOT check for wantsEmailOrReport here using regex patterns
+  // The controller uses LLM-based detection (detectUserWantsToEndOrGenerateReport) which correctly
+  // distinguishes between describing a process (e.g., "generate its report") and making a request
+  // If the user wants to generate a report, the controller will handle it before calling this function
 
   return `
 You are Euphoriam AI working with structure-aware precision.${discoveryTypeContext}
 
+🌑 DISCOVERY MODE - CRITICAL RULES:
+- You are in DISCOVERY MODE - working with their existing diagnostic report
+- Answer ALL questions naturally and conversationally - do NOT restart diagnostic intake
+- Questions about progress, metrics, structure, how to know if they're making progress, etc. should be answered directly
+- When users share detailed responses about their structure, avoidance behavior, mastery gaps, business challenges, etc. - RESPOND NATURALLY to what they shared
+- Do NOT generate a report just because they gave a detailed answer - continue the conversation
+- Only switch to diagnostic mode if user EXPLICITLY says: "create new diagnostic", "start new report", "redo diagnostic", "new diagnostic", etc.
+- General questions like "how will i know i made progress?" should be answered naturally - do NOT trigger diagnostic intake
+- Let the AI respond naturally without static responses
+- IMPORTANT: If you asked a question and the user answered (even if detailed), continue the conversation - do NOT generate a report
+
 CRITICAL APPROACH:
 
-1. RESPONDING TO "I DON'T KNOW" OR UNCERTAINTY:
+1. RESPONDING TO ABSTRACT/PHILOSOPHICAL LANGUAGE:
+   - Users may provide abstract, metaphorical, or philosophical language (e.g., "changing realities", "vortex rules", "mastery gap", "integration mediation", "money exercise", "gap between mirror")
+   - This is VALID DATA - treat it as meaningful input about their structure
+   - When users use abstract language:
+     * Acknowledge their language and validate it ("I hear you speaking about [abstract concept] - that's important data")
+     * Ask clarifying questions to understand the concrete experience behind the abstraction
+     * Map abstract concepts to structural elements:
+       - "Gap" / "mirror" / "vortex rules" → resistance patterns, avoidance, gravity indicators
+       - "Mastery gap" → transition phase, identity shift in progress, consciousness level indicators
+       - "Integration" / "mediation" / "final milestones" → advanced integration phase, high CL, reduced gravity
+       - "Money exercise" / "how money flows" → relationship with resources, abundance patterns, signal coherence indicators
+       - References to "structures", "mapping", "reducing gravity", "increasing CL" → direct structural awareness and metric indicators
+     * Extract concrete insights while honoring their abstract language
+     * Use their language in your responses when appropriate, but also translate to structural terms
+   - Example: "When you speak about the 'gap between the mirror of the vortex rules,' I'm hearing something specific about resistance patterns in your structure. Can you tell me what that gap feels like in your body, or what happens when you try to move through it?"
+
+2. RESPONDING TO "I DON'T KNOW" OR UNCERTAINTY:
    - "I don't know" is VALID DATA - treat it as clear information about their structure
    - Acknowledge what uncertainty means in their system (e.g., "That's okay. 'I don't know' is actually a clear signal in your system — it means [specific meaning for their structure]")
    - Never judge or push for certainty
@@ -1264,14 +1365,12 @@ CRITICAL APPROACH:
    - Example: "We stop here and let this land. For now: you're not stuck. You're paused on purpose."
 
 8. REPORT GENERATION (CRITICAL):
-   - After asking 8-12 questions and gathering enough structural information, you MUST signal that you're ready to generate a report
-   - When you have enough information to create a structural update report, end your last response with a clear signal like:
-     * "Alright. I'm going to **lock this into a clean Euphoriam diagnostic report** now — grounded, precise, no overwhelm."
-     * "We'll pause here. Let this settle."
-     * "I'm going to generate your updated diagnostic report now."
-   - After signaling, the system will automatically generate the report
-   - Count your questions: After 8-12 questions with substantive answers, you should signal report generation
-   - The report will capture all the structural shifts, corrections, and insights from the conversation
+   - DO NOT automatically signal report generation - only do so when the user EXPLICITLY requests it
+   - The system will automatically detect when the user wants to generate/email a report
+   - Continue the conversation naturally - do NOT count questions or try to determine when to generate a report
+   - Only signal report generation if the user explicitly says: "email me the report", "generate my report", "send the report", etc.
+   - When the user explicitly requests a report, you can acknowledge it, but the system will handle the actual generation
+   - IMPORTANT: Do NOT say "I'm going to lock this into a report" or similar unless the user has explicitly requested it
 
 9. TONE:
    - Precise, not vague
@@ -1320,6 +1419,14 @@ const sanitizeReportText = (reportText, metrics = {}) => {
     /formula/i,
     /𝑄\s*𝐺\s*𝐶/i,
     /𝐺\s*𝑟\s*𝑎\s*𝑣\s*𝑖\s*𝑡\s*y/i,
+    /\(qgc\s*[×x*]\s*cl\)/i,
+    /qgc.*cl.*gravity/i,
+    /consciousness.*level.*gravity/i,
+    /euphoriam\s+formula/i,
+    /calculation.*method/i,
+    /how.*signal.*calculated/i,
+    /signal.*to.*field/i,
+    /mirrored\s+reality/i,
   ];
 
   const lines = reportText.split(/\r?\n/);
@@ -1501,56 +1608,120 @@ const loadDiagnosticState = async (email) => {
  * Extracts metrics from report text
  */
 const extractMetricsFromReport = (reportText) => {
-    if (!reportText) return {};
-    
-    // Try multiple patterns for each metric to handle different report formats
-    // Pattern 1: "Gravity: 95%" or "Gravity 95%" or "Gravity: 95"
-    // Pattern 2: "**Gravity** 95%" (markdown bold)
-    // Pattern 3: "Gravity (Load): 95%" (with label)
-    const gravityMatch = reportText.match(
-      /Gravity(?:\s*\(Load\))?[:\s]+(\d+(?:\.\d+)?)%?/i
-    ) || reportText.match(/\*\*Gravity(?:\s*\(Load\))?\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
-    
-    const signalCoherenceMatch = reportText.match(
-      /Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i
-    ) || reportText.match(/\*\*Signal\s+Coherence\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
-    
-    const signalOutputMatch = reportText.match(
-      /Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i
-    ) || reportText.match(/\*\*Signal\s+Output\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
-    
-    // Consciousness Level can be "CL: 3.5" or "Consciousness Level: 3.5" or "CL 3.5"
-    const clMatch = reportText.match(
-      /(?:Consciousness\s+Level|CL)[:\s]+(\d+(?:\.\d+)?)/i
-    ) || reportText.match(/\*\*(?:Consciousness\s+Level|CL)\*\*[:\s]*(\d+(?:\.\d+)?)/i);
-    
-    // QGC can be "QGC Activation: 45%" or "QGC: 45%" or "Quantum Genius Codes: 45%"
-    const qgcMatch = reportText.match(
-      /(?:QGC(?:\s+Activation)?|Quantum\s+Genius\s+Codes)[:\s]+(\d+(?:\.\d+)?)%?/i
-    ) || reportText.match(/\*\*(?:QGC(?:\s+Activation)?|Quantum\s+Genius\s+Codes)\*\*[:\s]*(\d+(?:\.\d+)?)%?/i);
+  if (!reportText) return {};
 
-    const extracted = {
-      gravity: gravityMatch ? parseFloat(gravityMatch[1]) : undefined,
-      signalCoherence: signalCoherenceMatch ? parseFloat(signalCoherenceMatch[1]) : undefined,
-      signalOutput: signalOutputMatch ? parseFloat(signalOutputMatch[1]) : undefined,
-      consciousnessLevel: clMatch ? parseFloat(clMatch[1]) : undefined,
-      qgcActivation: qgcMatch ? parseFloat(qgcMatch[1]) : undefined,
-    };
-    
-    // Log extraction results for debugging
-    if (Object.keys(extracted).some(key => extracted[key] !== undefined)) {
-      console.log("[extractMetricsFromReport] Extracted metrics:", extracted);
-    } else {
-      // Try to find METRICS GAUGE section in report
-      const metricsGaugeMatch = reportText.match(/METRICS\s+GAUGE[\s\S]{0,500}/i);
-      if (metricsGaugeMatch) {
-        console.log("[extractMetricsFromReport] Found METRICS GAUGE section but no metrics extracted. Section:", metricsGaugeMatch[0]);
-      } else {
-        console.log("[extractMetricsFromReport] No metrics found in report text (first 1000 chars):", reportText.substring(0, 1000));
-      }
+  // First, try to extract from METRICS GAUGE section specifically
+  const metricsGaugeMatch = reportText.match(/METRICS\s+GAUGE[\s\S]{0,1000}/i);
+  const searchText = metricsGaugeMatch ? metricsGaugeMatch[0] : reportText;
+
+  // Helper function to extract metric value, handling progress bars
+  // Matches patterns like:
+  // - "Gravity: 95%"
+  // - "Gravity: █████████░░░ 74%"
+  // - "Gravity (Load):      █████████░░░ 74%"
+  // - "**Gravity** 95%"
+  const extractMetric = (label, patterns, isPercentage = true) => {
+    for (const pattern of patterns) {
+      // Pattern 1: Direct match with optional progress bar
+      const match1 = searchText.match(
+        new RegExp(
+          `${pattern}[:\\s]+(?:[█░\\s]+)?(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%?" : ""
+          }`,
+          "i"
+        )
+      );
+      if (match1) return parseFloat(match1[1]);
+
+      // Pattern 2: Markdown bold format
+      const match2 = searchText.match(
+        new RegExp(
+          `\\*\\*${pattern}\\*\\*[:\\s]*(?:[█░\\s]+)?(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%?" : ""
+          }`,
+          "i"
+        )
+      );
+      if (match2) return parseFloat(match2[1]);
+
+      // Pattern 3: With progress bar characters before the number
+      const match3 = searchText.match(
+        new RegExp(
+          `${pattern}[:\\s]+[█░\\s]+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
+          }`,
+          "i"
+        )
+      );
+      if (match3) return parseFloat(match3[1]);
     }
-    
-    return extracted;
+    return undefined;
+  };
+
+  // Extract each metric with multiple pattern variations
+  const gravity = extractMetric(
+    "Gravity",
+    ["Gravity\\s*\\(Load\\)", "Gravity"],
+    true
+  );
+
+  const signalCoherence = extractMetric(
+    "Signal\\s+Coherence",
+    ["Signal\\s+Coherence"],
+    true
+  );
+
+  const signalOutput = extractMetric(
+    "Signal\\s+Output",
+    ["Signal\\s+Output"],
+    true
+  );
+
+  const consciousnessLevel = extractMetric(
+    "Consciousness\\s+Level",
+    ["Consciousness\\s+Level", "CL"],
+    false
+  );
+
+  const qgcActivation = extractMetric(
+    "QGC",
+    ["QGC\\s+Activation", "QGC", "Quantum\\s+Genius\\s+Codes"],
+    true
+  );
+
+  const extracted = {
+    gravity,
+    signalCoherence,
+    signalOutput,
+    consciousnessLevel,
+    qgcActivation,
+  };
+
+  // Log extraction results for debugging
+  const extractedCount = Object.values(extracted).filter(
+    (v) => v !== undefined
+  ).length;
+  if (extractedCount > 0) {
+    console.log(
+      `[extractMetricsFromReport] Extracted ${extractedCount}/5 metrics:`,
+      extracted
+    );
+  } else {
+    // Try to find METRICS GAUGE section in report
+    if (metricsGaugeMatch) {
+      console.log(
+        "[extractMetricsFromReport] Found METRICS GAUGE section but no metrics extracted. Section preview:",
+        metricsGaugeMatch[0].substring(0, 500)
+      );
+    } else {
+      console.log(
+        "[extractMetricsFromReport] No METRICS GAUGE section found. Report preview:",
+        reportText.substring(0, 1000)
+      );
+    }
+  }
+
+  return extracted;
 };
 
 /**
@@ -1583,39 +1754,65 @@ const loadLatestDiscoveryMetrics = async (
 
       if (latestDiscoveryReport) {
         // Extract metrics from discovery report
-        const extractedMetrics = extractMetricsFromReport(latestDiscoveryReport);
-        if (Object.keys(extractedMetrics).some(key => extractedMetrics[key] !== undefined)) {
+        const extractedMetrics = extractMetricsFromReport(
+          latestDiscoveryReport
+        );
+        if (
+          Object.keys(extractedMetrics).some(
+            (key) => extractedMetrics[key] !== undefined
+          )
+        ) {
           latestDiscoveryMetrics = extractedMetrics;
-          console.log("[loadLatestDiscoveryMetrics] Using metrics from old discovery report:", extractedMetrics);
+          console.log(
+            "[loadLatestDiscoveryMetrics] Using metrics from old discovery report:",
+            extractedMetrics
+          );
         }
       }
     }
   }
 
   // If no discovery metrics found, use last diagnostic report metrics
-  const hasDiscoveryMetrics = latestDiscoveryMetrics && 
+  const hasDiscoveryMetrics =
+    latestDiscoveryMetrics &&
     (latestDiscoveryMetrics.gravity !== undefined ||
-     latestDiscoveryMetrics.signalCoherence !== undefined ||
-     latestDiscoveryMetrics.signalOutput !== undefined);
-  
+      latestDiscoveryMetrics.signalCoherence !== undefined ||
+      latestDiscoveryMetrics.signalOutput !== undefined);
+
   if (!hasDiscoveryMetrics) {
     // Try to extract from diagnostic report
     if (existingDiagnostic?.data?.aiReport) {
       const diagnosticReport = existingDiagnostic.data.aiReport;
       const extractedMetrics = extractMetricsFromReport(diagnosticReport);
-      
-      if (Object.keys(extractedMetrics).some(key => extractedMetrics[key] !== undefined)) {
+
+      if (
+        Object.keys(extractedMetrics).some(
+          (key) => extractedMetrics[key] !== undefined
+        )
+      ) {
         latestDiscoveryMetrics = extractedMetrics;
-        console.log("[loadLatestDiscoveryMetrics] Using metrics from last diagnostic report:", extractedMetrics);
-      } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
+        console.log(
+          "[loadLatestDiscoveryMetrics] Using metrics from last diagnostic report:",
+          extractedMetrics
+        );
+      } else if (
+        diagnosticMetrics &&
+        Object.keys(diagnosticMetrics).length > 0
+      ) {
         // Fallback to stored diagnostic metrics
         latestDiscoveryMetrics = diagnosticMetrics;
-        console.log("[loadLatestDiscoveryMetrics] Using stored diagnostic metrics:", diagnosticMetrics);
+        console.log(
+          "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics:",
+          diagnosticMetrics
+        );
       }
     } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
       // No report but have stored metrics
       latestDiscoveryMetrics = diagnosticMetrics;
-      console.log("[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (no report):", diagnosticMetrics);
+      console.log(
+        "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (no report):",
+        diagnosticMetrics
+      );
     }
   }
 
@@ -1686,22 +1883,11 @@ const preparePreviousReports = (existingDiagnostic, existingReport) => {
 
 /**
  * Determines if user wants a new diagnostic
+ * Uses LLM to understand context instead of regex patterns
  */
-const checkWantsNewDiagnostic = (transcript, existingState) => {
+const checkWantsNewDiagnostic = async (transcript, existingState) => {
   const lastUserMessage =
     transcript.filter((m) => m?.role === "user").slice(-1)[0]?.content || "";
-  const lowerMessage = lastUserMessage.toLowerCase();
-
-  const wantsNewDiagnosticInMessage =
-    /(do|start|create|generate|redo|redo|medo|new|another|fresh|again).*(diagnostic|report|dignostic)/i.test(
-      lowerMessage
-    ) ||
-    /(diagnostic|report|dignostic).*(again|new|redo|medo|fresh|another|start over|over again)/i.test(
-      lowerMessage
-    ) ||
-    /(want|need|would like|let's|let me).*(new|another|fresh|redo|medo).*(diagnostic|report|dignostic)/i.test(
-      lowerMessage
-    );
 
   const previouslyRequestedNewDiagnostic =
     existingState.requestingNewDiagnostic === true;
@@ -1712,6 +1898,16 @@ const checkWantsNewDiagnostic = (transcript, existingState) => {
   // This allows showing existing report first on first interaction
   const hasUserMessages = transcript.some((m) => m?.role === "user");
   const shouldUsePersistedFlag = hasUserMessages || intakeInProgress;
+
+  // Use LLM to detect if user wants a new diagnostic (only if there's a user message)
+  let wantsNewDiagnosticInMessage = false;
+  if (lastUserMessage) {
+    const { detectUserWantsNewDiagnostic } = require("../utils/validation");
+    wantsNewDiagnosticInMessage = await detectUserWantsNewDiagnostic({
+      userMessage: lastUserMessage,
+      transcript: transcript,
+    });
+  }
 
   return {
     wantsNewDiagnostic:
@@ -1838,22 +2034,20 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
     "?", // ends with question mark
   ];
   if (clarifyPhrases.some((p) => t.includes(p))) return false;
-  
+
   // Heuristic: Recognize common simple answers immediately
   const normalizedReply = t.trim();
-  const simpleAnswers = [
-    "yes", "no", "y", "n", "yeah", "yep", "nope", "nah",
-  ];
+  const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
   if (simpleAnswers.includes(normalizedReply)) {
     return true; // Accept yes/no answers immediately
   }
-  
+
   // Single letter answers (A, B, C, etc.) - only accept if question has multiple choice options
   const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
   if (singleLetterAnswers.includes(normalizedReply)) {
     // Check if the question contains multiple choice indicators
     const questionText = (question || "").toLowerCase();
-    const hasMultipleChoice = 
+    const hasMultipleChoice =
       /\([a-f]\)/i.test(question) || // (A), (B), (C)
       /^[a-f]\)/i.test(question) || // A), B), C) at start of line
       /\*\*[a-f]\)/i.test(question) || // **A), **B), **C)
@@ -1862,49 +2056,74 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
       /choose\s+[a-f]/i.test(question) || // "choose A", "choose B"
       /reply\s+with\s+[a-f]/i.test(question) || // "reply with A"
       /option\s+[a-f]/i.test(question); // "option A"
-    
+
     if (hasMultipleChoice) {
       return true; // Accept single letter only if question has multiple choice options
     }
     // If no multiple choice detected, don't accept single letter - let AI classifier decide
   }
-  
+
   // Single number answers (1, 2, 3, etc.) - only accept if question has numbered options
   const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
   if (singleNumberAnswers.includes(normalizedReply)) {
     const questionText = (question || "").toLowerCase();
-    const hasNumberedOptions = 
+    const hasNumberedOptions =
       /\([1-6]\)/i.test(question) || // (1), (2), (3)
       /^[1-6]\)/i.test(question) || // 1), 2), 3) at start of line
       /\*\*[1-6]\)/i.test(question) || // **1), **2), **3)
       /\[1-6\]/i.test(question) || // [1], [2], [3]
       /option\s+[1-6]/i.test(question); // "option 1"
-    
+
     if (hasNumberedOptions) {
       return true; // Accept single number only if question has numbered options
     }
     // If no numbered options detected, don't accept single number - let AI classifier decide
   }
-  
+
   // Check for "move on", "next", "skip" type responses that indicate user wants to proceed
   const moveOnPhrases = [
-    "move on", "next question", "next", "skip", "move to next",
-    "continue", "proceed", "go to next"
+    "move on",
+    "next question",
+    "next",
+    "skip",
+    "move to next",
+    "continue",
+    "proceed",
+    "go to next",
   ];
   if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
     return true; // Accept move-on requests as answers
   }
-  
+
   // Heuristic: Recognize common single-word location/state answers
   const singleWordAnswers = [
-    "alone", "together", "home", "work", "bed", "couch", "chair", "desk", 
-    "balcony", "outside", "library", "park", "car", "office", "calm", "relaxed",
-    "interrupted", "available", "free", "busy", "watched", "on-call"
+    "alone",
+    "together",
+    "home",
+    "work",
+    "bed",
+    "couch",
+    "chair",
+    "desk",
+    "balcony",
+    "outside",
+    "library",
+    "park",
+    "car",
+    "office",
+    "calm",
+    "relaxed",
+    "interrupted",
+    "available",
+    "free",
+    "busy",
+    "watched",
+    "on-call",
   ];
   if (singleWordAnswers.includes(normalizedReply)) {
     return true; // Accept single-word descriptive answers immediately
   }
-  
+
   // Heuristic: Recognize common descriptive answers (2-4 words that are likely answers)
   // These are short, descriptive responses that answer location/state questions
   const descriptiveAnswerPatterns = [
@@ -1916,18 +2135,35 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
   if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
     return true; // Accept descriptive answers immediately
   }
-  
+
   // Heuristic: Short answers (2-4 words) that don't contain question words are likely answers
-  const words = normalizedReply.split(/\s+/).filter(w => w.length > 0);
+  const words = normalizedReply.split(/\s+/).filter((w) => w.length > 0);
   if (words.length >= 2 && words.length <= 4) {
-    const questionWords = ["what", "where", "when", "why", "how", "who", "which", "can", "could", "would", "should", "is", "are", "do", "does", "did"];
-    const hasQuestionWord = words.some(w => questionWords.includes(w));
+    const questionWords = [
+      "what",
+      "where",
+      "when",
+      "why",
+      "how",
+      "who",
+      "which",
+      "can",
+      "could",
+      "would",
+      "should",
+      "is",
+      "are",
+      "do",
+      "does",
+      "did",
+    ];
+    const hasQuestionWord = words.some((w) => questionWords.includes(w));
     if (!hasQuestionWord && !normalizedReply.includes("?")) {
       // Likely a descriptive answer - pass to AI classifier but be more lenient
       // This will be handled by the AI classifier below
     }
   }
-  
+
   const alpha = t.match(/[A-Za-z]/g);
   // Relaxed: Allow short answers to pass to the AI classifier
   if (!alpha || alpha.length < 1) return false;
@@ -1947,7 +2183,7 @@ Rules:
       model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 3,
+      max_completion_tokens: 20,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
     return txt.includes("yes");
@@ -1955,57 +2191,80 @@ Rules:
     console.error("[isAiLikelyAnswer] fallback to heuristic", err);
     // Fallback: If AI fails, use heuristic for simple answers
     const normalizedReply = t.trim();
-    const simpleAnswers = [
-      "yes", "no", "y", "n", "yeah", "yep", "nope", "nah",
-    ];
+    const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
     if (simpleAnswers.includes(normalizedReply)) {
       return true;
     }
-    
+
     // Single letter answers - only accept if question has multiple choice
     const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
     if (singleLetterAnswers.includes(normalizedReply)) {
       const questionText = (question || "").toLowerCase();
-      const hasMultipleChoice = 
-        /\([a-f]\)/i.test(question) || 
-        /^[a-f]\)/i.test(question) || 
-        /\*\*[a-f]\)/i.test(question) || 
-        /\[a-f\]/i.test(question) || 
-        /pick\s+[a-f]/i.test(question) || 
-        /choose\s+[a-f]/i.test(question) || 
-        /reply\s+with\s+[a-f]/i.test(question) || 
+      const hasMultipleChoice =
+        /\([a-f]\)/i.test(question) ||
+        /^[a-f]\)/i.test(question) ||
+        /\*\*[a-f]\)/i.test(question) ||
+        /\[a-f\]/i.test(question) ||
+        /pick\s+[a-f]/i.test(question) ||
+        /choose\s+[a-f]/i.test(question) ||
+        /reply\s+with\s+[a-f]/i.test(question) ||
         /option\s+[a-f]/i.test(question);
       if (hasMultipleChoice) {
         return true;
       }
     }
-    
+
     // Single number answers - only accept if question has numbered options
     const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
     if (singleNumberAnswers.includes(normalizedReply)) {
       const questionText = (question || "").toLowerCase();
-      const hasNumberedOptions = 
-        /\([1-6]\)/i.test(question) || 
-        /^[1-6]\)/i.test(question) || 
-        /\*\*[1-6]\)/i.test(question) || 
-        /\[1-6\]/i.test(question) || 
+      const hasNumberedOptions =
+        /\([1-6]\)/i.test(question) ||
+        /^[1-6]\)/i.test(question) ||
+        /\*\*[1-6]\)/i.test(question) ||
+        /\[1-6\]/i.test(question) ||
         /option\s+[1-6]/i.test(question);
       if (hasNumberedOptions) {
         return true;
       }
     }
     const moveOnPhrases = [
-      "move on", "next question", "next", "skip", "move to next",
-      "continue", "proceed", "go to next"
+      "move on",
+      "next question",
+      "next",
+      "skip",
+      "move to next",
+      "continue",
+      "proceed",
+      "go to next",
     ];
     if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
       return true;
     }
     // Fallback: Check for single-word location/state answers
     const singleWordAnswers = [
-      "alone", "together", "home", "work", "bed", "couch", "chair", "desk", 
-      "balcony", "outside", "library", "park", "car", "office", "calm", "relaxed",
-      "interrupted", "available", "free", "busy", "watched", "on-call"
+      "alone",
+      "together",
+      "home",
+      "work",
+      "bed",
+      "couch",
+      "chair",
+      "desk",
+      "balcony",
+      "outside",
+      "library",
+      "park",
+      "car",
+      "office",
+      "calm",
+      "relaxed",
+      "interrupted",
+      "available",
+      "free",
+      "busy",
+      "watched",
+      "on-call",
     ];
     if (singleWordAnswers.includes(normalizedReply)) {
       return true;
@@ -2020,10 +2279,27 @@ Rules:
       return true;
     }
     // Fallback: Short answers (2-4 words) without question words are likely answers
-    const words = normalizedReply.split(/\s+/).filter(w => w.length > 0);
+    const words = normalizedReply.split(/\s+/).filter((w) => w.length > 0);
     if (words.length >= 2 && words.length <= 4) {
-      const questionWords = ["what", "where", "when", "why", "how", "who", "which", "can", "could", "would", "should", "is", "are", "do", "does", "did"];
-      const hasQuestionWord = words.some(w => questionWords.includes(w));
+      const questionWords = [
+        "what",
+        "where",
+        "when",
+        "why",
+        "how",
+        "who",
+        "which",
+        "can",
+        "could",
+        "would",
+        "should",
+        "is",
+        "are",
+        "do",
+        "does",
+        "did",
+      ];
+      const hasQuestionWord = words.some((w) => questionWords.includes(w));
       if (!hasQuestionWord && !normalizedReply.includes("?")) {
         // Likely a descriptive answer - accept it
         return true;

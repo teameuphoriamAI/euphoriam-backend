@@ -239,7 +239,7 @@ Rules:
       model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 3,
+      max_completion_tokens: 20,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
     return txt.includes("yes");
@@ -498,48 +498,112 @@ export async function runChatCompletion({
     throw err;
   }
 }
+// LLM-based detection: Check if user wants a new diagnostic
+export async function detectUserWantsNewDiagnostic({
+  userMessage,
+  transcript = [],
+}) {
+  console.log(
+    "[detectUserWantsNewDiagnostic] Checking user message:",
+    userMessage?.substring(0, 100)
+  );
+
+  const prompt = `
+You are a binary classifier. Analyze the user's message and determine if they EXPLICITLY want to CREATE A NEW DIAGNOSTIC REPORT.
+
+User's latest message: "${userMessage || ""}"
+
+Recent conversation context (last 5 messages):
+${JSON.stringify(transcript.slice(-5), null, 2)}
+
+CRITICAL RULES - UNDERSTAND FULL CONTEXT:
+- Reply ONLY "yes" or "no"
+- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to create, start, do, or generate a NEW diagnostic/report
+- UNDERSTAND CONTEXT: Words like "generate", "create", "report" can appear in normal conversation
+  * "generate its report" → NO (describing a process, not requesting)
+  * "write it down and then generate its report" → NO (describing steps, not requesting)
+  * "my chest hurt ends and i start conversation im my head write it down and then generate its report" → NO (describing experience, not requesting)
+  * "create new diagnostic" → YES (explicit request)
+  * "start new report" → YES (explicit request)
+  * "do my diagnostics again" → YES (explicit request)
+- Return "no" if the message is:
+  * Answering a question
+  * Continuing conversation
+  * Sharing insights, updates, or reflections
+  * Describing experiences or processes
+  * Using words like "generate", "create", "report" in a different context (e.g., "generate its report" describing a process)
+  * Any statement that doesn't clearly indicate intent to create a NEW diagnostic
+- When in doubt, return "no" - only return "yes" for very clear and explicit requests
+- Understand the FULL MEANING of the message, not just individual words
+
+Examples:
+- "create new diagnostic" → yes (explicit request)
+- "start new report" → yes (explicit request)
+- "do my diagnostics again" → yes (explicit request)
+- "generate its report" → no (describing a process, not requesting)
+- "write it down and then generate its report" → no (describing steps, not requesting)
+- "my chest hurt ends and i start conversation im my head write it down and then generate its report" → no (describing experience, not requesting)
+- Any question or statement → no (unless explicitly about creating a new diagnostic)
+
+Reply:`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_completion_tokens: 20,
+    });
+    const txt = (resp?.choices?.[0]?.message?.content || "")
+      .toLowerCase()
+      .trim();
+
+    const result = txt.includes("yes");
+    console.log(
+      "[detectUserWantsNewDiagnostic] LLM result:",
+      result,
+      "(response:",
+      txt,
+      ")"
+    );
+
+    return result;
+  } catch (err) {
+    console.error("[detectUserWantsNewDiagnostic] ❌ LLM error", err);
+    return false;
+  }
+}
+
 // LLM-based detection: Check if user wants to end chat or generate report
 export async function detectUserWantsToEndOrGenerateReport({
   userMessage,
   transcript = [],
 }) {
-  const lowerMessage = (userMessage || "").toLowerCase();
+  console.log(
+    "[detectUserWantsToEndOrGenerateReport] Checking user message:",
+    userMessage?.substring(0, 100)
+  );
 
   // FIRST: Check if user wants a new diagnostic - if so, they DON'T want to end/generate report
-  // They want to start a new diagnostic instead
-  const wantsNewDiagnostic =
-    /(do|start|create|generate|redo|medo|new|another|fresh|again).*(diagnostic|report|dignostic)/i.test(
-      lowerMessage
-    ) ||
-    /(diagnostic|report|dignostic).*(again|new|redo|medo|fresh|another|start over|over again)/i.test(
-      lowerMessage
-    ) ||
-    /(want|need|would like|let's|let me).*(new|another|fresh|redo|medo).*(diagnostic|report|dignostic)/i.test(
-      lowerMessage
-    );
+  const wantsNewDiagnostic = await detectUserWantsNewDiagnostic({
+    userMessage,
+    transcript,
+  });
+
+  console.log(
+    "[detectUserWantsToEndOrGenerateReport] wantsNewDiagnostic:",
+    wantsNewDiagnostic
+  );
 
   if (wantsNewDiagnostic) {
+    console.log(
+      "[detectUserWantsToEndOrGenerateReport] ❌ User wants new diagnostic, NOT to end/generate report"
+    );
     return false; // User wants new diagnostic, NOT to end/generate report
   }
 
-  // Quick check for explicit email/report requests (before AI check)
-  const explicitEmailReportRequest =
-    /(email|send).*(me|the|my).*(report|it)/i.test(userMessage) ||
-    /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
-      userMessage
-    ) ||
-    /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send|generate)/i.test(
-      userMessage
-    ) ||
-    /(end|finish|stop).*(chat|conversation|now)/i.test(userMessage) ||
-    /end chat now/i.test(userMessage);
-
-  if (explicitEmailReportRequest) {
-    return true; // Immediately return true for explicit requests
-  }
-
-  // Only use AI classifier for ambiguous cases - be very conservative
-  // Removed casual ending phrases check - it was too aggressive and matching ambiguous phrases
+  // Use LLM to understand FULL CONTEXT - no regex patterns
+  // LLM will understand that "by the end", "today will end", "exit to my world" are NOT requests to end chat
   const prompt = `
 You are a binary classifier. Analyze the user's message and determine if they EXPLICITLY want to:
 1. End the chat/conversation
@@ -554,43 +618,79 @@ User's latest message: "${userMessage || ""}"
 Recent conversation context (last 5 messages):
 ${JSON.stringify(transcript.slice(-5), null, 2)}
 
-CRITICAL RULES:
+CRITICAL RULES - UNDERSTAND FULL CONTEXT:
 - Reply ONLY "yes" or "no"
-- Return "yes" ONLY if the user EXPLICITLY requests to end, finish, stop, generate report, get report, email report, or send report
-- Return "yes" ONLY for clear ending phrases like "that's it for today", "that's all for today", "I'm done for today", "finish up", "end this", "generate my report", "email me the report"
-- Return "no" if the message is ambiguous, unclear, or could mean something else
-- Return "no" if they're just answering questions, continuing conversation, or asking questions
-- Return "no" if they want to start a NEW diagnostic or do diagnostics AGAIN (e.g., "do my diagnostics again", "start a new diagnostic", "redo my diagnostic") - these are requests to START something new, not END
-- Return "no" if the message is a statement, question, or response that doesn't clearly indicate ending intent
-- When in doubt, return "no" - only return "yes" for very clear and explicit ending requests
-- Phrases like "I'm good", "we're good", "all set", "I think that's it" are ambiguous and should return "no" unless the context clearly shows ending intent
+- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to end, finish, stop, generate report, get report, email report, or send report
+- UNDERSTAND CONTEXT: Words like "end", "exit", "finish", "stop", "chat", "conversation", "generate", "report" can appear in normal conversation
+  * "by the end" → NO (talking about a time period, not ending chat)
+  * "today will end" → NO (talking about the day ending, not ending chat)
+  * "exit to my world" → NO (talking about going somewhere, not ending chat)
+  * "work can be anything" → NO (talking about work, not ending chat)
+  * "my chest hurt ends and i start conversation im my head write it down and then generate its report" → NO (describing a process/experience, NOT requesting to generate report)
+  * "generate its report" → NO (describing a process, NOT requesting)
+  * "write it down and then generate its report" → NO (describing steps, NOT requesting)
+  * "end chat" → YES (explicit request to end chat)
+  * "finish conversation" → YES (explicit request to finish)
+  * "email me the report" → YES (explicit request)
+  * "generate my report now" → YES (explicit request with action word)
+- Return "no" if the message is:
+  * Answering a question
+  * Continuing conversation
+  * Sharing insights, updates, or reflections
+  * Describing experiences, processes, or situations
+  * Using words like "end", "exit", "finish", "generate", "report" in a different context (e.g., "by the end", "today will end", "generate its report" describing a process)
+  * Describing what they do or what happens (e.g., "I write it down and then generate its report" = describing a process, NOT requesting)
+  * Any statement that doesn't clearly indicate ending/generating intent
+- Return "no" if they want to start a NEW diagnostic (these are requests to START something new, not END)
+- When in doubt, return "no" - only return "yes" for very clear and explicit ending/generating requests
+- Understand the FULL MEANING of the message, not just individual words
+- KEY DISTINCTION: "generate its report" or "generate the report" when describing a process = NO. "generate my report" or "generate the report now" when requesting = YES
 
 Examples:
-- "email me the report" → yes
-- "generate my report" → yes
-- "that's it for today" → yes
-- "I'm done for now" → yes
-- "do my diagnostics again" → no (wants to start new, not end)
+- "email me the report" → yes (explicit request)
+- "generate my report" → yes (explicit request)
+- "generate my report now" → yes (explicit request with action)
+- "end chat" → yes (explicit request)
+- "that's it for today" → yes (clear ending intent)
+- "by the end of the day" → no (talking about time, not ending chat)
+- "today will end" → no (talking about the day, not ending chat)
+- "exit to my world" → no (talking about going somewhere, not ending chat)
+- "work can be anything" → no (talking about work, not ending chat)
+- "my chest hurt ends and i start conversation im my head write it down and then generate its report" → no (describing experience/process, NOT requesting)
+- "generate its report" → no (describing a process, NOT requesting)
+- "write it down and then generate its report" → no (describing steps, NOT requesting)
 - "I think that's it" → no (ambiguous, could mean "that's my answer")
-- "I'm good" → no (ambiguous)
-- "all set" → no (ambiguous)
 - Any question or statement → no (unless explicitly about ending/generating report)
 
 Reply:`;
+
+  console.log(
+    "[detectUserWantsToEndOrGenerateReport] Falling back to LLM classifier"
+  );
 
   try {
     const resp = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 30,
+      max_completion_tokens: 20,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "")
       .toLowerCase()
       .trim();
-    return txt.includes("yes");
+
+    const result = txt.includes("yes");
+    console.log(
+      "[detectUserWantsToEndOrGenerateReport] LLM classifier result:",
+      result,
+      "(response:",
+      txt,
+      ")"
+    );
+
+    return result;
   } catch (err) {
-    console.error("[detectUserWantsToEndOrGenerateReport] error", err);
+    console.error("[detectUserWantsToEndOrGenerateReport] ❌ LLM error", err);
     return false;
   }
 }
@@ -638,7 +738,7 @@ Reply:`;
       model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 3,
+      max_completion_tokens: 20,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "")
       .toLowerCase()
@@ -656,25 +756,65 @@ export async function detectConversationComplete({
   lastUserMessage,
   lastAssistantMessage,
 }) {
-  if (!transcript.length || !lastUserMessage) return false;
+  console.log("[detectConversationComplete] invoked");
 
-  // First check if bot signaled end - if so, any user response should trigger completion
+  if (!transcript.length || !lastUserMessage) {
+    console.log(
+      "[detectConversationComplete] early exit → missing transcript or lastUserMessage"
+    );
+    return false;
+  }
+
+  console.log("[detectConversationComplete] lastUserMessage:", lastUserMessage);
+  console.log(
+    "[detectConversationComplete] lastAssistantMessage:",
+    lastAssistantMessage
+  );
+
+  // 1. Check if bot explicitly signaled end
   const botSignaledEnd = await detectBotSignaledEnd({
     lastAssistantMessage,
     transcript,
   });
 
+  console.log("[detectConversationComplete] botSignaledEnd:", botSignaledEnd);
+
+  // 2. Bot signaled end → require explicit user confirmation
   if (botSignaledEnd && lastUserMessage) {
-    // Bot signaled end, user responded - conversation is complete
-    return true;
+    const userText =
+      typeof lastUserMessage === "string"
+        ? lastUserMessage.trim()
+        : lastUserMessage?.content?.trim?.() || "";
+
+    const isExplicitConfirmation =
+      /^(yes|yeah|yep|ok|okay|sure|go ahead|do it|generate|email|send)$/i.test(
+        userText
+      );
+
+    console.log("[detectConversationComplete] userText:", userText);
+    console.log(
+      "[detectConversationComplete] isExplicitConfirmation:",
+      isExplicitConfirmation
+    );
+
+    if (isExplicitConfirmation) {
+      console.log(
+        "[detectConversationComplete] ✅ COMPLETE → bot signaled end + user explicitly confirmed"
+      );
+      return true;
+    }
+
+    console.log(
+      "[detectConversationComplete] ❌ bot signaled end but user did NOT explicitly confirm"
+    );
+    return false;
   }
 
+  // 3. LLM-based conservative classifier
+  console.log("[detectConversationComplete] falling back to LLM classifier");
+
   const prompt = `
-You are a binary classifier. Determine if the user has "replied perfectly" - meaning they have:
-1. Fully answered the assistant's question
-2. Provided a complete response
-3. The conversation feels naturally complete (not cut off or incomplete)
-4. The user seems satisfied with their answer
+You are a binary classifier. Determine if the user has EXPLICITLY indicated they want to END the conversation or GENERATE A REPORT.
 
 Last assistant message: "${lastAssistantMessage?.content || "N/A"}"
 
@@ -683,29 +823,38 @@ Last user message: "${lastUserMessage?.content || ""}"
 Recent conversation (last 5 messages):
 ${JSON.stringify(transcript.slice(-5), null, 2)}
 
-Rules:
+CRITICAL RULES (be EXTREMELY conservative - default to "no"):
 - Reply ONLY "yes" or "no"
-- "yes" if the user's reply is complete, thorough, and the conversation feels naturally finished
-- "no" if the reply is incomplete, partial, or the conversation should continue
-- Consider context: short answers can be "perfect" if they fully address the question
-- If the assistant just asked a question and user answered, usually "no" (conversation continues)
-- If the assistant gave a final correction/ending and user responded, usually "yes" (conversation complete)
+- Return "yes" ONLY if the user EXPLICITLY says: "generate report", "email report", "end chat", "that's it for today", "I'm done", "finish up"
+- If the assistant asked a question and user responded, return "no"
+- When in doubt, ALWAYS return "no"
 
-Reply:`;
+Reply:
+`;
 
   try {
     const resp = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 3,
+      max_completion_tokens: 20,
     });
-    const txt = (resp?.choices?.[0]?.message?.content || "")
-      .toLowerCase()
-      .trim();
-    return txt.includes("yes");
+
+    const txt =
+      resp?.choices?.[0]?.message?.content?.toLowerCase()?.trim() || "";
+
+    console.log("[detectConversationComplete] LLM raw response:", txt);
+
+    const result = txt.includes("yes");
+
+    console.log(
+      "[detectConversationComplete] LLM decision:",
+      result ? "COMPLETE" : "NOT COMPLETE"
+    );
+
+    return result;
   } catch (err) {
-    console.error("[detectConversationComplete] error", err);
+    console.error("[detectConversationComplete] ❌ LLM error", err);
     return false;
   }
 }

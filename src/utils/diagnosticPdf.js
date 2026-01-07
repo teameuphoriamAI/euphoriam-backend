@@ -473,14 +473,28 @@ const generateDiagnosticPdf = (diagnostic) =>
       const aiReport = data.aiReport || {};
       let metrics = data.metrics || {};
 
-      // If metrics are empty, try to extract from report text
-      if (typeof aiReport === "string" && (!metrics.gravity && !metrics.signalCoherence && !metrics.signalOutput)) {
+      // If metrics are empty or incomplete, try to extract from report text
+      const hasAllMetrics = metrics.gravity !== undefined && 
+                            metrics.signalCoherence !== undefined && 
+                            metrics.signalOutput !== undefined &&
+                            metrics.consciousnessLevel !== undefined &&
+                            metrics.qgcActivation !== undefined;
+      
+      if (typeof aiReport === "string" && !hasAllMetrics) {
         const { extractMetricsFromReport } = require("../helpers/euphoriamChatbot");
         const extractedMetrics = extractMetricsFromReport(aiReport);
-        if (Object.keys(extractedMetrics).some(key => extractedMetrics[key] !== undefined)) {
-          metrics = { ...metrics, ...extractedMetrics };
-          console.log("[diagnosticPdf] Extracted metrics from report:", extractedMetrics);
-        }
+        // Merge extracted metrics, preferring existing metrics over extracted ones
+        metrics = {
+          ...extractedMetrics,
+          ...metrics, // Existing metrics take precedence
+          // But use extracted if existing is undefined
+          gravity: metrics.gravity ?? extractedMetrics.gravity,
+          signalCoherence: metrics.signalCoherence ?? extractedMetrics.signalCoherence,
+          signalOutput: metrics.signalOutput ?? extractedMetrics.signalOutput,
+          consciousnessLevel: metrics.consciousnessLevel ?? extractedMetrics.consciousnessLevel,
+          qgcActivation: metrics.qgcActivation ?? extractedMetrics.qgcActivation,
+        };
+        console.log("[diagnosticPdf] Metrics after extraction:", metrics);
       }
 
       if (typeof aiReport === "string") {

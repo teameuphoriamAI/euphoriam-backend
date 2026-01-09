@@ -445,49 +445,68 @@ const handleDiscoveryMode = async ({
 }) => {
   // Discovery mode: Check if user wants to end/generate report
   // If nextMessage is null, it means we're skipping bot response to generate report directly
-  console.log('[handleDiscoveryMode] Checking if chat should end');
-  console.log('[handleDiscoveryMode] Input:', {
-    nextMessage: nextMessage ? 'exists' : 'null',
-    lastUser: lastUser ? lastUser.content?.substring(0, 100) : 'none',
-    lastAssistant: lastAssistant ? lastAssistant.content?.substring(0, 100) : 'none',
+  console.log("[handleDiscoveryMode] Checking if chat should end");
+  console.log("[handleDiscoveryMode] Input:", {
+    nextMessage: nextMessage ? "exists" : "null",
+    lastUser: lastUser ? lastUser.content?.substring(0, 100) : "none",
+    lastAssistant: lastAssistant
+      ? lastAssistant.content?.substring(0, 100)
+      : "none",
   });
-  
+
   let wantsToEndOrGenerate = false;
   let conversationComplete = false;
 
   if (nextMessage === null && lastUser) {
     // Skip bot response - generate report immediately (already detected earlier)
-    console.log('[handleDiscoveryMode] ⚠️ nextMessage is null - forcing report generation');
+    console.log(
+      "[handleDiscoveryMode] ⚠️ nextMessage is null - forcing report generation"
+    );
     wantsToEndOrGenerate = true;
     conversationComplete = true;
   } else if (lastUser) {
-    console.log('[handleDiscoveryMode] Checking detectUserWantsToEndOrGenerateReport for:', lastUser.content?.substring(0, 100));
-    
+    console.log(
+      "[handleDiscoveryMode] Checking detectUserWantsToEndOrGenerateReport for:",
+      lastUser.content?.substring(0, 100)
+    );
+
     wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
       userMessage: lastUser.content,
       transcript: updatedTranscript,
     });
-    
-    console.log('[handleDiscoveryMode] detectUserWantsToEndOrGenerateReport result:', wantsToEndOrGenerate);
+
+    console.log(
+      "[handleDiscoveryMode] detectUserWantsToEndOrGenerateReport result:",
+      wantsToEndOrGenerate
+    );
 
     // In discovery mode, DISABLE auto-completion detection
     // Only generate reports when user EXPLICITLY requests it
     // Detailed answers, insights, or responses to questions should NOT trigger report generation
     conversationComplete = false; // Disabled in discovery mode - only use explicit wantsToEndOrGenerate
-    console.log('[handleDiscoveryMode] conversationComplete set to false (disabled in discovery mode)');
+    console.log(
+      "[handleDiscoveryMode] conversationComplete set to false (disabled in discovery mode)"
+    );
   } else {
-    console.log('[handleDiscoveryMode] No lastUser message - skipping end check');
+    console.log(
+      "[handleDiscoveryMode] No lastUser message - skipping end check"
+    );
   }
 
-  console.log('[handleDiscoveryMode] Final decision:', {
+  console.log("[handleDiscoveryMode] Final decision:", {
     wantsToEndOrGenerate,
     conversationComplete,
-    willGenerateReport: wantsToEndOrGenerate || conversationComplete
+    willGenerateReport: wantsToEndOrGenerate || conversationComplete,
   });
 
   // If user wants to end/generate report OR conversation is complete, generate discovery report
   if (wantsToEndOrGenerate || conversationComplete) {
-    console.log('[handleDiscoveryMode] 🚨 GENERATING REPORT - wantsToEndOrGenerate:', wantsToEndOrGenerate, 'conversationComplete:', conversationComplete);
+    console.log(
+      "[handleDiscoveryMode] 🚨 GENERATING REPORT - wantsToEndOrGenerate:",
+      wantsToEndOrGenerate,
+      "conversationComplete:",
+      conversationComplete
+    );
     const userName = name || email?.split("@")[0] || "User";
 
     // Get previous discovery if exists
@@ -704,18 +723,63 @@ That's it.
 
 ---
 
+## FRICTION ANALYSIS
+
+**Primary Friction Source:**
+[Identify the primary friction: Surface (Level 1), Vortex (Level 2), or Template (Level 3)]
+
+**Surface Friction (Physics Level 1):**
+[If present: reactive language, emotional charge, scattered focus indicators]
+
+**Vortex Friction (Physics Level 2):**
+[If present: repeated orbit patterns, protector triggers, rules engine statements]
+
+**Template Friction (Physics Level 3):**
+[If present: "I know what to do but can't do it", disproportionate reactions, instant reprints after progress]
+
+**Why This Blocks Your Highest Timeline:**
+[Explain how the identified friction prevents their highest timeline from locking in]
+
+---
+
+## DISCOVERY RECOMMENDATIONS
+
+Based on your friction analysis, here are the specific Discoveries you need to complete:
+
+### Alignment Discoveries Needed
+[Specify how many and why - for QGC activation and authentic genius]
+
+**Why:** [Explain why Alignment Discoveries are needed based on their friction]
+
+### Freedom Discoveries Needed
+[Specify how many and why - for reducing gravity and vortex patterns]
+
+**Why:** [Explain why Freedom Discoveries are needed based on their friction]
+
+### Prosperity Discoveries Needed
+[Specify how many and why - for increasing signal output and receiving capacity]
+
+**Why:** [Explain why Prosperity Discoveries are needed based on their friction]
+
+**Next Steps:**
+1. Complete the recommended Discoveries above
+2. Each Discovery will help you increase your CL, reduce gravity, and increase your signal to the field
+3. Log each Discovery with the appropriate label (Alignment/Freedom/Prosperity)
+
+---
+
 ## UNLIMITED CREATOR / CREATOR CLUB RECOMMENDATIONS
 
-Based on current metrics and collapse point:
+Based on current metrics, friction analysis, and collapse point:
 
 ### Primary Focus (now)
 
-* **[Specific recommendation 1]**
-* **[Specific recommendation 2]**
-* **[Specific recommendation 3]**
+* **[Specific UC module recommendation based on friction analysis]**
+* **[Specific UC module recommendation based on friction analysis]**
+* **[Specific UC module recommendation based on friction analysis]**
 
 Why:
-[Explain why these are recommended]
+[Explain why these modules are recommended based on their friction analysis]
 
 ### Deferred (not yet)
 
@@ -2010,7 +2074,8 @@ const handleDiagnosticMode = async ({
     !newQuestionJustAsked && // Q12 wasn't just asked (wait for answer)
     !pendingQuestion && // User has answered the last question
     aiAnswered && // The last user message was a valid answer
-    (questionsAnswered >= 12 || (assistantSaysComplete && questionsAnswered >= 12)) && // ALWAYS require 12 questions, even if assistant says complete
+    (questionsAnswered >= 12 ||
+      (assistantSaysComplete && questionsAnswered >= 12)) && // ALWAYS require 12 questions, even if assistant says complete
     (!hasExistingReport || wantsNewDiagnostic || questionsAnswered >= 12); // Allow if new user, wants new diagnostic, OR answered 12 questions
 
   if (shouldAutoFinalize) {
@@ -2677,7 +2742,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     await loadLatestDiscoveryMetrics(existingDiagnostic, diagnosticMetrics);
 
   // Extract report date
-   reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
+  reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
 
   // Get full prior report (for saving to DB) and truncated snippet (for prompts)
   const fullPriorReport = latestDiscoveryReport || existingReport || null;
@@ -2797,10 +2862,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       transcript.filter((m) => m?.role === "user").length === 0;
 
     // Check if user wants a new diagnostic (using LLM for context understanding)
-    const { wantsNewDiagnostic, intakeInProgress } = await checkWantsNewDiagnostic(
-      transcript,
-      existingState
-    );
+    const { wantsNewDiagnostic, intakeInProgress } =
+      await checkWantsNewDiagnostic(transcript, existingState);
 
     // If there's an existing report and this is the first user interaction,
     // show the welcome message with existing report first
@@ -2823,9 +2886,14 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     // EARLY CHECK: If in discovery mode and user wants to email/generate report, skip bot response and generate report immediately
     if (isDiscoveryMode && lastUser) {
-      console.log('[chatbotDiagnosticFreeform] 🔍 EARLY CHECK: Discovery mode - checking if user wants to end/generate report');
-      console.log('[chatbotDiagnosticFreeform] Last user message:', lastUser.content?.substring(0, 100));
-      
+      console.log(
+        "[chatbotDiagnosticFreeform] 🔍 EARLY CHECK: Discovery mode - checking if user wants to end/generate report"
+      );
+      console.log(
+        "[chatbotDiagnosticFreeform] Last user message:",
+        lastUser.content?.substring(0, 100)
+      );
+
       const {
         detectUserWantsToEndOrGenerateReport,
       } = require("../utils/validation");
@@ -2834,11 +2902,16 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         userMessage: lastUser.content,
         transcript: transcript,
       });
-      
-      console.log('[chatbotDiagnosticFreeform] Early check result - wantsToEndOrGenerate:', wantsToEndOrGenerate);
+
+      console.log(
+        "[chatbotDiagnosticFreeform] Early check result - wantsToEndOrGenerate:",
+        wantsToEndOrGenerate
+      );
 
       if (wantsToEndOrGenerate) {
-        console.log('[chatbotDiagnosticFreeform] ⚠️ EARLY CHECK TRIGGERED - User wants to end/generate report. Skipping bot response and generating report immediately.');
+        console.log(
+          "[chatbotDiagnosticFreeform] ⚠️ EARLY CHECK TRIGGERED - User wants to end/generate report. Skipping bot response and generating report immediately."
+        );
         // User wants report - generate it immediately without bot response
         const updatedTranscript = transcript;
         const lastAssistant = [...transcript]
@@ -2867,10 +2940,14 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           discoveryType: req.body.discoveryType || null,
         });
       } else {
-        console.log('[chatbotDiagnosticFreeform] ✅ EARLY CHECK PASSED - User does NOT want to end/generate report. Continuing with normal chat flow.');
+        console.log(
+          "[chatbotDiagnosticFreeform] ✅ EARLY CHECK PASSED - User does NOT want to end/generate report. Continuing with normal chat flow."
+        );
       }
     } else {
-      console.log('[chatbotDiagnosticFreeform] Skipping early check - not in discovery mode or no lastUser message');
+      console.log(
+        "[chatbotDiagnosticFreeform] Skipping early check - not in discovery mode or no lastUser message"
+      );
     }
 
     // Check if intake has started
@@ -2972,7 +3049,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     // Update system prompt for full report requests
     if (isDiscoveryMode && isRequestingFullReport && priorReportSnippet) {
-      systemPrompt = `You are Euphoriam AI. The user asked: "${lastUserMsg}"
+      const updatedSystemPrompt = `You are Euphoriam AI. The user asked: "${lastUserMsg}"
 
 You MUST write a brief summary of their diagnostic report. Start immediately with "**What Your Diagnostic Report Revealed:**"
 
@@ -2982,6 +3059,9 @@ Your response must include:
 3. Section "**Where You Can Improve:**" with 3-5 actionable areas
 
 Be concise (300-500 words). Extract details from the report in the system context. Write now - do not ask permission.`;
+
+      // Update the system message in aiMessages array
+      aiMessages[0] = { role: "system", content: updatedSystemPrompt };
     }
 
     // For full report requests, use lower temperature for more focused responses
@@ -3961,86 +4041,96 @@ const getAllPdfUrls = async (req, res) => {
   }
 
   try {
-    // Get all diagnostics for this email
     const diagnostics = await Diagnostic.findAll({
       where: { email },
       order: [["createdAt", "DESC"]],
     });
 
-    // Get all discoveries for this email (query all and filter by email in data field)
-    const allDiscoveries = await Discovery.findAll({
+    const discoveries = await Discovery.findAll({
       where: { email },
       order: [["createdAt", "DESC"]],
     });
-    const discoveries = allDiscoveries;
 
     const allPdfUrls = [];
 
-    // Extract PDF URLs from diagnostics
-    diagnostics.forEach((diagnostic) => {
-      const data = diagnostic.data || {};
+    // =========================
+    // Diagnostics
+    // =========================
+    // diagnostics.forEach((diagnostic) => {
+    //   const data = diagnostic.data || {};
+    //   const diagnosticId = diagnostic.id;
 
-      // Current PDF URL
-      if (data.pdf?.url) {
-        allPdfUrls.push({
-          type: "diagnostic",
-          diagnosticId: diagnostic.id,
-          title: diagnostic.title || `Diagnostic Report ${diagnostic.id}`,
-          url: data.pdf.url,
-          createdAt: diagnostic.createdAt,
-          isCurrent: true,
-        });
-      }
+    //   const resolvedDiscoveryId =
+    //     diagnostic.discoveryId ||
+    //     discoveryByDiagnosticId.get(diagnosticId)?.id ||
+    //     null;
 
-      // PDF URLs array
-      if (Array.isArray(data.pdfUrls)) {
-        data.pdfUrls.forEach((url, index) => {
-          // Skip if it's the same as current PDF
-          if (url !== data.pdf?.url) {
-            allPdfUrls.push({
-              type: "diagnostic",
-              diagnosticId: diagnostic.id,
-              title: `${
-                diagnostic.title || `Diagnostic ${diagnostic.id}`
-              } - Version ${index + 1}`,
-              url: url,
-              createdAt: diagnostic.updatedAt || diagnostic.createdAt,
-              isCurrent: false,
-            });
-          }
-        });
-      }
+    //   // Current PDF
+    //   if (data.pdf?.url) {
+    //     allPdfUrls.push({
+    //       type: "diagnostic",
+    //       diagnosticId,
+    //       discoveryId: resolvedDiscoveryId,
+    //       title: diagnostic.title || `Diagnostic Report ${diagnosticId}`,
+    //       url: data.pdf.url,
+    //       createdAt: diagnostic.createdAt,
+    //       isCurrent: true,
+    //     });
+    //   }
 
-      // Previous reports PDF URLs
-      if (Array.isArray(data.previousReports)) {
-        data.previousReports.forEach((prevReport, index) => {
-          if (prevReport.pdfUrl) {
-            allPdfUrls.push({
-              type: "diagnostic_previous",
-              diagnosticId: diagnostic.id,
-              title: `Previous Report ${index + 1} - ${
-                diagnostic.title || `Diagnostic ${diagnostic.id}`
-              }`,
-              url: prevReport.pdfUrl,
-              createdAt: prevReport.savedAt
-                ? new Date(prevReport.savedAt)
-                : diagnostic.createdAt,
-              isCurrent: false,
-            });
-          }
-        });
-      }
-    });
+    //   // Historical PDFs
+    //   if (Array.isArray(data.pdfUrls)) {
+    //     data.pdfUrls.forEach((url, index) => {
+    //       if (url !== data.pdf?.url) {
+    //         allPdfUrls.push({
+    //           type: "diagnostic",
+    //           diagnosticId,
+    //           discoveryId: resolvedDiscoveryId,
+    //           title: `${
+    //             diagnostic.title || `Diagnostic ${diagnosticId}`
+    //           } - Version ${index + 1}`,
+    //           url,
+    //           createdAt: diagnostic.updatedAt || diagnostic.createdAt,
+    //           isCurrent: false,
+    //         });
+    //       }
+    //     });
+    //   }
 
-    // Extract PDF URLs from discoveries
+    //   // Previous reports
+    //   if (Array.isArray(data.previousReports)) {
+    //     data.previousReports.forEach((prevReport, index) => {
+    //       if (prevReport.pdfUrl) {
+    //         allPdfUrls.push({
+    //           type: "diagnostic_previous",
+    //           diagnosticId,
+    //           discoveryId: resolvedDiscoveryId,
+    //           title: `Previous Report ${index + 1} - ${
+    //             diagnostic.title || `Diagnostic ${diagnosticId}`
+    //           }`,
+    //           url: prevReport.pdfUrl,
+    //           createdAt: prevReport.savedAt
+    //             ? new Date(prevReport.savedAt)
+    //             : diagnostic.createdAt,
+    //           isCurrent: false,
+    //         });
+    //       }
+    //     });
+    //   }
+    // });
+
+    // =========================
+    // Discoveries
+    // =========================
     discoveries.forEach((discovery) => {
       const pdfUrl = discovery.pdfUrl || discovery.data?.pdfUrl;
+
       if (pdfUrl) {
         allPdfUrls.push({
           type: "discovery",
-          discoveryId: discovery.id,
           diagnosticId:
             discovery.diagnosticId || discovery.data?.diagnosticId || null,
+          discoveryId: discovery.id,
           title: discovery.title || `Discovery Report ${discovery.id}`,
           url: pdfUrl,
           createdAt: discovery.createdAt,
@@ -4049,12 +4139,14 @@ const getAllPdfUrls = async (req, res) => {
       }
     });
 
-    // Sort by creation date (newest first)
+    // =========================
+    // Sort + Deduplicate
+    // =========================
     allPdfUrls.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    // Remove duplicates based on URL
     const uniqueUrls = [];
     const seenUrls = new Set();
+
     allPdfUrls.forEach((item) => {
       if (!seenUrls.has(item.url)) {
         seenUrls.add(item.url);
@@ -4071,7 +4163,6 @@ const getAllPdfUrls = async (req, res) => {
     return errorResponse(res, "Failed to fetch PDF URLs", 500);
   }
 };
-
 // Calculate bottleneck from metrics
 const calculateBottleneck = (metrics = {}) => {
   const {
@@ -4216,6 +4307,171 @@ const getMetrics = async (req, res) => {
   }
 };
 
+/**
+ * Get latest metrics for a user (for dashboard)
+ * Returns metrics from latest diagnostic, discoveries, and chats
+ */
+const getUserMetrics = async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+
+    // Load diagnostic state to get latest metrics
+    const { existingDiagnostic, diagnosticMetrics } = await loadDiagnosticState(
+      email
+    );
+
+    // Get latest discovery metrics
+    const { latestDiscoveryMetrics } = await loadLatestDiscoveryMetrics(
+      existingDiagnostic,
+      diagnosticMetrics
+    );
+
+    // Get discovery counts by type
+    const user = await User.findOne({ where: { email } });
+    let discoveryCounts = {
+      alignment: 0,
+      freedom: 0,
+      prosperity: 0,
+      integrated: 0,
+      total: 0,
+    };
+
+    if (user) {
+      const discoveries = await Discovery.findAll({
+        where: { userId: user.id },
+        attributes: ["discoveryType"],
+      });
+
+      discoveries.forEach((d) => {
+        const type = d.discoveryType || "integrated";
+        if (discoveryCounts.hasOwnProperty(type)) {
+          discoveryCounts[type]++;
+        }
+        discoveryCounts.total++;
+      });
+    }
+
+    // Use latest discovery metrics if available, otherwise use diagnostic metrics
+    const currentMetrics = latestDiscoveryMetrics || diagnosticMetrics || {};
+
+    // Get UC module recommendations based on friction analysis
+    // This would be calculated from metrics and friction analysis
+    const ucRecommendations = getUCRecommendations(currentMetrics);
+
+    return successResponse(res, "User metrics fetched", {
+      metrics: {
+        signalOutput: currentMetrics.signalOutput || 0,
+        qgcActivation: currentMetrics.qgcActivation || 0,
+        consciousnessLevel: currentMetrics.consciousnessLevel || 0,
+        gravity: currentMetrics.gravity || 0,
+        signalCoherence: currentMetrics.signalCoherence || 0,
+        gravityDepth: currentMetrics.gravityDepth || 2,
+        vortexSignature: currentMetrics.vortexSignature || null,
+        eo: currentMetrics.eo || null,
+        lack: currentMetrics.lack || null,
+        avoid: currentMetrics.avoid || null,
+      },
+      discoveryCounts,
+      ucRecommendations,
+      lastUpdated:
+        existingDiagnostic?.updatedAt || existingDiagnostic?.createdAt || null,
+    });
+  } catch (error) {
+    console.error("[getUserMetrics] Error:", error);
+    return errorResponse(res, "Failed to fetch user metrics", 500);
+  }
+};
+
+/**
+ * Get UC module recommendations based on metrics and friction analysis
+ */
+const getUCRecommendations = (metrics = {}) => {
+  const recommendations = [];
+  const gravityDepth = metrics.gravityDepth || 2;
+  const lack = metrics.lack || null;
+  const avoid = metrics.avoid || null;
+  const eo = metrics.eo || null;
+
+  // Recommend based on Lack channel
+  if (lack === "C" || lack === "S" || lack === "P") {
+    if (lack === "C") {
+      recommendations.push({
+        pillar: "Freedom",
+        module: "Connection & Relationships",
+        reason:
+          "Addressing connection lack to reduce gravity and increase signal coherence",
+      });
+    }
+    if (lack === "S") {
+      recommendations.push({
+        pillar: "Freedom",
+        module: "Safety & Security",
+        reason:
+          "Addressing safety lack to stabilize signal and reduce gravity depth",
+      });
+    }
+    if (lack === "P") {
+      recommendations.push({
+        pillar: "Alignment",
+        module: "Purpose & Mission",
+        reason:
+          "Addressing purpose lack to activate QGC and increase signal output",
+      });
+    }
+  }
+
+  // Recommend based on Avoidance protector
+  if (avoid === "F") {
+    recommendations.push({
+      pillar: "Freedom",
+      module: "Overcoming Failure Protection",
+      reason:
+        "Addressing failure protector to reduce gravity and increase action capacity",
+    });
+  }
+  if (avoid === "R") {
+    recommendations.push({
+      pillar: "Freedom",
+      module: "Overcoming Rejection Protection",
+      reason:
+        "Addressing rejection protector to increase signal coherence and receiving capacity",
+    });
+  }
+
+  // Recommend based on gravity depth
+  if (gravityDepth === 3) {
+    recommendations.push({
+      pillar: "Freedom",
+      module: "Template-Level Work",
+      reason: "Deep template-level gravity requires specialized Freedom work",
+    });
+  }
+
+  // Always recommend Alignment if QGC is low
+  if ((metrics.qgcActivation || 0) < 50) {
+    recommendations.push({
+      pillar: "Alignment",
+      module: "QGC Activation",
+      reason: "Low QGC activation - focus on authentic genius and alignment",
+    });
+  }
+
+  // Always recommend Prosperity if signal output is low
+  if ((metrics.signalOutput || 0) < 50) {
+    recommendations.push({
+      pillar: "Prosperity",
+      module: "Signal Output & Receiving",
+      reason: "Low signal output - focus on integration and receiving capacity",
+    });
+  }
+
+  return recommendations.slice(0, 3); // Return top 3 recommendations
+};
+
 module.exports = {
   listMine,
   listAll,
@@ -4225,5 +4481,6 @@ module.exports = {
   persistDiscoveryRecord,
   getAllPdfUrls,
   getMetrics,
+  getUserMetrics,
   calculateBottleneck,
 };

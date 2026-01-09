@@ -23,6 +23,9 @@ router.get("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
 
 router.post("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
 
+// User metrics endpoint (for dashboard)
+router.get("/metrics/user", asyncHandler(diagnosticController.getUserMetrics));
+
 // Parameterized routes come last
 router.get("/:id/metrics", asyncHandler(diagnosticController.getMetrics));
 router.get("/:id", asyncHandler(diagnosticController.getById));

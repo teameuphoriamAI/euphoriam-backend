@@ -3274,23 +3274,37 @@ ${signalOutput}%
               // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
               // First try to find explicit "key sentence" or "distilled" markers with quotes
               const explicitKeySentenceMatch = priorReportSnippet.match(
-                /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([^"']{15,150})["']/i
+                /(?:key sentence|distilled|pattern)[\s\S]{0,200}["']([A-Za-z][^"']{14,149})["']/i
               );
 
               // Try to find quoted identity statements with "I will", "I must", etc.
               const identityStatementMatch = priorReportSnippet.match(
-                /["']([^"']{20,120}(?:I will|I must|I can't|I won't|I need|I have to)[^"']{0,60})["']/i
+                /["']([A-Za-z][^"']{19,119}(?:I will|I must|I can't|I won't|I need|I have to)[^"']{0,59})["']/i
               );
 
-              // Try to find unquoted identity statements
+              // Try to find unquoted identity statements - ensure it starts with a word
               const unquotedIdentityMatch = priorReportSnippet.match(
-                /(?:I will|I must|I can't|I won't|I need|I have to)[^.\n]{15,100}/i
+                /\b(?:I will|I must|I can't|I won't|I need|I have to)[^.\n]{15,100}/i
               );
 
               if (explicitKeySentenceMatch && explicitKeySentenceMatch[1]) {
                 keySentence = explicitKeySentenceMatch[1].trim();
+                // Ensure it starts with a letter (not mid-word)
+                if (!/^[A-Za-z]/.test(keySentence)) {
+                  const wordStartMatch = keySentence.match(/[A-Za-z][^"']{14,149}/);
+                  if (wordStartMatch) {
+                    keySentence = wordStartMatch[0].trim();
+                  }
+                }
               } else if (identityStatementMatch && identityStatementMatch[1]) {
                 keySentence = identityStatementMatch[1].trim();
+                // Ensure it starts with a letter
+                if (!/^[A-Za-z]/.test(keySentence)) {
+                  const wordStartMatch = keySentence.match(/[A-Za-z][^"']{19,119}/);
+                  if (wordStartMatch) {
+                    keySentence = wordStartMatch[0].trim();
+                  }
+                }
               } else if (unquotedIdentityMatch && unquotedIdentityMatch[0]) {
                 keySentence = unquotedIdentityMatch[0].trim();
               }
@@ -3302,17 +3316,28 @@ ${signalOutput}%
 
               // No length limit - use full text
 
-              // Look for correction section
+              // Look for correction section - ensure we capture complete words/sentences
               const correctionMatch =
                 priorReportSnippet.match(
-                  /(?:First Correction|correction|recommendation)[\s\S]{0,300}(.{50,200})/i
+                  /(?:First Correction|correction|recommendation)[\s\S]{0,300}[\s:—\-]*([A-Za-z][^.\n]{49,199})/i
                 ) ||
                 priorReportSnippet.match(
-                  /(?:gentle|repeatable|entry|threshold|micro-correction)[\s\S]{0,200}(.{30,150})/i
+                  /(?:gentle|repeatable|entry|threshold|micro-correction)[\s\S]{0,200}[\s:—\-]*([A-Za-z][^.\n]{29,149})/i
+                ) ||
+                priorReportSnippet.match(
+                  /(?:First Correction|correction|recommendation)[\s\S]{0,300}["']([^"']{20,150})["']/i
                 );
 
-              if (correctionMatch) {
+              if (correctionMatch && correctionMatch[1]) {
                 correction = correctionMatch[1].trim();
+                // Ensure it starts with a letter (not mid-word)
+                if (!/^[A-Za-z]/.test(correction)) {
+                  // Try to find the start of the word
+                  const wordStartMatch = correction.match(/[A-Za-z][^.\n]{20,150}/);
+                  if (wordStartMatch) {
+                    correction = wordStartMatch[0].trim();
+                  }
+                }
               }
             }
 
@@ -3322,24 +3347,38 @@ ${signalOutput}%
               keySentenceText = `> *"${keySentence}"*`;
             } else if (priorReportSnippet) {
               // Try to find structure type or identity description - be more specific
-              // Look for "Structure Type" section or similar
+              // Look for "Structure Type" section or similar - ensure it starts with a letter
               const structureTypeMatch = priorReportSnippet.match(
-                /(?:Structure Type|Primary Structure|Your structure)[\s\S]{0,300}(?:is|means|indicates)[\s\S]{0,200}([^.\n]{20,120})/i
+                /(?:Structure Type|Primary Structure|Your structure)[\s\S]{0,300}(?:is|means|indicates)[\s\S]{0,200}[\s:—\-]*([A-Za-z][^.\n]{19,119})/i
               );
 
-              // Look for identity patterns in quotes
+              // Look for identity patterns in quotes - ensure it starts with a letter
               const identityPatternMatch = priorReportSnippet.match(
-                /(?:identity|structure)[\s\S]{0,200}["']([^"']{20,120})["']/i
+                /(?:identity|structure)[\s\S]{0,200}["']([A-Za-z][^"']{19,119})["']/i
               );
 
               if (structureTypeMatch && structureTypeMatch[1]) {
-                const extracted = structureTypeMatch[1].trim();
-                if (extracted.length >= 20 && extracted.length <= 120) {
+                let extracted = structureTypeMatch[1].trim();
+                // Ensure it starts with a letter
+                if (!/^[A-Za-z]/.test(extracted)) {
+                  const wordStartMatch = extracted.match(/[A-Za-z][^.\n]{19,119}/);
+                  if (wordStartMatch) {
+                    extracted = wordStartMatch[0].trim();
+                  }
+                }
+                if (extracted.length >= 20 && extracted.length <= 120 && /^[A-Za-z]/.test(extracted)) {
                   keySentenceText = `> *"${extracted}"*`;
                 }
               } else if (identityPatternMatch && identityPatternMatch[1]) {
-                const extracted = identityPatternMatch[1].trim();
-                if (extracted.length >= 20 && extracted.length <= 120) {
+                let extracted = identityPatternMatch[1].trim();
+                // Ensure it starts with a letter
+                if (!/^[A-Za-z]/.test(extracted)) {
+                  const wordStartMatch = extracted.match(/[A-Za-z][^"']{19,119}/);
+                  if (wordStartMatch) {
+                    extracted = wordStartMatch[0].trim();
+                  }
+                }
+                if (extracted.length >= 20 && extracted.length <= 120 && /^[A-Za-z]/.test(extracted)) {
                   keySentenceText = `> *"${extracted}"*`;
                 }
               } else {

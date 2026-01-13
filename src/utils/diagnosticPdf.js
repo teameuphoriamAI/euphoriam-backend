@@ -638,8 +638,291 @@ const renderStyledReport = (doc, text, metrics = {}) => {
   }
 };
 
+/**
+ * Extract week number from title, handling "Week One", "Week 12", "Week Seven (B)" etc.
+ */
+const extractWeekFromTitle = (title) => {
+  if (!title) return null;
+  
+  const titleLower = title.toLowerCase();
+  
+  // Handle "Week Seven (B)" or "Week 7 (B)" -> "7B"
+  if (titleLower.includes("week seven (b)") || titleLower.includes("week 7 (b)") || 
+      (titleLower.includes("week seven") && titleLower.includes("(b)"))) {
+    return "7B";
+  }
+  
+  // Handle numeric weeks: "Week 12", "Week 4"
+  const weekMatch = title.match(/week\s+(\d+)/i);
+  if (weekMatch) {
+    const weekNum = parseInt(weekMatch[1], 10);
+    // Check if it's followed by (B)
+    if (titleLower.includes(`week ${weekNum} (b)`)) {
+      return "7B";
+    }
+    return weekNum;
+  }
+  
+  // Handle written weeks: "Week One", "Week Two", etc.
+  const weekNames = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12
+  };
+  
+  for (const [name, num] of Object.entries(weekNames)) {
+    if (titleLower.includes(`week ${name}`)) {
+      // Check if it's "Week Seven (B)"
+      if (num === 7 && titleLower.includes("(b)")) {
+        return "7B";
+      }
+      return num;
+    }
+  }
+  
+  return null;
+};
+
+/**
+ * Fetch course videos from Kajabi and build week-to-title mapping
+ */
+const fetchCourseWeekTitles = async (courseId = "2148785745") => {
+  try {
+    // Dynamic import for ES module
+    const { getCourseWithModulesAndLessons, extractVideosFromCourse } = await import("../controllers/kajabi.js");
+    const courseData = await getCourseWithModulesAndLessons(courseId);
+    const videos = extractVideosFromCourse(courseData);
+    
+    // Build mapping: week number -> video title
+    const weekToTitle = {};
+    videos.forEach((video) => {
+      const week = extractWeekFromTitle(video.title);
+      if (week && !weekToTitle[week]) {
+        // Prefer "Live & Journey" videos, but fallback to any week video
+        if (video.title.toLowerCase().includes("live & journey") || !weekToTitle[week]) {
+          weekToTitle[week] = video.title;
+        }
+      }
+    });
+    
+    return weekToTitle;
+  } catch (err) {
+    console.error("[diagnosticPdf] Error fetching course videos:", err.message);
+    return {};
+  }
+};
+
+/**
+ * Generate week-wise recommendations for Unlimited Created videos
+ * based on user's current metrics and state
+ */
+const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = {}, weekTitles = {}) => {
+  const gravity = metrics.gravity || 0;
+  const signalOutput = metrics.signalOutput || 0;
+  const signalCoherence = metrics.signalCoherence || 0;
+  const consciousnessLevel = metrics.consciousnessLevel || 0;
+  const qgcActivation = metrics.qgcActivation || 0;
+
+  // Extract structure type and vortex status from report if available
+  const reportText = typeof aiReport === "string" ? aiReport : JSON.stringify(aiReport);
+  const hasHighGravity = gravity >= 70;
+  const hasLowSignalOutput = signalOutput < 30;
+  const hasLowCoherence = signalCoherence < 70;
+  const hasLowCL = consciousnessLevel < 2.5;
+  const hasLowQGC = qgcActivation < 40;
+
+  // Use actual video titles from Kajabi if available, otherwise use fallback descriptions
+  const getWeekTitle = (week) => {
+    if (weekTitles[week]) {
+      return weekTitles[week];
+    }
+    // Fallback descriptions
+    const fallbacks = {
+      2: "Rising Out of Environment (Sovereignty Activation)",
+      3: "Identity as Creator (Code Holder Embodiment)",
+      4: "Fear Field & Power Expression",
+      6: "Lineage Rules: Father/Grandfather/Maternal War Coding",
+      "7B": "Visibility, Witch Lineage, Power Safety",
+      8: "Protection Parts: Oracle, Sage, Veil Holder, Fox",
+      9: "Merging Timelines: Past–Present–Future",
+      10: "Money Mapping & Prosperity Permission",
+      11: "Higher Octave Identity Flip",
+      12: "Integration of Keys + Leadership Embodiment",
+    };
+    return fallbacks[week] || `Week ${week}`;
+  };
+
+  const recommendations = {
+    phase1: [],
+    phase2: [],
+    phase3: [],
+  };
+
+  // PHASE 1 — Remove Gravity & Interference
+  // Recommended when: High gravity, low signal output, or low coherence
+  if (hasHighGravity || hasLowSignalOutput || hasLowCoherence) {
+    // Week 4 — Fear Field & Power Expression (for high gravity or fear-based patterns)
+    if (hasHighGravity || (reportText && /fear|anxiety|worry/i.test(reportText))) {
+      recommendations.phase1.push({ week: 4, title: getWeekTitle(4) });
+    }
+
+    // Week 6 — Lineage Rules (for lineage patterns or inherited structures)
+    if (reportText && /lineage|father|mother|grandfather|family|inherited/i.test(reportText)) {
+      recommendations.phase1.push({ week: 6, title: getWeekTitle(6) });
+    }
+
+    // Week 7B — Visibility, Witch Lineage, Power Safety (for visibility issues or power safety)
+    if (
+      hasLowSignalOutput ||
+      (reportText && /visibility|invisible|witch|power.*safety|safety.*power/i.test(reportText))
+    ) {
+      recommendations.phase1.push({ week: "7B", title: getWeekTitle("7B") });
+    }
+
+    // Week 8 — Protection Parts (for protection patterns or avoidance)
+    if (
+      reportText &&
+      /protection|protector|avoidance|oracle|sage|veil|fox/i.test(reportText)
+    ) {
+      recommendations.phase1.push({ week: 8, title: getWeekTitle(8) });
+    }
+  }
+
+  // PHASE 2 — Stabilise Identity
+  // Recommended when: Low CL, low QGC, or identity instability
+  if (hasLowCL || hasLowQGC || (reportText && /identity|structure.*type|sovereignty/i.test(reportText))) {
+    // Week 2 — Rising Out of Environment (for environment/sovereignty issues)
+    if (hasLowCL || (reportText && /environment|sovereignty|rising/i.test(reportText))) {
+      recommendations.phase2.push({ week: 2, title: getWeekTitle(2) });
+    }
+
+    // Week 3 — Identity as Creator (for identity/creator embodiment)
+    if (hasLowQGC || (reportText && /creator|identity|embodiment|code.*holder/i.test(reportText))) {
+      recommendations.phase2.push({ week: 3, title: getWeekTitle(3) });
+    }
+  }
+
+  // PHASE 3 — Prosperity & Leadership
+  // Recommended when: Signal output is improving, CL is higher, or prosperity/leadership themes
+  if (
+    signalOutput >= 30 ||
+    consciousnessLevel >= 2.5 ||
+    (reportText && /prosperity|money|leadership|timeline|integration/i.test(reportText))
+  ) {
+    // Week 9 — Merging Timelines (for timeline work or integration)
+    if (reportText && /timeline|past.*present|future|merging/i.test(reportText)) {
+      recommendations.phase3.push({ week: 9, title: getWeekTitle(9) });
+    }
+
+    // Week 10 — Money Mapping & Prosperity Permission (for money/prosperity work)
+    if (
+      reportText &&
+      /money|prosperity|abundance|wealth|financial|permission/i.test(reportText)
+    ) {
+      recommendations.phase3.push({ week: 10, title: getWeekTitle(10) });
+    }
+
+    // Week 11 — Higher Octave Identity Flip (for advanced identity work)
+    if (consciousnessLevel >= 3.0 || (reportText && /higher.*octave|identity.*flip/i.test(reportText))) {
+      recommendations.phase3.push({ week: 11, title: getWeekTitle(11) });
+    }
+
+    // Week 12 — Integration of Keys + Leadership Embodiment (for integration/leadership)
+    if (
+      consciousnessLevel >= 3.5 ||
+      (reportText && /integration|leadership|keys|embodiment/i.test(reportText))
+    ) {
+      recommendations.phase3.push({ week: 12, title: getWeekTitle(12) });
+    }
+  }
+
+  // If no recommendations were generated, provide default based on primary need
+  if (
+    recommendations.phase1.length === 0 &&
+    recommendations.phase2.length === 0 &&
+    recommendations.phase3.length === 0
+  ) {
+    // Default: Start with Phase 1 if high gravity, otherwise Phase 2
+    if (hasHighGravity) {
+      recommendations.phase1.push({ week: 4, title: getWeekTitle(4) });
+      recommendations.phase1.push({ week: 8, title: getWeekTitle(8) });
+    } else {
+      recommendations.phase2.push({ week: 2, title: getWeekTitle(2) });
+      recommendations.phase2.push({ week: 3, title: getWeekTitle(3) });
+    }
+  }
+
+  return recommendations;
+};
+
+/**
+ * Render Unlimited Created recommendations section in PDF
+ */
+const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
+  const sectionWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  
+  doc.moveDown(1);
+  doc.font("Helvetica-Bold").fontSize(14).text("UNLIMITED CREATED RECOMMENDATIONS", {
+    width: sectionWidth,
+    lineGap: 2,
+  });
+  doc.moveDown(0.5);
+
+  // PHASE 1
+  if (recommendations.phase1.length > 0) {
+    doc.font("Helvetica-Bold").fontSize(12).text("PHASE 1 — Remove Gravity & Interference", {
+      width: sectionWidth,
+      lineGap: 2,
+    });
+    doc.moveDown(0.3);
+    recommendations.phase1.forEach((rec) => {
+      doc.font("Helvetica").fontSize(11).text(`● Week ${rec.week} — ${rec.title}`, {
+        width: sectionWidth,
+        lineGap: 1.5,
+        indent: 10,
+      });
+    });
+    doc.moveDown(0.4);
+  }
+
+  // PHASE 2
+  if (recommendations.phase2.length > 0) {
+    doc.font("Helvetica-Bold").fontSize(12).text("PHASE 2 — Stabilise Identity", {
+      width: sectionWidth,
+      lineGap: 2,
+    });
+    doc.moveDown(0.3);
+    recommendations.phase2.forEach((rec) => {
+      doc.font("Helvetica").fontSize(11).text(`● Week ${rec.week} — ${rec.title}`, {
+        width: sectionWidth,
+        lineGap: 1.5,
+        indent: 10,
+      });
+    });
+    doc.moveDown(0.4);
+  }
+
+  // PHASE 3
+  if (recommendations.phase3.length > 0) {
+    doc.font("Helvetica-Bold").fontSize(12).text("PHASE 3 — Prosperity & Leadership", {
+      width: sectionWidth,
+      lineGap: 2,
+    });
+    doc.moveDown(0.3);
+    recommendations.phase3.forEach((rec) => {
+      doc.font("Helvetica").fontSize(11).text(`● Week ${rec.week} — ${rec.title}`, {
+        width: sectionWidth,
+        lineGap: 1.5,
+        indent: 10,
+      });
+    });
+    doc.moveDown(0.4);
+  }
+
+  doc.font("Helvetica").fontSize(11); // Reset font
+};
+
 const generateDiagnosticPdf = (diagnostic) =>
-  new Promise((resolve, reject) => {
+  new Promise(async (resolve, reject) => {
     try {
       const outputDir = path.join(
         __dirname,
@@ -741,6 +1024,18 @@ const generateDiagnosticPdf = (diagnostic) =>
         }
 
         renderStyledReport(doc, aiReport, metrics);
+
+        // Add Unlimited Created week-wise recommendations after the report
+        // Fetch course videos to get actual titles
+        const weekTitles = await fetchCourseWeekTitles("2148785745").catch(() => ({}));
+        const ucRecommendations = await generateUnlimitedCreatedRecommendations(metrics, aiReport, weekTitles);
+        if (
+          ucRecommendations.phase1.length > 0 ||
+          ucRecommendations.phase2.length > 0 ||
+          ucRecommendations.phase3.length > 0
+        ) {
+          renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
+        }
 
         // Optional metadata on a new page (after the report)
         doc.addPage();
@@ -928,6 +1223,12 @@ const generateDiagnosticPdf = (diagnostic) =>
         for (const p of phases) {
           addList(doc, p.title || "Recommendation Phase", p.items || []);
         }
+
+        // Add Unlimited Created week-wise recommendations
+        // Fetch course videos to get actual titles
+        const weekTitles = await fetchCourseWeekTitles("2148785745").catch(() => ({}));
+        const ucRecommendations = await generateUnlimitedCreatedRecommendations(metrics, aiReport, weekTitles);
+        renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
 
         const finalSummary = aiReport.finalSummary || {};
         addList(

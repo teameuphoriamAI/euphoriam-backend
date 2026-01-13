@@ -414,12 +414,18 @@ export async function extractReportDate(diagnostic) {
 
   const date = diagnostic.data?.generatedAt || diagnostic.updatedAt;
 
-  return date
-    ? new Date(date).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      })
-    : null;
+  if (date) {
+    const dateObj = new Date(date);
+    // Format as "Jan 10, 2024 14:30 UTC"
+    const month = dateObj.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+    const day = dateObj.getUTCDate();
+    const year = dateObj.getUTCFullYear();
+    const hours = String(dateObj.getUTCHours()).padStart(2, "0");
+    const minutes = String(dateObj.getUTCMinutes()).padStart(2, "0");
+    return `${month} ${day}, ${year} ${hours}:${minutes} UTC`;
+  }
+
+  return null;
 }
 export async function handleOngoingChat(req, res, input, context) {
   const transcript = resolveTranscript(input.messages, context);

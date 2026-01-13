@@ -835,7 +835,16 @@ const buildDiscoveryChatPrompt = ({
     : "";
 
   const priorReportBlock = priorReport
-    ? `USER'S PREVIOUS DIAGNOSTIC REPORT (AUTHORITATIVE SOURCE):\n${priorReport}`
+    ? `🚨🚨🚨 CRITICAL: USER'S PREVIOUS DIAGNOSTIC REPORT (AUTHORITATIVE SOURCE - YOU MUST USE THIS):
+${priorReport}
+
+⚠️ MANDATORY: You MUST read this entire report and extract:
+- ACTUAL metrics values (Gravity %, Signal Coherence %, Signal Output %, CL, QGC %)
+- ACTUAL key sentences/patterns (look for quoted text or "key sentence" markers)
+- ACTUAL correction text (look for "First Correction", "correction", "recommendation" sections)
+- Structure type, vortex status, avoidance patterns
+
+NEVER say "I don't have" this data - it's ALL in the report above. Extract and use ACTUAL values, never placeholders.`
     : "";
 
   // Discovery type context
@@ -975,15 +984,25 @@ ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
       signalOutput !== null &&
       consciousnessLevel !== null &&
       qgcActivation !== null
-        ? `QGC Activation:      ${createProgressBar(
-            qgcActivation
-          )} ${qgcActivation}%
-Consciousness Level: ${createProgressBar(
-            (consciousnessLevel / 5) * 100
-          )} ${Math.round((consciousnessLevel / 5) * 100)}%
-Gravity (Load):      ${createProgressBar(gravity)} ${gravity}%
-Signal Coherence:    ${createProgressBar(signalCoherence)} ${signalCoherence}%
-Signal Output:       ${createProgressBar(signalOutput)} ${signalOutput}%`
+        ? `QGC Activation:
+${createProgressBar(qgcActivation)}
+${qgcActivation}%
+
+Consciousness Level:
+${createProgressBar((consciousnessLevel / 5) * 100)}
+${Math.round((consciousnessLevel / 5) * 100)}%
+
+Gravity:
+${createProgressBar(gravity)}
+${gravity}%
+
+Signal Coherence:
+${createProgressBar(signalCoherence)}
+${signalCoherence}%
+
+Signal Output:
+${createProgressBar(signalOutput)}
+${signalOutput}%`
         : null;
 
     return `You are Euphoriam AI working with structure-aware precision.${discoveryTypeContext}
@@ -993,12 +1012,23 @@ Signal Output:       ${createProgressBar(signalOutput)} ${signalOutput}%`
 ${
   metricsBlock
     ? `\n📊 ACTUAL METRICS DATA (USE THESE EXACT VALUES):\n${metricsBlock}\n`
-    : ""
+    : `\n⚠️⚠️⚠️ CRITICAL: Metrics are NOT provided directly above. You MUST extract them from the REPORT PROVIDED IN YOUR SYSTEM CONTEXT.
+    
+Look for the report in your system messages (it will say "🚨🚨🚨 CRITICAL: Previous diagnostic report" or "Previous diagnostic report for [name]").
+    
+In that report, search for:
+- "Gravity" followed by a percentage (e.g., "Gravity: 97%" or "Gravity 97%")
+- "Signal Coherence" followed by a percentage
+- "Signal Output" followed by a percentage  
+- "Consciousness Level" or "CL" followed by a number
+- "QGC" or "QGC Activation" followed by a percentage
+
+Extract the ACTUAL numbers from the report and use them. NEVER say "not stated in the provided context" - the report IS in your system context.`
 }
 
 REQUIRED FORMAT - Follow this EXACTLY:
 
-1. Start with: "Welcome back. I've loaded your last report."
+1. Start with: "Welcome back ${displayName}!. I've loaded your last report." (include the user's name with an exclamation mark)
 
 2. Reflect back their structure FIRST using the ACTUAL METRICS DATA provided above:
    - Use the Gravity % value provided (${
@@ -1029,7 +1059,7 @@ REQUIRED FORMAT - Follow this EXACTLY:
    
    Format your response EXACTLY like this:
    
-   "Welcome back. I've loaded your last report.
+   "Welcome back ${displayName}!. I've loaded your last report.
 
    I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
@@ -1040,21 +1070,28 @@ ${
     ? `## METRICS GAUGE (Current Snapshot)
 
 ${formattedMetricsSection}`
-    : `   * **[Extract Gravity % from report]** → [what it means]
-   * **[Extract Signal Coherence % from report]** → [what it means]
-   * **[Extract Signal Output % from report]** → [what it means]
-   * **CL [Extract from report]** → [what phase]
-   * **QGC [Extract from report]%** → [what it indicates]`
+    : `   ⚠️ CRITICAL: Metrics are NOT provided above. You MUST extract them from the REPORT IN YOUR SYSTEM CONTEXT.
+   
+   Look in your system messages for "🚨🚨🚨 CRITICAL: Previous diagnostic report" or "Previous diagnostic report for [name]".
+   
+   In that report, find and extract:
+   * **Gravity: [EXTRACT ACTUAL % FROM REPORT]** → [what it means]
+   * **Signal Coherence: [EXTRACT ACTUAL % FROM REPORT]** → [what it means]
+   * **Signal Output: [EXTRACT ACTUAL % FROM REPORT]** → [what it means]
+   * **CL: [EXTRACT ACTUAL NUMBER FROM REPORT]** → [what phase]
+   * **QGC: [EXTRACT ACTUAL % FROM REPORT]** → [what it indicates]
+   
+   NEVER say "not stated" - the report IS in your system context. Extract the actual numbers.`
 }
 
    This is the key sentence from your map, distilled:
 
-   > *\"[Extract the ACTUAL key sentence/pattern from the report below - look for phrases like 'I will move when...' or similar structural patterns]\"*
+   > *\"[EXTRACT THE ACTUAL KEY SENTENCE/PATTERN FROM THE REPORT IN YOUR SYSTEM CONTEXT - look for phrases like 'I will move when...' or similar structural patterns. The report is in your system messages - search for "🚨🚨🚨 CRITICAL: Previous diagnostic report" or "Previous diagnostic report for [name]". NEVER say "not stated" - extract from the report.]\"*
 
-   [Extract ACTUAL interpretation from report - e.g., "Nothing in your report pointed to laziness, lack of capacity, or being 'behind.' It pointed to a doorway system — power held behind the threshold."]
+   [EXTRACT ACTUAL INTERPRETATION FROM REPORT IN SYSTEM CONTEXT - e.g., "Nothing in your report pointed to laziness, lack of capacity, or being 'behind.' It pointed to a doorway system — power held behind the threshold." Look in the report in your system messages. NEVER say "not stated".]
 
    Your **entire correction** was about one thing only:
-   **[Extract ACTUAL correction from report - e.g., "gentle, repeatable entry without exposure."]**
+   **[EXTRACT ACTUAL CORRECTION FROM REPORT IN SYSTEM CONTEXT - e.g., "gentle, repeatable entry without exposure." Look for "First Correction", "Correction", or "Recommendations" sections in the report in your system messages. NEVER say "not stated".]**
 
    Before I update anything, I need to check one thing — slowly.
 
@@ -1081,8 +1118,11 @@ ${formattedMetricsSection}`
 🚨 CRITICAL REQUIREMENTS - YOU MUST ACTUALLY EXTRACT REAL VALUES:
 
 ⚠️ DO NOT OUTPUT PLACEHOLDER TEXT LIKE "[Extract metrics...]" OR "[Ask ONE specific question...]"
-⚠️ YOU MUST READ THE REPORT BELOW AND EXTRACT THE ACTUAL VALUES
-⚠️ REPLACE ALL PLACEHOLDERS WITH REAL DATA FROM THE REPORT
+⚠️ THE REPORT IS PROVIDED IN YOUR SYSTEM CONTEXT (look for "Previous diagnostic report" or "🚨🚨🚨 CRITICAL: Previous diagnostic report" in system messages)
+⚠️ YOU MUST READ THE REPORT FROM SYSTEM CONTEXT AND EXTRACT THE ACTUAL VALUES
+⚠️ NEVER say "I don't see the report in your message" - the report is in SYSTEM CONTEXT, not the user's message
+⚠️ NEVER ask the user to share or paste the report - it's already provided to you in system context
+⚠️ REPLACE ALL PLACEHOLDERS WITH REAL DATA FROM THE REPORT IN SYSTEM CONTEXT
 
 STEP-BY-STEP EXTRACTION PROCESS:
 
@@ -1124,13 +1164,19 @@ ${
   formattedMetricsSection
     ? `✅ COMPLETE TEMPLATE WITH METRICS:
 
-"Welcome back. I've loaded your last report.
+"Welcome back ${displayName}!. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
 Your structure at the last check-in was very clear:
 
 ${formattedMetricsSection}
+
+* [Based on Gravity value: if high (80%+) say "Extremely high Gravity" or if medium say "Moderate Gravity", etc.] (${gravity !== null ? gravity + "%" : "[EXTRACT FROM REPORT]"}) → [interpretation based on value]
+* [Based on Signal Coherence value: if 100% say "Perfect Signal Coherence", etc.] (${signalCoherence !== null ? signalCoherence + "%" : "[EXTRACT FROM REPORT]"}) → [interpretation based on value]
+* [Based on Signal Output value: if low (<10%) say "Very low Signal Output", etc.] (${signalOutput !== null ? signalOutput + "%" : "[EXTRACT FROM REPORT]"}) → [interpretation based on value]
+* CL ${consciousnessLevel !== null ? consciousnessLevel : "[EXTRACT FROM REPORT]"} → [what phase based on CL value]
+* QGC ${qgcActivation !== null ? qgcActivation + "%" : "[EXTRACT FROM REPORT]"} → [what it indicates based on value]
 
 This is the key sentence from your map, distilled:
 
@@ -1406,8 +1452,19 @@ ${priorReportBlock ? `\nUSER'S DIAGNOSTIC REPORT:\n${priorReportBlock}` : ""}
 Ask the onboarding questions naturally in the conversation flow.`;
   }
 
+  // Check if this is mid-conversation (NOT first message)
+  const isMidConversation = userMessagesInDiscovery.length > 0;
+  
   return `
 You are Euphoriam AI working with structure-aware precision.${discoveryTypeContext}
+
+${isMidConversation ? `🚨🚨🚨 CRITICAL: This is MID-CONVERSATION (NOT the first message). There are already ${userMessagesInDiscovery.length} user message(s) in the transcript.
+- NEVER use the "Welcome back. I've loaded your last report" format
+- NEVER restart with structure reflection
+- Respond DIRECTLY to the user's current question or statement
+- Reference the conversation history naturally
+- Use their report data to inform your response, but don't restart the conversation
+- If they ask about copywriting, help with copy, or any specific task, respond directly to that request` : ""}
 
 🌑 DISCOVERY MODE - CRITICAL RULES:
 - You are in DISCOVERY MODE - working with their existing diagnostic report
@@ -1624,7 +1681,10 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
 
 🌑 CRITICAL APPROACH (Structure-Aware Discovery):
 
-1. FIRST MESSAGE (if transcript is empty):
+1. FIRST MESSAGE (ONLY if transcript is empty - meaning this is the very first message in the conversation):
+   - CRITICAL: This format is ONLY for the FIRST message when there are NO previous messages in the transcript
+   - If there are already messages in the transcript, SKIP this format and go to section 2 (MID-CONVERSATION)
+   - NEVER use "Welcome back. I've loaded your last report" format if there are already messages in the conversation
    - CRITICAL: You MUST start with structure reflection, NOT generic greetings
    - NEVER start with "I'm here" or "What would you like to explore today?"
    - NEVER output placeholder text in square brackets - always use actual values
@@ -1632,14 +1692,26 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
    - Then: "I want to reflect it back to you first — simply and cleanly — before we move anywhere."
    - Use the ACTUAL metrics values provided in the user prompt (they are formatted and ready to use)
    - Extract and display: Gravity %, Signal Coherence %, Signal Output %, CL, QGC % with interpretations (use the actual numbers, not placeholders)
-   - READ THE REPORT PROVIDED IN THE USER PROMPT and extract the ACTUAL key sentence/pattern (use quote format with the actual sentence from the report)
-   - READ THE REPORT PROVIDED IN THE USER PROMPT and extract what their correction was about (use actual text from the report, not placeholders)
-   - READ THE REPORT PROVIDED IN THE USER PROMPT and formulate ONE specific, targeted question about progress since the report (formulate the actual question based on the actual correction, don't use "[Ask...]")
+   - READ THE REPORT PROVIDED IN THE SYSTEM CONTEXT (look for "Previous diagnostic report" or "🚨🚨🚨 CRITICAL: Previous diagnostic report" in your system messages) and extract the ACTUAL key sentence/pattern (use quote format with the actual sentence from the report)
+   - READ THE REPORT PROVIDED IN THE SYSTEM CONTEXT and extract what their correction was about (use actual text from the report, not placeholders)
+   - READ THE REPORT PROVIDED IN THE SYSTEM CONTEXT and formulate ONE specific, targeted question about progress since the report (formulate the actual question based on the actual correction, don't use "[Ask...]")
    - Format: Use bullet points with bold metrics, quote the key sentence, then ask one question
    - Do NOT ask generic questions like "What would you like to explore?" - be precise and specific
    - DO NOT output any text in square brackets - always replace with actual content from the report
+   - NEVER say "I don't see the report in your message" - the report is in SYSTEM CONTEXT, not the user's message
+   - NEVER ask the user to share or paste the report - it's already provided to you in system context
    
-   ⚠️ REMINDER: The report is provided in the user prompt below. You MUST read it and extract actual content. If you cannot find specific content, make a reasonable inference based on the report content, but NEVER output placeholder text.
+   ⚠️ REMINDER: The report is provided in the SYSTEM CONTEXT (system messages), NOT in the user's message. You MUST read it from system context and extract actual content. If you cannot find specific content, make a reasonable inference based on the report content, but NEVER output placeholder text or claim you don't have the report.
+
+1b. MID-CONVERSATION (if transcript is NOT empty - meaning there are already messages):
+   - CRITICAL: If there are already messages in the transcript, you are in the MIDDLE of a conversation
+   - NEVER use the "Welcome back. I've loaded your last report" format in mid-conversation
+   - NEVER restart with structure reflection in mid-conversation
+   - Respond directly to the user's current question or statement
+   - Reference the conversation history and their report when relevant
+   - If they ask about copywriting, help with copy, or any specific task, respond directly to that request
+   - Use their report data (metrics, patterns, corrections) to inform your response, but don't restart the conversation
+   - Example: User asks "can you help me really capture audiences and put it copy" → Respond directly about copywriting, reference their structure if relevant, but don't restart with "Welcome back"
 
 2. QUESTION STYLE:
    - Ask ONE question at a time
@@ -1700,14 +1772,35 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
     - NEVER say "I'm here" or "I'm here to help"
     - NEVER say "tell me more about that" or "what's on your mind?"
     - NEVER say "What would you like to explore?" or "How can I help?"
+    - NEVER say "I don't have" or "I don't yet have" or "I'm going to mirror" or "Here's the clean translation"
+    - NEVER say "I don't see the actual diagnostic report content" or "I don't see the report in your message" or "I can't truthfully extract"
+    - NEVER say "not stated in the provided context" or "not stated" - the report IS in your system context, extract from it
+    - NEVER say you don't have access to metrics, corrections, or report data when the report is provided in the system context
+    - NEVER ask the user to "share/paste the text of your last report" or "Share/paste the text of your last report"
     - NEVER use generic, vague responses
+    - NEVER use phrases like "I'm going to" or "Here's the" when responding to user questions
     - If the user mentions something unclear or has typos:
       * Acknowledge what you heard: "I hear you mentioning [what they said]"
       * Map it to their structure: "That connects to [specific structural element from their report]"
       * Ask ONE specific, targeted question to clarify the structural meaning
       * Example: User says "formula plase" → "I hear 'formula' - in your structure, we mapped Gravity at [X]% and Signal Output at [Y]%. What does 'formula' point to for you right now - is it about how those connect, or something else?"
     - Example BAD response: "I'm here. You mentioned 'formula plase' - tell me more about that, or what's on your mind right now?" ❌ NEVER DO THIS
-    - ⚠️ CRITICAL IP PROTECTION: If user asks "what's the formula?" or "how is it calculated?" → NEVER explain calculations. Say: "The metrics are calculated using proprietary Euphoriam methods. Your current metrics are [list values]. What do these numbers mean for you right now?"`;
+    - Example BAD response: "I don't yet have your metric readout" ❌ NEVER DO THIS - you ALWAYS have the report when it's provided
+    - ⚠️ CRITICAL IP PROTECTION: If user asks "what's the formula?" or "how is it calculated?" → NEVER explain calculations. Say: "The metrics are calculated using proprietary Euphoriam methods. Your current metrics are [list values]. What do these numbers mean for you right now?"
+
+12. CRITICAL REPORT USAGE RULE:
+    - When a report is provided in the system context (you will see "Previous diagnostic report for [name]" or "🚨🚨🚨 CRITICAL: Previous diagnostic report" in your system messages), you MUST use it
+    - The report is provided in YOUR SYSTEM CONTEXT, NOT in the user's message - look in the system messages above
+    - NEVER say "I don't see the report in your message" or "I don't see the actual diagnostic report content" - the report is in the SYSTEM CONTEXT, not the user's message
+    - NEVER say "I don't have" the report, metrics, or correction - you ALWAYS have it when provided in system context
+    - NEVER ask the user to "share/paste the text of your last report" or "Share/paste the text of your last report" - it's already provided to you in system context
+    - NEVER say "I can't truthfully extract" - you CAN and MUST extract from the report in system context
+    - ALWAYS extract and use ACTUAL metrics, key sentences, and corrections from the report in system context
+    - If you cannot find specific content in the report, make reasonable inferences based on what IS in the report, but NEVER claim you don't have it
+    - The report contains: metrics (Gravity %, Signal Coherence %, Signal Output %, CL, QGC %), key sentences/patterns, corrections, structure type, vortex status, etc.
+    - You MUST read the entire report provided in system context and extract actual values - never use placeholders or claim you don't have the data
+    - When responding to user questions, ALWAYS reference specific elements from their report (metrics, patterns, corrections) - never give generic responses
+    - If you see "🚨🚨🚨 CRITICAL: Previous diagnostic report" in system context, that IS the report - extract from it immediately`;
 };
 // ============================================================================
 // HELPER FUNCTIONS FOR chatbotDiagnosticFreeform
@@ -1998,28 +2091,27 @@ const loadLatestDiscoveryMetrics = async (
 };
 
 /**
- * Extracts report date from discovery or diagnostic
+ * Extracts report date from discovery or diagnostic with UTC date and time
  */
 const extractReportDate = (latestDiscovery, existingDiagnostic) => {
+  let dateObj = null;
+
   if (latestDiscovery?.createdAt) {
-    return new Date(latestDiscovery.createdAt).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-    });
+    dateObj = new Date(latestDiscovery.createdAt);
+  } else if (existingDiagnostic?.data?.generatedAt) {
+    dateObj = new Date(existingDiagnostic.data.generatedAt);
+  } else if (existingDiagnostic?.updatedAt) {
+    dateObj = new Date(existingDiagnostic.updatedAt);
   }
 
-  if (existingDiagnostic?.data?.generatedAt) {
-    return new Date(existingDiagnostic.data.generatedAt).toLocaleDateString(
-      "en-US",
-      { month: "short", day: "numeric" }
-    );
-  }
-
-  if (existingDiagnostic?.updatedAt) {
-    return new Date(existingDiagnostic.updatedAt).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-    });
+  if (dateObj) {
+    // Format as "Jan 10, 2024 14:30 UTC"
+    const month = dateObj.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+    const day = dateObj.getUTCDate();
+    const year = dateObj.getUTCFullYear();
+    const hours = String(dateObj.getUTCHours()).padStart(2, "0");
+    const minutes = String(dateObj.getUTCMinutes()).padStart(2, "0");
+    return `${month} ${day}, ${year} ${hours}:${minutes} UTC`;
   }
 
   return null;

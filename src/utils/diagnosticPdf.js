@@ -10,18 +10,34 @@ const ensureDir = (dirPath) => {
 
 const addSection = (doc, title, bodyLines) => {
   if (!bodyLines || bodyLines.length === 0) return;
+  const sectionWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(0.6);
-  doc.fontSize(13).text(title, { underline: true });
+  doc.fontSize(13).text(title, { 
+    underline: true,
+    width: sectionWidth,
+    lineGap: 2,
+  });
   doc.moveDown(0.2);
-  bodyLines.forEach((line) => doc.fontSize(11).text(line));
+  bodyLines.forEach((line) => doc.fontSize(11).text(line, {
+    width: sectionWidth,
+    lineGap: 2,
+  }));
 };
 
 const addList = (doc, title, items) => {
   if (!items || items.length === 0) return;
+  const listWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(0.6);
-  doc.fontSize(13).text(title, { underline: true });
+  doc.fontSize(13).text(title, { 
+    underline: true,
+    width: listWidth,
+    lineGap: 2,
+  });
   doc.moveDown(0.2);
-  items.forEach((item) => doc.fontSize(11).text(`• ${item}`));
+  items.forEach((item) => doc.fontSize(11).text(`• ${item}`, {
+    width: listWidth,
+    lineGap: 2,
+  }));
 };
 
 const renderGauge = (value) => {
@@ -205,11 +221,105 @@ const drawMetricsInterpretationTable = (doc) => {
 const isAllCapsHeader = (line) =>
   /^[A-Z0-9][A-Z0-9\s/&()'".:-]{6,}$/.test(line) && line === line.toUpperCase();
 
+/**
+ * Cleans text by removing problematic special characters
+ */
+const cleanText = (text) => {
+  if (!text) return text;
+  // Remove or replace problematic characters
+  return String(text)
+    .replace(/& þ/g, "") // Remove special characters
+    .replace(/Ø=ÜÄ/g, "") // Remove special characters
+    .replace(/!'/g, " → ") // Replace arrow-like characters
+    .replace(/!"/g, " ↓ ") // Replace arrow-like characters
+    .replace(/!`/g, " → ") // Replace arrow-like characters
+    .replace(/!'/g, " → ") // Replace arrow-like characters
+    .replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, ""); // Remove non-printable characters except common unicode
+};
+
+/**
+ * Renders text with inline markdown bold formatting (**text**)
+ * Uses a simpler approach: process line and render with proper fonts
+ */
+const renderTextWithBold = (doc, text, options = {}) => {
+  const { width, lineGap = 2, indent = 0 } = options;
+  const fontSize = doc._fontSize || 11;
+  
+  // Clean text first
+  let cleanTextValue = cleanText(text);
+  
+  // Check if text contains bold markers
+  if (!cleanTextValue.includes("**")) {
+    // No bold formatting, render normally
+    doc.text(cleanTextValue, { width, lineGap, indent });
+    return;
+  }
+
+  // Parse text to extract bold and normal segments
+  const segments = [];
+  let lastIndex = 0;
+  const boldRegex = /\*\*([^*]+)\*\*/g;
+  let match;
+
+  while ((match = boldRegex.exec(cleanTextValue)) !== null) {
+    // Add normal text before bold
+    if (match.index > lastIndex) {
+      const normalText = cleanTextValue.substring(lastIndex, match.index);
+      if (normalText) {
+        segments.push({ text: normalText, bold: false });
+      }
+    }
+    
+    // Add bold text
+    segments.push({ text: match[1], bold: true });
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining normal text
+  if (lastIndex < cleanTextValue.length) {
+    const normalText = cleanTextValue.substring(lastIndex);
+    if (normalText) {
+      segments.push({ text: normalText, bold: false });
+    }
+  }
+
+  // If no segments found (malformed markdown), just remove ** and render
+  if (segments.length === 0) {
+    doc.text(cleanTextValue.replace(/\*\*/g, ""), { width, lineGap, indent });
+    return;
+  }
+
+  // Simple approach: render each segment sequentially
+  // PDFKit will handle line wrapping naturally
+  segments.forEach((segment, index) => {
+    // Set appropriate font
+    if (segment.bold) {
+      doc.font("Helvetica-Bold").fontSize(fontSize);
+    } else {
+      doc.font("Helvetica").fontSize(fontSize);
+    }
+
+    // Render segment - let PDFKit handle wrapping
+    // Only add lineGap on the last segment
+    doc.text(segment.text, {
+      width: width,
+      lineGap: index === segments.length - 1 ? lineGap : 0,
+      indent: index === 0 ? indent : 0, // Only indent first segment
+    });
+  });
+
+  // Reset to normal font
+  doc.font("Helvetica").fontSize(fontSize);
+};
+
 const renderStyledReport = (doc, text, metrics = {}) => {
   const lines = String(text || "").split(/\r?\n/);
 
   doc.font("Helvetica").fontSize(11);
   doc.fillColor("#111111");
+
+  // Calculate available width for text (page width minus margins)
+  const availableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
   let skipUntilNextSection = false;
   let foundMetricsInterpretation = false;
@@ -223,18 +333,49 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     if (/##\s+METRICS\s+GAUGE/i.test(line) || /METRICS\s+GAUGE/i.test(line)) {
       inMetricsGaugeSection = true;
       doc.moveDown(0.5);
-      doc.font("Helvetica-Bold").fontSize(14).text("METRICS GAUGE (Current Snapshot)");
+      doc.font("Helvetica-Bold").fontSize(14).text("METRICS GAUGE (Current Snapshot)", {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.moveDown(0.3);
       
-      // Render metrics with actual values - single line format
-      const renderGauge = (value) => {
+      // Helper to draw a visual gauge bar using rectangles (more reliable than Unicode)
+      const drawGaugeBar = (doc, startX, startY, value, totalBlocks = 12) => {
         const v = Math.max(0, Math.min(100, Number(value || 0)));
-        const totalBlocks = 12;
         const filled = Math.round((v / 100) * totalBlocks);
-        const empty = totalBlocks - filled;
-        const filledBlock = "█".repeat(filled);
-        const emptyBlock = "░".repeat(empty);
-        return `${filledBlock}${emptyBlock}`;
+        const blockWidth = 8; // Width of each block in points
+        const blockHeight = 10; // Height of each block in points
+        const blockGap = 1; // Gap between blocks
+        
+        // Save current fill color
+        const savedFillColor = doc._fillColor;
+        
+        let currentX = startX;
+        
+        // Draw filled blocks (black)
+        for (let i = 0; i < filled; i++) {
+          doc
+            .rect(currentX, startY, blockWidth, blockHeight)
+            .fillColor("#000000")
+            .fill();
+          currentX += blockWidth + blockGap;
+        }
+        
+        // Draw empty blocks (white with gray border)
+        for (let i = filled; i < totalBlocks; i++) {
+          doc
+            .rect(currentX, startY, blockWidth, blockHeight)
+            .fillColor("#FFFFFF")
+            .strokeColor("#CCCCCC")
+            .lineWidth(0.5)
+            .fillAndStroke();
+          currentX += blockWidth + blockGap;
+        }
+        
+        // Restore fill color for text
+        doc.fillColor(savedFillColor || "#111111");
+        
+        return currentX; // Return the end X position
       };
       
       // Helper to render a single line metric with proper spacing
@@ -242,48 +383,73 @@ const renderStyledReport = (doc, text, metrics = {}) => {
         // Check if value is actually defined (not undefined, null, or NaN)
         const hasValue = value !== undefined && value !== null && !isNaN(value);
         
+        // Set font for label
+        doc.font("Helvetica").fontSize(11);
+        
+        // Calculate positions - everything on the same line
+        const labelStartX = doc.page.margins.left;
+        const currentY = doc.y;
+        const labelWidth = 160; // Fixed width for label column
+        const gaugeStartX = labelStartX + labelWidth; // Start gauge right after label
+        const blockHeight = 10; // Height of gauge blocks
+        // Align gauge bar vertically with text baseline
+        const textBaselineOffset = 8; // Approximate offset for text baseline
+        const gaugeStartY = currentY + textBaselineOffset - blockHeight / 2;
+        const totalBlockWidth = 12 * 8 + 11 * 1; // 12 blocks * 8pt + 11 gaps * 1pt = 107pt
+        const valueStartX = gaugeStartX + totalBlockWidth + 8; // 8pt gap after gauge
+        
+        // Draw label on the same line - use absolute positioning to prevent wrapping
+        const labelText = label.replace(/:/g, ":"); // Ensure colon is included
+        doc.text(labelText, labelStartX, currentY, {
+          width: labelWidth,
+          lineGap: 0,
+        });
+        
         if (!hasValue) {
-          // If no value, show "Unknown" with empty gauge
-          const labelWidth = 20;
-          const spacesNeeded = Math.max(0, labelWidth - label.length);
-          const spacing = " ".repeat(spacesNeeded);
-          const emptyGauge = "░░░░░░░░░░░░"; // 12 empty blocks
-          doc.font("Helvetica").fontSize(11);
-          doc.text(`${label}${spacing} ${emptyGauge} Unknown`);
+          // Draw empty gauge
+          drawGaugeBar(doc, gaugeStartX, gaugeStartY, 0);
+          doc.text("Unknown", valueStartX, currentY, {
+            width: 80,
+            lineGap: 0,
+          });
+          // Minimal spacing between metrics
+          doc.moveDown(0.2);
           return;
         }
         
         const displayValue = Number(value);
-        const percentage = isPercentage ? displayValue : (displayValue / 5) * 100;
-        const gauge = renderGauge(percentage);
+        // For gauge visualization: convert to percentage
+        // For Consciousness Level (0-5), convert to percentage for visual bar
+        const percentageForGauge = isPercentage ? displayValue : (displayValue / 5) * 100;
+        // For display text: show percentage for percentage metrics, raw value for Consciousness Level
         const valueText = isPercentage ? `${Math.round(displayValue)}%` : `${displayValue}`;
         
-        // Use fixed-width font spacing for alignment
-        // Calculate spacing needed to align gauge bars
-        const labelWidth = 20; // Approximate character width for alignment
-        const spacesNeeded = Math.max(0, labelWidth - label.length);
-        const spacing = " ".repeat(spacesNeeded);
+        // Draw gauge bar
+        drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);
         
-        doc.font("Helvetica").fontSize(11);
-        doc.text(`${label}${spacing} ${gauge} ${valueText}`);
+        // Draw value text (percentage) - on the same line
+        doc.font("Helvetica").fontSize(11).fillColor("#111111");
+        doc.text(valueText, valueStartX, currentY, {
+          width: 80, // Fixed width for percentage text area
+          align: "left",
+          lineGap: 0,
+        });
+        
+        // Move to next line for next metric
+        doc.moveDown(0.2);
       };
       
       console.log("[diagnosticPdf] Rendering METRICS GAUGE with metrics:", metrics);
       
+      // Render all metrics with minimal spacing (spacing is handled inside renderMetricLine)
       renderMetricLine("QGC Activation:", metrics.qgcActivation, true);
-      doc.moveDown(0.2);
-      
       renderMetricLine("Consciousness Level:", metrics.consciousnessLevel, false);
-      doc.moveDown(0.2);
-      
       renderMetricLine("Gravity (Load):", metrics.gravity, true);
-      doc.moveDown(0.2);
-      
       renderMetricLine("Signal Coherence:", metrics.signalCoherence, true);
-      doc.moveDown(0.2);
-      
       renderMetricLine("Signal Output:", metrics.signalOutput, true);
-      doc.moveDown(0.5);
+      
+      // Small spacing after the metrics section
+      doc.moveDown(0.3);
       
       continue;
     }
@@ -319,7 +485,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
       foundMetricsInterpretation = true;
       skipUntilNextSection = true;
       doc.moveDown(0.5);
-      doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE");
+      doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE", {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.moveDown(0.3);
       drawMetricsInterpretationTable(doc);
       // Reset document position to left margin after drawing table
@@ -376,7 +545,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     // H1: "* ..."
     if (line.startsWith("* ")) {
       doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(16).text(line.slice(2));
+      doc.font("Helvetica-Bold").fontSize(16).text(line.slice(2), {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.4);
       continue;
@@ -388,7 +560,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
       const headerLevel = (line.match(/^#+/)?.[0] || "").length;
       const fontSize = headerLevel === 1 ? 16 : headerLevel === 2 ? 14 : headerLevel === 3 ? 13 : 12;
       doc.moveDown(0.3);
-      doc.font("Helvetica-Bold").fontSize(fontSize).text(headerText);
+      doc.font("Helvetica-Bold").fontSize(fontSize).text(headerText, {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.2);
       continue;
@@ -397,7 +572,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     // Section headers
     if (/^SECTION\s+\d+\s+—\s+/.test(line)) {
       doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(13).text(line);
+      doc.font("Helvetica-Bold").fontSize(13).text(line, {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.2);
       continue;
@@ -406,7 +584,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     // Phase headers
     if (/^PHASE\s+\d+\s+—\s+/.test(line)) {
       doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(12).text(line);
+      doc.font("Helvetica-Bold").fontSize(12).text(line, {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.2);
       continue;
@@ -414,7 +595,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
 
     // Block headers
     if (line === "EVIDENCE:") {
-      doc.font("Helvetica-Bold").fontSize(11).text(line);
+      doc.font("Helvetica-Bold").fontSize(11).text(line, {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.font("Helvetica").fontSize(11);
       continue;
     }
@@ -423,23 +607,34 @@ const renderStyledReport = (doc, text, metrics = {}) => {
       // Reset x position to left margin for headers
       doc.x = doc.page.margins.left;
       doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(12).text(line);
+      doc.font("Helvetica-Bold").fontSize(12).text(line, {
+        width: availableWidth,
+        lineGap: 2,
+      });
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.1);
       continue;
     }
 
-    // Bullets: "- ..."
-    if (/^\-\s+/.test(line)) {
-      doc.text(`• ${line.replace(/^\-\s+/, "")}`, {
+    // Bullets: "- ..." or "• ..."
+    if (/^[\-\•]\s+/.test(line)) {
+      const bulletText = line.replace(/^[\-\•]\s+/, "").trim();
+      // Clean the text and render with bold support
+      const cleanBulletText = cleanText(bulletText);
+      renderTextWithBold(doc, `• ${cleanBulletText}`, {
+        width: availableWidth,
         indent: 18,
         lineGap: 2,
       });
       continue;
     }
 
-    // Body
-    doc.text(line, { lineGap: 2 });
+    // Body - clean text first, then render with inline bold formatting support
+    const cleanedLine = cleanText(line);
+    renderTextWithBold(doc, cleanedLine, {
+      width: availableWidth,
+      lineGap: 2,
+    });
   }
 };
 
@@ -549,23 +744,54 @@ const generateDiagnosticPdf = (diagnostic) =>
 
         // Optional metadata on a new page (after the report)
         doc.addPage();
-        doc.font("Helvetica-Bold").fontSize(14).text("Diagnostic Metadata");
+        const metadataWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        doc.font("Helvetica-Bold").fontSize(14).text("Diagnostic Metadata", {
+          width: metadataWidth,
+          lineGap: 2,
+        });
         doc.moveDown(0.6);
         doc.font("Helvetica").fontSize(11);
-        doc.text(`Title: ${diagnostic.title || "Diagnostic"}`);
-        doc.text(`Generated At: ${new Date().toLocaleString()}`);
+        doc.text(`Title: ${diagnostic.title || "Diagnostic"}`, {
+          width: metadataWidth,
+          lineGap: 2,
+        });
+        doc.text(`Generated At: ${new Date().toLocaleString()}`, {
+          width: metadataWidth,
+          lineGap: 2,
+        });
         doc.text(
-          `Client: ${profile.name || "N/A"} (${profile.email || "N/A"})`
+          `Client: ${profile.name || "N/A"} (${profile.email || "N/A"})`,
+          {
+            width: metadataWidth,
+            lineGap: 2,
+          }
         );
-        doc.text(`User ID: ${diagnostic.userId || "N/A"}`);
+        doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
+          width: metadataWidth,
+          lineGap: 2,
+        });
         doc.moveDown(0.6);
-        doc.text(`Customer ID: ${data.customerId || "N/A"}`);
-        doc.text(`Site ID: ${data.siteId || "N/A"}`);
+        doc.text(`Customer ID: ${data.customerId || "N/A"}`, {
+          width: metadataWidth,
+          lineGap: 2,
+        });
+        doc.text(`Site ID: ${data.siteId || "N/A"}`, {
+          width: metadataWidth,
+          lineGap: 2,
+        });
         doc.text(
-          `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`
+          `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`,
+          {
+            width: metadataWidth,
+            lineGap: 2,
+          }
         );
         doc.text(
-          `Kajabi Customer ID: ${data.rawSource?.kajabiCustomerId ?? "N/A"}`
+          `Kajabi Customer ID: ${data.rawSource?.kajabiCustomerId ?? "N/A"}`,
+          {
+            width: metadataWidth,
+            lineGap: 2,
+          }
         );
 
         doc.end();
@@ -576,12 +802,29 @@ const generateDiagnosticPdf = (diagnostic) =>
         aiReport?.headline?.title ||
         aiReport?.headline ||
         "Euphoriam Diagnostic Report";
-      doc.fontSize(20).text(reportTitle, { align: "center" });
+      const titleWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      doc.fontSize(20).text(reportTitle, { 
+        align: "center",
+        width: titleWidth,
+        lineGap: 2,
+      });
       doc.moveDown();
-      doc.fontSize(12).text(`Title: ${diagnostic.title || "Diagnostic"}`);
-      doc.text(`Generated At: ${new Date().toLocaleString()}`);
-      doc.text(`Client: ${profile.name || "N/A"} (${profile.email || "N/A"})`);
-      doc.text(`User ID: ${diagnostic.userId || "N/A"}`);
+      doc.fontSize(12).text(`Title: ${diagnostic.title || "Diagnostic"}`, {
+        width: titleWidth,
+        lineGap: 2,
+      });
+      doc.text(`Generated At: ${new Date().toLocaleString()}`, {
+        width: titleWidth,
+        lineGap: 2,
+      });
+      doc.text(`Client: ${profile.name || "N/A"} (${profile.email || "N/A"})`, {
+        width: titleWidth,
+        lineGap: 2,
+      });
+      doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
+        width: titleWidth,
+        lineGap: 2,
+      });
 
       const isV2 = aiReport?.meta?.version === 2;
 

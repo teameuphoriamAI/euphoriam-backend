@@ -34,6 +34,10 @@ router.get("/metrics/user", asyncHandler(diagnosticController.getUserMetrics));
 // Parameterized routes come last
 router.get("/:id/metrics", asyncHandler(diagnosticController.getMetrics));
 router.get("/:id", asyncHandler(diagnosticController.getById));
+router.get(
+  "/:id/dignostic",
+  asyncHandler(diagnosticController.getDignosticById)
+);
 
 // Root routes
 router.post("/", asyncHandler(diagnosticController.listMine));

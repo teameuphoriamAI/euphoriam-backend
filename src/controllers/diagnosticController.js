@@ -4044,7 +4044,14 @@ const getById = async (req, res) => {
 
   return successResponse(res, "Diagnostic fetched", diagnostic);
 };
+const getDignosticById = async (req, res) => {
+  const diagnostic = await Diagnostic.findByPk(req.params.id);
+  if (!diagnostic) {
+    return errorResponse(res, "Diagnostic not found", 404);
+  }
 
+  return successResponse(res, "Diagnostic fetched", diagnostic);
+};
 const getAllPdfUrls = async (req, res) => {
   const { email } = req.body || req.query || {};
 
@@ -4496,4 +4503,5 @@ module.exports = {
   getUserMetrics,
   calculateBottleneck,
   findOrCreateCreatorUser,
+  getDignosticById,
 };

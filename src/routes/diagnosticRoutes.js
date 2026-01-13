@@ -19,6 +19,11 @@ router.post(
   asyncHandler(diagnosticController.chatbotDiagnosticFreeform)
 );
 
+router.post(
+  "/checkUser",
+  asyncHandler(diagnosticController.findOrCreateCreatorUser)
+);
+
 router.get("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
 
 router.post("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));

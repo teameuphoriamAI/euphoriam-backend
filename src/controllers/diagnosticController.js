@@ -60,42 +60,57 @@ const isCreatorClubMember = (context = {}) => {
  * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
  * Always checks latest status from Kajabi and updates the database
  */
-const findOrCreateCreatorUser = async ({ email, name, assessmentIds = [] }) => {
-  let user = await User.findOne({ where: { email } });
+const findOrCreateCreatorUser = async (req, res) => {
+  try {
+    let { email, name, assessmentIds = [] } = req.body;
+    email = email.toLowerCase().trim();
+    name = name.trim();
 
-  if (!user) {
-    user = await User.create({ email, name });
-  }
+    let user = await User.findOne({ where: { email, name } });
 
-  // If membership is missing or user is not a Creator Club member
-  if (!user.membership?.isCreatorClub) {
-    try {
-      const { diagnosticContext } = await buildKajabiDiagnosticContext({
-        email,
-        assessmentIds,
-      });
-
-      const isCreatorClub = isCreatorClubMember(diagnosticContext);
-
-      const membership = {
-        isCreatorClub,
-        lastUpdated: new Date().toISOString(),
-        products: diagnosticContext.products || [],
-        offers: diagnosticContext.offers || [],
-      };
-
-      await user.update({ membership });
-      user = await user.reload(); // Reload to get updated data
-    } catch (err) {
-      console.error(
-        "[findOrCreateCreatorUser] Failed to check membership:",
-        err
-      );
-      // Continue even if membership check fails
+    if (!user) {
+      user = await User.create({ email, name });
     }
-  }
+    let diagnosticContext = null;
+    // Check membership if missing or not a Creator Club member
+    if (!user.membership?.isCreatorClub) {
+      try {
+        const result = await buildKajabiDiagnosticContext({
+          email,
+          assessmentIds,
+        });
+        if (!result) {
+          return errorResponse(res, "user not found in euphoriam", 404);
+        } else {
+          diagnosticContext = result.diagnosticContext || null;
+        }
+        const isCreatorClub = isCreatorClubMember(diagnosticContext);
+        if (!isCreatorClub) {
+          return errorResponse(res, "user is not a creator club member", 404);
+        }
+        const membership = {
+          isCreatorClub,
+          lastUpdated: new Date().toISOString(),
+          products: diagnosticContext.products || [],
+          offers: diagnosticContext.offers || [],
+        };
 
-  return user;
+        await user.update({ membership });
+        await user.reload(); // ensure updated membership
+        return successResponse(res, "user is creator club member", user);
+      } catch (err) {
+        console.error(
+          "[findOrCreateCreatorUser] Failed to check membership:",
+          err
+        );
+        return errorResponse(res, "failed to verify membership", 500);
+      }
+    }
+    return successResponse(res, "user found", user);
+  } catch (error) {
+    console.error("[findOrCreateCreatorUser] Unexpected error:", error);
+    return errorResponse(res, "Failed to find or create user");
+  }
 };
 
 // Lightweight AI check to decide if a user reply is an answer to the last question.
@@ -2515,12 +2530,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   if (!validation.valid) {
     return errorResponse(res, validation.error, validation.statusCode);
   }
-  // Find or create user and check/update Creator Club membership
-  const appUser = await findOrCreateCreatorUser({
-    email,
-    name,
-    assessmentIds,
-  });
+  // Find user
+  let appUser = await User.findOne({ where: { email, name } });
   // Load diagnostic state
   const {
     existingDiagnostic,
@@ -3289,10 +3300,7 @@ ${signalOutput}%
                 keySentence = "";
               }
 
-              // Limit length
-              if (keySentence) {
-                keySentence = keySentence.substring(0, 120);
-              }
+              // No length limit - use full text
 
               // Look for correction section
               const correctionMatch =
@@ -3304,7 +3312,7 @@ ${signalOutput}%
                 );
 
               if (correctionMatch) {
-                correction = correctionMatch[1].trim().substring(0, 150);
+                correction = correctionMatch[1].trim();
               }
             }
 
@@ -3359,13 +3367,18 @@ ${signalOutput}%
               }
             }
 
-            const questionText = correction
+            // Clean up correction text to ensure it ends properly (no truncation)
+            const cleanCorrection = correction
+              ? correction
+                  .replace(/[.*?]+$/, "") // Remove trailing special chars
+                  .replace(/\s+$/, "") // Remove trailing whitespace
+                  .trim()
+              : "";
+
+            const questionText = cleanCorrection
               ? `Since this report (${
                   reportDate || "recently"
-                }), have you made any progress on ${correction.substring(
-                  0,
-                  50
-                )}?`
+                }), have you made any progress on ${cleanCorrection}?`
               : `Since this report (${
                   reportDate || "recently"
                 }), what has changed or stayed the same?`;
@@ -3389,10 +3402,7 @@ ${keySentenceText}
     : ""
 }${
                 correction
-                  ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction.substring(
-                      0,
-                      100
-                    )}.`
+                  ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction}.`
                   : ""
               }
 
@@ -3511,10 +3521,7 @@ ${signalOutput}%
               keySentence = "";
             }
 
-            // Limit length
-            if (keySentence) {
-              keySentence = keySentence.substring(0, 120);
-            }
+            // No length limit - use full text
 
             // Look for correction section
             const correctionMatch =
@@ -3526,7 +3533,7 @@ ${signalOutput}%
               );
 
             if (correctionMatch) {
-              correction = correctionMatch[1].trim().substring(0, 150);
+              correction = correctionMatch[1].trim();
             }
           }
 
@@ -3572,17 +3579,25 @@ ${signalOutput}%
               /(?:focus|work on|action|next step)[\s\S]{0,100}(.{30,100})/i
             );
             if (actionMatch) {
-              correctionText = `**${actionMatch[1].trim().substring(0, 100)}**`;
+              correctionText = `**${actionMatch[1].trim()}**`;
             } else {
               // Use a generic but meaningful fallback
               correctionText = `**structural alignment and entry threshold work**`;
             }
           }
 
-          const questionText = correction
+          // Clean up correction text to ensure it ends properly (no truncation)
+          const cleanCorrection = correction
+            ? correction
+                .replace(/[.*?]+$/, "") // Remove trailing special chars
+                .replace(/\s+$/, "") // Remove trailing whitespace
+                .trim()
+            : "";
+
+          const questionText = cleanCorrection
             ? `Since this report (${
                 reportDate || "recently"
-              }), have you made any progress on ${correction.substring(0, 50)}?`
+              }), have you made any progress on ${cleanCorrection}?`
             : `Since this report (${
                 reportDate || "recently"
               }), what has changed or stayed the same?`;
@@ -3606,10 +3621,7 @@ ${keySentenceText}
     : ""
 }${
               correction
-                ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction.substring(
-                    0,
-                    100
-                  )}.`
+                ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction}.`
                 : ""
             }
 
@@ -4483,4 +4495,5 @@ module.exports = {
   getMetrics,
   getUserMetrics,
   calculateBottleneck,
+  findOrCreateCreatorUser,
 };

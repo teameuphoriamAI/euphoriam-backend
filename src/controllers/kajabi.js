@@ -1,5 +1,6 @@
 // import { kajabi } from "../config/kajabi.js";
 import { createKajabiClient } from "../config/kajabi.js";
+import { successResponse, errorResponse } from "../utils/response.js";
 
 export async function getCustomerByEmail(email) {
   try {
@@ -178,22 +179,167 @@ export async function getCustomersByFailedAssessment(assessmentId) {
 export async function getProductWithCourse(productId) {
   const kajabi = await createKajabiClient();
 
-  const res = await kajabi.get(`/products/${productId}`, {
-    // params: {
-    //   include: "courses",
-    // },
-  });
+  // Try without include first, as the API might not support it
+  const res = await kajabi.get(`/products/${productId}`, {});
 
   return res.data;
 }
 export function extractCourseIdFromProduct(productData) {
+  // First, try to get course ID from relationships
+  const relationships = productData?.data?.relationships || {};
+  const courseRelationship = relationships.course || relationships.courses;
+  
+  if (courseRelationship?.data) {
+    const courseId = Array.isArray(courseRelationship.data) 
+      ? courseRelationship.data[0]?.id 
+      : courseRelationship.data?.id;
+    if (courseId) {
+      console.log("🎓 Linked course from relationships:", courseId);
+      return courseId;
+    }
+  }
+
+  // Fallback: try to get from included array
   const included = productData.included || [];
-
   const course = included.find((i) => i.type === "courses");
+  if (course?.id) {
+    console.log("🎓 Linked course from included:", course.id);
+    return course.id;
+  }
 
-  console.log("🎓 Linked course:", course?.id || "NONE");
+  // Fallback: try to get from product attributes
+  const attributes = productData?.data?.attributes || {};
+  console.log("📋 Product attributes keys:", Object.keys(attributes));
+  
+  // Check various possible attribute names for course ID
+  if (attributes.course_id) {
+    console.log("🎓 Linked course from attributes.course_id:", attributes.course_id);
+    return attributes.course_id;
+  }
+  if (attributes.courseId) {
+    console.log("🎓 Linked course from attributes.courseId:", attributes.courseId);
+    return attributes.courseId;
+  }
+  if (attributes.linked_course_id) {
+    console.log("🎓 Linked course from attributes.linked_course_id:", attributes.linked_course_id);
+    return attributes.linked_course_id;
+  }
 
-  return course?.id || null;
+  console.log("🎓 No course found in product data");
+  return null;
+}
+
+export async function findCourseByProductId(productId, productTitle) {
+  try {
+    const kajabi = await createKajabiClient();
+    
+    // First, try using the product ID directly as course ID
+    // In Kajabi, sometimes the product ID IS the course ID
+    try {
+      console.log(`🔍 Trying product ID ${productId} as course ID...`);
+      const testCourse = await kajabi.get(`/courses/${productId}`, {});
+      if (testCourse.data?.data) {
+        console.log(`✅ Product ID ${productId} is a valid course ID!`);
+        return productId;
+      }
+    } catch (err) {
+      console.log(`❌ Product ID ${productId} is not a valid course ID`);
+    }
+    
+    // Try to get courses and filter by product or title
+    const res = await kajabi.get("/courses", {
+      params: {
+        "page[size]": 100,
+      },
+    });
+
+    const courses = res.data?.data || [];
+    console.log(`🔍 Found ${courses.length} courses, searching...`);
+
+    // Search through courses to find one linked to this product
+    for (const course of courses) {
+      const courseRelationships = course.relationships || {};
+      const productRelationship = courseRelationships.product || courseRelationships.products;
+      
+      if (productRelationship?.data) {
+        const linkedProductId = Array.isArray(productRelationship.data)
+          ? productRelationship.data[0]?.id
+          : productRelationship.data?.id;
+        
+        if (linkedProductId === String(productId) || linkedProductId === productId) {
+          console.log(`✅ Found course ${course.id} linked to product ${productId}`);
+          return course.id;
+        }
+      }
+      
+      // Also check if course title matches product title
+      if (productTitle && course.attributes?.title) {
+        const courseTitle = course.attributes.title.trim().toLowerCase();
+        const searchTitle = productTitle.trim().toLowerCase();
+        if (courseTitle === searchTitle || courseTitle.includes(searchTitle) || searchTitle.includes(courseTitle)) {
+          console.log(`✅ Found course ${course.id} by title match: "${course.attributes.title}"`);
+          return course.id;
+        }
+      }
+    }
+
+    console.log(`⚠️ No course found linked to product ${productId}`);
+    return null;
+  } catch (err) {
+    console.error("Error finding course by product ID:", err.response?.data || err);
+    throw err;
+  }
+}
+
+export async function getCoursePosts(courseId) {
+  try {
+    const kajabi = await createKajabiClient();
+    
+    // Try to get posts for a course - this might use a different endpoint
+    // Some APIs use /courses/{id}/posts
+    try {
+      const res = await kajabi.get(`/courses/${courseId}/posts`, {});
+      return res.data?.data || [];
+    } catch (err) {
+      // If that endpoint doesn't exist, try /posts with course filter
+      if (err.response?.status === 404) {
+        const res = await kajabi.get("/posts", {
+          params: {
+            "filter[course_id]": courseId,
+            "page[size]": 100,
+          },
+        });
+        return res.data?.data || [];
+      }
+      throw err;
+    }
+  } catch (err) {
+    console.error("Error fetching course posts:", err.response?.data || err);
+    return [];
+  }
+}
+
+export async function getCourseWithModulesAndLessons(courseId) {
+  const kajabi = await createKajabiClient();
+
+  console.log("📘 Fetching course with modules and lessons:", courseId);
+
+  try {
+    const res = await kajabi.get(`/courses/${courseId}`, {
+      params: {
+        include: "modules,lessons,lessons.media",
+      },
+    });
+
+    console.log(`✅ Successfully fetched course with modules and lessons`);
+    console.log("📦 Course API response keys:", Object.keys(res.data));
+    console.log("📂 Included count:", res.data.included?.length || 0);
+
+    return res.data;
+  } catch (err) {
+    console.error("Error fetching course with modules:", err.response?.data || err);
+    throw err;
+  }
 }
 
 export async function getCourseWithPosts(courseId) {
@@ -201,16 +347,60 @@ export async function getCourseWithPosts(courseId) {
 
   console.log("📘 Fetching course:", courseId);
 
-  const res = await kajabi.get(`/courses/${courseId}`, {
-    params: {
-      include: "categories,posts",
-    },
-  });
+  // Try different include formats
+  const includeOptions = [
+    "modules,lessons,lessons.media", // Try new format first
+    "categories,posts",
+    "posts",
+    null, // no include
+  ];
 
-  console.log("📦 Course API response keys:", Object.keys(res.data));
-  console.log("📂 Included count:", res.data.included?.length || 0);
+  for (const includeOption of includeOptions) {
+    try {
+      const params = includeOption ? { include: includeOption } : {};
+      const res = await kajabi.get(`/courses/${courseId}`, { params });
 
-  return res.data;
+      console.log(`✅ Successfully fetched course with include: ${includeOption || "none"}`);
+      console.log("📦 Course API response keys:", Object.keys(res.data));
+      console.log("📂 Included count:", res.data.included?.length || 0);
+
+      // If we got the course but no posts in included, try to fetch posts separately
+      const postsIncluded = res.data.included?.filter((item) => item.type === "posts") || [];
+      
+      if (postsIncluded.length === 0 && res.data?.data?.relationships?.posts) {
+        const postsRel = res.data.data.relationships.posts;
+        if (postsRel.data && postsRel.data.length > 0) {
+          console.log(`📂 Found ${postsRel.data.length} post references, fetching posts separately...`);
+          const posts = await getCoursePosts(courseId);
+          
+          // Add fetched posts to included array
+          if (posts.length > 0) {
+            if (!res.data.included) {
+              res.data.included = [];
+            }
+            res.data.included.push(...posts.map((post) => ({
+              type: "posts",
+              id: post.id,
+              attributes: post.attributes,
+            })));
+            console.log(`✅ Added ${posts.length} posts to course data`);
+          }
+        }
+      }
+
+      return res.data;
+    } catch (err) {
+      if (err.response?.status === 400 && includeOption) {
+        console.log(`⚠️ Include '${includeOption}' failed, trying next option...`);
+        continue;
+      }
+      // If it's not a 400 error or we're on the last option, throw
+      throw err;
+    }
+  }
+
+  // Should never reach here, but just in case
+  throw new Error("Failed to fetch course with any include option");
 }
 
 export function extractAssessmentsFromCourse(courseData) {
@@ -223,6 +413,385 @@ export function extractAssessmentsFromCourse(courseData) {
       assessmentId: post.attributes.assessment_id,
       title: post.attributes.title,
     }));
+}
+
+export function extractVideosFromLessons(courseData) {
+  const included = courseData.included || [];
+  
+  // Get modules, lessons, and media
+  const modules = included.filter((item) => item.type === "modules");
+  const lessons = included.filter((item) => item.type === "lessons");
+  const media = included.filter((item) => item.type === "media");
+
+  // Create a map of lesson ID to media
+  const mediaMap = {};
+  media.forEach((m) => {
+    const lessonId = m.relationships?.lesson?.data?.id;
+    if (lessonId) {
+      mediaMap[lessonId] = m;
+    }
+  });
+
+  // Create a map of module ID to module info
+  const moduleMap = {};
+  modules.forEach((m) => {
+    moduleMap[m.id] = {
+      id: m.id,
+      title: m.attributes?.title || "",
+      position: m.attributes?.position || 0,
+    };
+  });
+
+  // Extract videos from lessons
+  const videos = lessons
+    .map((lesson) => {
+      const attrs = lesson.attributes || {};
+      const lessonMedia = mediaMap[lesson.id];
+      const module = moduleMap[lesson.relationships?.module?.data?.id];
+
+      // Build video URL - Kajabi lessons typically have a permalink
+      // Format: https://{site}.kajabi.com/products/{product}/courses/{course}/lessons/{lesson}
+      const lessonId = lesson.id;
+      const courseId = courseData.data?.id;
+      
+      return {
+        lessonId: lesson.id,
+        name: attrs.title || "Untitled",
+        title: attrs.title || "Untitled",
+        url: `https://www.euphoriam.com/products/the-unlimited-creator/courses/${courseId}/lessons/${lessonId}`,
+        duration: lessonMedia?.attributes?.duration_in_minutes || null,
+        durationMinutes: lessonMedia?.attributes?.duration_in_minutes || null,
+        position: attrs.position || 0,
+        status: attrs.status,
+        moduleId: module?.id,
+        moduleTitle: module?.title || "",
+        modulePosition: module?.position || 0,
+        week: extractWeekFromTitle(attrs.title),
+        theme: extractThemeFromTitle(attrs.title),
+        rawAttributes: attrs,
+      };
+    })
+    .sort((a, b) => a.position - b.position);
+
+  return videos;
+}
+
+export function extractVideosFromCourse(courseData) {
+  const included = courseData.included || [];
+
+  // Check if we have modules/lessons structure (new format)
+  const hasModules = included.some((item) => item.type === "modules");
+  const hasLessons = included.some((item) => item.type === "lessons");
+
+  if (hasModules && hasLessons) {
+    return extractVideosFromLessons(courseData);
+  }
+
+  // Fallback to posts (old format)
+  const posts = included.filter((item) => item.type === "posts");
+
+  return posts
+    .map((post) => {
+      const attrs = post.attributes || {};
+
+      // Return post information - in course context, posts are typically video lessons
+      return {
+        postId: post.id,
+        name: attrs.title || "Untitled", // Video name
+        title: attrs.title || "Untitled", // Keep for backward compatibility
+        url: attrs.video_url || attrs.video_url_embed || attrs.url || attrs.permalink, // Video URL
+        videoUrl: attrs.video_url || attrs.video_url_embed || attrs.url, // Keep for backward compatibility
+        videoId: attrs.video_id,
+        thumbnailUrl: attrs.thumbnail_url || attrs.image_url,
+        description: attrs.description || attrs.body,
+        duration: attrs.duration || attrs.video_duration,
+        postType: attrs.post_type_name || attrs.content_type,
+        createdAt: attrs.created_at,
+        updatedAt: attrs.updated_at,
+        position: attrs.position,
+        week: extractWeekFromTitle(attrs.title),
+        theme: extractThemeFromTitle(attrs.title),
+        // Include all attributes for debugging/inspection
+        rawAttributes: attrs,
+      };
+    })
+    .filter((post) => {
+      // Filter out assessment posts (those are quizzes, not videos)
+      return !post.rawAttributes?.assessment_id;
+    })
+    .sort((a, b) => a.position - b.position);
+}
+
+// Helper function to extract week number from title
+function extractWeekFromTitle(title) {
+  if (!title) return null;
+  
+  const weekMatch = title.match(/week\s+(\d+)/i);
+  if (weekMatch) {
+    return parseInt(weekMatch[1], 10);
+  }
+  
+  // Check for "Week One", "Week Two", etc.
+  const weekNames = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12
+  };
+  
+  for (const [name, num] of Object.entries(weekNames)) {
+    if (title.toLowerCase().includes(`week ${name}`)) {
+      return num;
+    }
+  }
+  
+  return null;
+}
+
+// Helper function to extract theme (Alignment/Freedom/Prosperity) from title
+function extractThemeFromTitle(title) {
+  if (!title) return null;
+  
+  const titleLower = title.toLowerCase();
+  
+  if (titleLower.includes("purpose") || titleLower.includes("alignment")) {
+    return "Alignment";
+  }
+  if (titleLower.includes("freedom")) {
+    return "Freedom";
+  }
+  if (titleLower.includes("prosperity")) {
+    return "Prosperity";
+  }
+  
+  // Map weeks to themes
+  const week = extractWeekFromTitle(title);
+  if (week >= 1 && week <= 3) return "Alignment";
+  if (week >= 4 && week <= 8) return "Freedom";
+  if (week >= 9 && week <= 12) return "Prosperity";
+  
+  return null;
+}
+
+export async function searchProductsByTitle(productTitle) {
+  try {
+    const kajabi = await createKajabiClient();
+
+    const res = await kajabi.get("/products", {
+      params: {
+        "filter[title_contains]": productTitle,
+        "page[size]": 100,
+      },
+    });
+
+    return res.data?.data || [];
+  } catch (err) {
+    console.error("Error searching products:", err.response?.data || err);
+    throw err;
+  }
+}
+
+export async function getProductOffers(productId) {
+  try {
+    const kajabi = await createKajabiClient();
+    
+    // Get product to see its offers relationship
+    const productData = await getProductWithCourse(productId);
+    const relationships = productData?.data?.relationships || {};
+    const offerIds = relationships.offers?.data?.map((o) => o.id) || [];
+    
+    if (offerIds.length === 0) {
+      console.log(`📋 No offers found for product ${productId}`);
+      return [];
+    }
+    
+    console.log(`📋 Found ${offerIds.length} offers for product ${productId}`);
+    
+    // Fetch all offers
+    const offers = await Promise.all(
+      offerIds.map((id) => getOfferById(id))
+    );
+    
+    return offers.map((offer) => ({
+      id: offer.data?.id,
+      title: offer.data?.attributes?.title,
+      price: offer.data?.attributes?.price,
+      data: offer.data,
+    }));
+  } catch (err) {
+    console.error("Error getting product offers:", err.response?.data || err);
+    return [];
+  }
+}
+
+export async function getProductVideos(productTitle) {
+  try {
+    // Search for the product by title
+    const products = await searchProductsByTitle(productTitle);
+
+    if (products.length === 0) {
+      throw new Error(`Product "${productTitle}" not found`);
+    }
+
+    // Find exact match (case-insensitive)
+    const product = products.find(
+      (p) => p.attributes?.title?.toLowerCase().trim() === productTitle.toLowerCase().trim()
+    );
+    
+    if (!product) {
+      throw new Error(
+        `Product "${productTitle}" not found. Found ${products.length} similar products.`
+      );
+    }
+
+    const productId = product.id;
+    console.log(
+      `📦 Found product: ${product.attributes.title} (ID: ${productId})`
+    );
+
+    // Get product offers
+    const offers = await getProductOffers(productId);
+    console.log(`📋 Found ${offers.length} offers for product`);
+
+    // Get product with course relationship
+    const productData = await getProductWithCourse(productId);
+    
+    // Debug: log product structure
+    console.log("📦 Product data keys:", Object.keys(productData));
+    console.log("📦 Product relationships:", productData?.data?.relationships);
+    console.log("📦 Product included:", productData?.included?.length || 0);
+
+    // Extract course ID from product
+    let courseId = extractCourseIdFromProduct(productData);
+
+    // If not found in product data, try to search for courses linked to this product
+    if (!courseId) {
+      console.log("🔍 Course not found in product data, searching courses by product ID...");
+      courseId = await findCourseByProductId(productId, product.attributes?.title);
+    }
+
+    if (!courseId) {
+      // Log product attributes for debugging
+      const attributes = productData?.data?.attributes || {};
+      console.log("📋 Product attributes:", JSON.stringify(attributes, null, 2));
+      throw new Error(`No course linked to product "${productTitle}"`);
+    }
+
+    console.log(`📘 Fetching course ${courseId} for product videos`);
+
+    // Try to get course with modules and lessons first
+    let courseData;
+    try {
+      courseData = await getCourseWithModulesAndLessons(courseId);
+    } catch (err) {
+      console.log("⚠️ Failed to fetch with modules/lessons, trying posts format...");
+      courseData = await getCourseWithPosts(courseId);
+    }
+
+    // Extract videos from course
+    const videos = extractVideosFromCourse(courseData);
+
+    // Format videos with name and url
+    const formattedVideos = videos.map((video) => ({
+      name: video.name || video.title,
+      url: video.url || video.videoUrl,
+      title: video.title, // Keep for compatibility
+      videoUrl: video.videoUrl, // Keep for compatibility
+      lessonId: video.lessonId,
+      postId: video.postId,
+      week: video.week,
+      theme: video.theme,
+      moduleTitle: video.moduleTitle,
+      duration: video.duration || video.durationMinutes,
+      thumbnailUrl: video.thumbnailUrl,
+      description: video.description,
+      position: video.position,
+    }));
+
+    return {
+      product: {
+        id: productId,
+        title: product.attributes.title,
+      },
+      offers: offers.map((o) => ({
+        id: o.id,
+        title: o.title,
+        price: o.price,
+      })),
+      courseId,
+      videos: formattedVideos,
+      totalVideos: formattedVideos.length,
+    };
+  } catch (err) {
+    console.error("Error getting product videos:", err.message || err);
+    throw err;
+  }
+}
+
+// Recommend videos based on user's diagnostic state
+export function recommendVideos(videos, diagnosticMetrics = {}) {
+  if (!videos || videos.length === 0) {
+    return [];
+  }
+
+  const {
+    engagementScore = 0,
+    learningScore = 0,
+    commitmentScore = 0,
+    gravity = 0,
+    signalOutput = 0,
+    signalCoherence = 0,
+  } = diagnosticMetrics;
+
+  // Determine user's current state/theme
+  // Lower scores indicate need for earlier weeks
+  // Higher gravity = need for Alignment (Purpose)
+  // Lower signal coherence = need for Freedom
+  // Lower commitment = need for Prosperity
+
+  let recommendedTheme = "Alignment"; // Default to start
+  let recommendedWeek = 1;
+
+  // Determine theme based on metrics
+  if (gravity > 70 || signalOutput < 30) {
+    // High gravity or low signal = need Alignment/Purpose
+    recommendedTheme = "Alignment";
+    recommendedWeek = Math.min(3, Math.max(1, Math.ceil(gravity / 25)));
+  } else if (signalCoherence < 50 || engagementScore < 40) {
+    // Low coherence or engagement = need Freedom
+    recommendedTheme = "Freedom";
+    recommendedWeek = Math.min(8, Math.max(4, 4 + Math.ceil((50 - signalCoherence) / 10)));
+  } else if (commitmentScore < 60 || learningScore < 50) {
+    // Low commitment or learning = need Prosperity
+    recommendedTheme = "Prosperity";
+    recommendedWeek = Math.min(12, Math.max(9, 9 + Math.ceil((60 - commitmentScore) / 15)));
+  }
+
+  // Filter and sort videos
+  const themeVideos = videos.filter((v) => {
+    if (!v.theme) return false;
+    return v.theme === recommendedTheme;
+  });
+
+  // Sort by week, then by position
+  themeVideos.sort((a, b) => {
+    if (a.week !== b.week) {
+      return (a.week || 99) - (b.week || 99);
+    }
+    return (a.position || 0) - (b.position || 0);
+  });
+
+  // Get recommended videos starting from the recommended week
+  const recommended = themeVideos.filter((v) => {
+    if (!v.week) return false;
+    return v.week >= recommendedWeek;
+  });
+
+  // If no videos found for recommended week, get first 3-5 videos from theme
+  if (recommended.length === 0 && themeVideos.length > 0) {
+    return themeVideos.slice(0, 5);
+  }
+
+  // Return first 5-7 recommended videos
+  return recommended.slice(0, 7);
 }
 export async function getAssessmentProgressForCustomer(
   customerId,
@@ -442,6 +1011,9 @@ export async function buildKajabiDiagnosticContext({
   assessmentIds = [],
 }) {
   const customerInfo = await getCustomerByEmail(email);
+  if (!customerInfo) {
+    return null;
+  }
   const customerDetails = await getCustomerFullDetails(customerInfo.id);
 
   const customerData = customerDetails.data;
@@ -555,4 +1127,124 @@ export async function buildKajabiDiagnosticContext({
     contactId,
     siteId,
   };
+}
+
+// Express route handlers
+
+// Get all videos from "The Unlimited Creator" product
+export async function getUnlimitedCreatorVideos(req, res) {
+  try {
+    const productTitle = "The Unlimited Creator ";
+    const result = await getProductVideos(productTitle);
+    return successResponse(
+      res,
+      `Successfully retrieved ${result.totalVideos} videos from ${productTitle}`,
+      result
+    );
+  } catch (err) {
+    console.error("Error in getUnlimitedCreatorVideos:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to retrieve product videos",
+      err.statusCode || 500
+    );
+  }
+}
+
+// Get videos from any product by title (query parameter)
+export async function getProductVideosByTitle(req, res) {
+  try {
+    const { productTitle } = req.query;
+
+    if (!productTitle) {
+      return errorResponse(
+        res,
+        "productTitle query parameter is required",
+        400
+      );
+    }
+
+    const result = await getProductVideos(productTitle);
+    return successResponse(
+      res,
+      `Successfully retrieved ${result.totalVideos} videos from ${productTitle}`,
+      result
+    );
+  } catch (err) {
+    console.error("Error in getProductVideosByTitle:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to retrieve product videos",
+      err.statusCode || 500
+    );
+  }
+}
+
+// Get recommended videos based on diagnostic metrics
+export async function getRecommendedVideos(req, res) {
+  try {
+    const { productTitle, metrics } = req.query;
+    const productName = productTitle || "The Unlimited Creator";
+
+    // Get all videos for the product
+    const result = await getProductVideos(productName);
+
+    // Parse metrics if provided as JSON string
+    let diagnosticMetrics = {};
+    if (metrics) {
+      try {
+        diagnosticMetrics = typeof metrics === "string" ? JSON.parse(metrics) : metrics;
+      } catch (e) {
+        console.error("Error parsing metrics:", e);
+      }
+    }
+
+    // Get recommended videos
+    const recommended = recommendVideos(result.videos, diagnosticMetrics);
+
+    return successResponse(
+      res,
+      `Successfully retrieved ${recommended.length} recommended videos`,
+      {
+        product: result.product,
+        recommendedVideos: recommended,
+        allVideos: result.videos,
+        totalVideos: result.totalVideos,
+        recommendationReason: getRecommendationReason(diagnosticMetrics),
+      }
+    );
+  } catch (err) {
+    console.error("Error in getRecommendedVideos:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to retrieve recommended videos",
+      err.statusCode || 500
+    );
+  }
+}
+
+// Helper function to explain recommendation reason
+function getRecommendationReason(metrics = {}) {
+  const { gravity = 0, signalOutput = 0, signalCoherence = 0, commitmentScore = 0 } = metrics;
+
+  if (gravity > 70 || signalOutput < 30) {
+    return "High gravity or low signal output detected. Focus on Alignment/Purpose videos to establish foundation.";
+  }
+  if (signalCoherence < 50) {
+    return "Low signal coherence detected. Focus on Freedom videos to clear energetic blocks.";
+  }
+  if (commitmentScore < 60) {
+    return "Low commitment score detected. Focus on Prosperity videos to integrate and manifest results.";
+  }
+  return "Based on your current metrics, these videos will help you progress through the program.";
+}
+
+async function getAllMembers(req, res) {
+  try {
+    // Placeholder - implement if needed
+    return successResponse(res, "Members endpoint", []);
+  } catch (err) {
+    console.error("Error in getAllMembers route:", err);
+    return errorResponse(res, err.message || "Failed to fetch members", 500);
+  }
 }

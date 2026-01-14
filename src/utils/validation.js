@@ -618,6 +618,7 @@ You are a binary classifier. Analyze the user's message and determine if they EX
 4. Finish the conversation
 5. Email the report
 6. Send the report
+7. Stop/pause the conversation (e.g., "I'm good with this for now", "that's enough", "I'm done for now")
 
 User's latest message: "${userMessage || ""}"
 
@@ -626,7 +627,7 @@ ${JSON.stringify(transcript.slice(-5), null, 2)}
 
 CRITICAL RULES - UNDERSTAND FULL CONTEXT:
 - Reply ONLY "yes" or "no"
-- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to end, finish, stop, generate report, get report, email report, or send report
+- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to end, finish, stop, pause, generate report, get report, email report, send report, OR indicates they're done/satisfied (e.g., "I'm good with this for now", "that's enough", "I'm done", "that's it for now", "I'm satisfied", "we can stop here")
 - UNDERSTAND CONTEXT: Words like "end", "exit", "finish", "stop", "chat", "conversation", "generate", "report" can appear in normal conversation
   * "by the end" → NO (talking about a time period, not ending chat)
   * "today will end" → NO (talking about the day ending, not ending chat)
@@ -658,6 +659,12 @@ Examples:
 - "generate my report now" → yes (explicit request with action)
 - "end chat" → yes (explicit request)
 - "that's it for today" → yes (clear ending intent)
+- "I'm good with this for now" → yes (indicates they want to stop)
+- "ok I'm good with this for now" → yes (indicates they want to stop)
+- "that's enough" → yes (indicates they want to stop)
+- "I'm done for now" → yes (indicates they want to stop)
+- "we can stop here" → yes (indicates they want to stop)
+- "that's it for now" → yes (indicates they want to stop)
 - "by the end of the day" → no (talking about time, not ending chat)
 - "today will end" → no (talking about the day, not ending chat)
 - "exit to my world" → no (talking about going somewhere, not ending chat)
@@ -722,6 +729,14 @@ Look for phrases like:
 - "We stop here"
 - "This is enough"
 - "We stop here and let this land"
+- "We'll pause here and let this integrate"
+- "pause here and let this integrate"
+- "let this integrate"
+- "You've reached today's integration limit"
+- "reached today's integration limit"
+- "Let this settle — we'll continue tomorrow"
+- "Let this settle"
+- "we'll continue tomorrow"
 - "For now: you're not stuck"
 - "I'm going to lock this into a clean Euphoriam diagnostic report"
 - "lock this into a clean Euphoriam diagnostic report"
@@ -729,7 +744,12 @@ Look for phrases like:
 - "generate your updated diagnostic report"
 - "We'll pause here. Let this settle."
 - "I'm going to generate"
-- Any indication that the session is concluding or a report should be generated
+- "the work is complete for this phase"
+- "work is complete"
+- "That's it" (when followed by completion context, not a question)
+- "That's the confirmation" (when followed by completion context)
+- "That answer means the work is complete"
+- Any indication that the session is concluding, pausing, or a report should be generated
 
 Rules:
 - Reply ONLY "yes" or "no"

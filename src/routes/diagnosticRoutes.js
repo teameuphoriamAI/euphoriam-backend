@@ -40,7 +40,6 @@ router.get(
 );
 
 // Root routes
-router.post("/", asyncHandler(diagnosticController.listMine));
 router.get("/", asyncHandler(diagnosticController.listMine));
 
 module.exports = router;

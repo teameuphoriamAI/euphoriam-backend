@@ -12,11 +12,14 @@ const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
   persistDiscoveryRecord,
   truncateForContext,
+  saveChatIncrementally,
 } = require("../controllers/diagnosticController");
 const openai = require("../config/openai");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { Prompt } = require("../models/promptModel");
+const { Chat } = require("../models/chatModel");
+const { User } = require("../models/userModel");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { sendEmailBasic, sendEmail } = require("../utils/email");
 const { uploadBufferToSupabase } = require("../utils/storage");
@@ -136,10 +139,11 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
       typeof prompt === "string"
         ? prompt
         : prompt?.fullPrompt || prompt?.content || "";
-    
+
     // Ensure promptContent is always a string, never null or undefined
-    const safePromptContent = promptContent && typeof promptContent === "string" ? promptContent : "";
-    
+    const safePromptContent =
+      promptContent && typeof promptContent === "string" ? promptContent : "";
+
     const userPromptContent = buildFinalReportPrompt({
       // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
       customerContext: null, // Not using Kajabi data for now
@@ -148,16 +152,24 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
       retrieved,
       previousReport: session.priorReportSnippet,
     });
-    
+
     // Ensure user content is always a string
-    const safeUserContent = userPromptContent && typeof userPromptContent === "string" ? userPromptContent : "";
-    
+    const safeUserContent =
+      userPromptContent && typeof userPromptContent === "string"
+        ? userPromptContent
+        : "";
+
     if (!safePromptContent || !safeUserContent) {
-      console.error("[socket] Invalid prompt or user content:", { promptContent: safePromptContent, userContent: safeUserContent });
-      socket.emit("error", { message: "Failed to generate diagnostic: missing prompt content" });
+      console.error("[socket] Invalid prompt or user content:", {
+        promptContent: safePromptContent,
+        userContent: safeUserContent,
+      });
+      socket.emit("error", {
+        message: "Failed to generate diagnostic: missing prompt content",
+      });
       return;
     }
-    
+
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-5.2",
       messages: [
@@ -251,7 +263,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     await persistDiscoveryRecord({
       userId: existing.userId ?? null,
       email: session.email,
-      title: `Discovery Chat – ${userName}`,
+      title: `Discovery Chat Report – ${userName}`,
       transcript: session.transcript,
       previousReport: existing.data.aiReport || null, // Pass full report, not truncated
       newReport: updatedReportText, // Full new report
@@ -259,11 +271,44 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
       pdfUrl: pdfUrl || existing.data.pdf?.url || null,
     });
 
+    // Mark chat as ended when report is generated
+    if (existing.userId) {
+      const chatType = "discovery";
+      // Find the latest incomplete chat for this user
+      const chat = await Chat.findOne({
+        where: {
+          userId: existing.userId,
+          chatType: chatType,
+          isChatEnded: false,
+          ...(existing.id ? { dignosticId: existing.id } : {}),
+        },
+        order: [["createdAt", "DESC"]],
+      });
+
+      if (chat) {
+        await chat.update({
+          isChatEnded: true,
+          data: {
+            ...(chat.data || {}),
+            transcript: session.transcript,
+            messages: session.transcript,
+            endedAt: new Date().toISOString(),
+          },
+        });
+        console.log(
+          `[endChatAsDiscovery] Chat ${chat.id} marked as ended for user ${session.email} (socket)`
+        );
+      }
+    }
+
     // Check if user wants email
-    const lastUserMessage = session.transcript
-      ?.filter((m) => m?.role === "user")
-      ?.slice(-1)[0]?.content || "";
-    const userWantsEmail = checkWantsEmail(session.transcript || [], lastUserMessage);
+    const lastUserMessage =
+      session.transcript?.filter((m) => m?.role === "user")?.slice(-1)[0]
+        ?.content || "";
+    const userWantsEmail = checkWantsEmail(
+      session.transcript || [],
+      lastUserMessage
+    );
     const shouldEmail = userWantsEmail;
 
     // Email the updated diagnostic report only if user requested it
@@ -572,17 +617,24 @@ CRITICAL RULES:
           role: m.role === "assistant" ? "assistant" : "user",
           content: String(m.content), // Ensure it's a string
         }));
-      
+
       // Ensure systemPrompt and chatPrompt are strings
-      const safeSystemPrompt = systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
-      const safeChatPrompt = chatPrompt && typeof chatPrompt === "string" ? chatPrompt : "";
-      
+      const safeSystemPrompt =
+        systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
+      const safeChatPrompt =
+        chatPrompt && typeof chatPrompt === "string" ? chatPrompt : "";
+
       if (!safeSystemPrompt || !safeChatPrompt) {
-        console.error("[socket] Invalid system or chat prompt:", { systemPrompt: safeSystemPrompt, chatPrompt: safeChatPrompt });
-        socket.emit("error", { message: "Failed to generate response: missing prompt content" });
+        console.error("[socket] Invalid system or chat prompt:", {
+          systemPrompt: safeSystemPrompt,
+          chatPrompt: safeChatPrompt,
+        });
+        socket.emit("error", {
+          message: "Failed to generate response: missing prompt content",
+        });
         return;
       }
-      
+
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5.2",
         messages: [
@@ -594,7 +646,7 @@ CRITICAL RULES:
           },
         ],
         temperature: session.mode === "discovery" ? 0.7 : 0.3,
-        max_completion_tokens: session.mode === "discovery" ? 300 : 400,
+        max_completion_tokens: session.mode === "discovery" ? 1500 : 400,
       });
 
       let msg = aiResponse.choices[0].message;
@@ -610,6 +662,35 @@ CRITICAL RULES:
       }
 
       session.transcript.push(msg);
+
+      // Save chat incrementally to database (for chat history)
+      if (session.email && session.transcript.length > 0) {
+        try {
+          // Find or create user
+          const userName = session.email?.split("@")[0] || "User";
+          let appUser = await User.findOne({ where: { email: session.email } });
+          if (!appUser) {
+            appUser = await User.create({
+              email: session.email,
+              name: userName,
+            });
+          }
+
+          const chatType =
+            session.mode === "discovery" ? "discovery" : "dignostic";
+          await saveChatIncrementally({
+            userId: appUser.id,
+            diagnosticId: session.existingDiagnostic?.id || null,
+            discoveryId: null,
+            chatType: chatType,
+            transcript: session.transcript,
+            isChatEnded: false,
+          });
+        } catch (err) {
+          console.error("[socket] Error saving chat incrementally:", err);
+          // Don't break the flow if saving fails
+        }
+      }
 
       socket.emit("assistant_message", {
         message: msg,
@@ -639,22 +720,25 @@ CRITICAL RULES:
           message: "Generating discovery report...",
         });
         await endChatAsDiscovery(socket, session, { reason: "finalize" });
-        
+
         // Check if user wants email
-        const lastUserMessage = session.transcript
-          ?.filter((m) => m?.role === "user")
-          ?.slice(-1)[0]?.content || "";
-        const userWantsEmail = checkWantsEmail(session.transcript || [], lastUserMessage);
+        const lastUserMessage =
+          session.transcript?.filter((m) => m?.role === "user")?.slice(-1)[0]
+            ?.content || "";
+        const userWantsEmail = checkWantsEmail(
+          session.transcript || [],
+          lastUserMessage
+        );
         const shouldEmail = userWantsEmail;
-        
+
         const statusMessage = shouldEmail
           ? "Report generated, PDF compiled, and emailed successfully"
           : "Report generated and updated in your account";
-        
+
         const userMessage = shouldEmail
           ? "Updated diagnostic report generated and emailed."
           : "Updated diagnostic report generated and updated in your account. You can access it anytime. If you'd like it emailed, just ask!";
-        
+
         socket.emit("done", {
           discovery: true,
           diagnosticId: session.existingDiagnostic?.id,
@@ -686,10 +770,11 @@ CRITICAL RULES:
         typeof prompt === "string"
           ? prompt
           : prompt?.fullPrompt || prompt?.content || "";
-      
+
       // Ensure promptContent is always a string, never null or undefined
-      const safePromptContent = promptContent && typeof promptContent === "string" ? promptContent : "";
-      
+      const safePromptContent =
+        promptContent && typeof promptContent === "string" ? promptContent : "";
+
       const userPromptContent = buildFinalReportPrompt({
         // customerContext: diagnosticContext, // Commented out - not using Kajabi data for now
         customerContext: null, // Not using Kajabi data for now
@@ -698,12 +783,18 @@ CRITICAL RULES:
         retrieved,
         previousReport: session.priorReportSnippet,
       });
-      
+
       // Ensure user content is always a string
-      const safeUserContent = userPromptContent && typeof userPromptContent === "string" ? userPromptContent : "";
-      
+      const safeUserContent =
+        userPromptContent && typeof userPromptContent === "string"
+          ? userPromptContent
+          : "";
+
       if (!safePromptContent || !safeUserContent) {
-        console.error("[socket] Invalid prompt or user content (background):", { promptContent: safePromptContent, userContent: safeUserContent });
+        console.error("[socket] Invalid prompt or user content (background):", {
+          promptContent: safePromptContent,
+          userContent: safeUserContent,
+        });
         return; // Exit early in background mode
       }
 
@@ -781,10 +872,13 @@ CRITICAL RULES:
 
       // Check if user wants email or if it's first-time user
       const isFirstTimeUser = !session.existingDiagnostic;
-      const lastUserMessage = session.transcript
-        ?.filter((m) => m?.role === "user")
-        ?.slice(-1)[0]?.content || "";
-      const userWantsEmail = checkWantsEmail(session.transcript || [], lastUserMessage);
+      const lastUserMessage =
+        session.transcript?.filter((m) => m?.role === "user")?.slice(-1)[0]
+          ?.content || "";
+      const userWantsEmail = checkWantsEmail(
+        session.transcript || [],
+        lastUserMessage
+      );
       const shouldEmail = isFirstTimeUser || userWantsEmail;
 
       if (shouldEmail) {
@@ -815,10 +909,12 @@ CRITICAL RULES:
       const statusMessage = shouldEmail
         ? "Report generated, PDF compiled, and emailed successfully"
         : "Report generated and updated in your account";
-      
+
       const userMessage = shouldEmail
         ? `Your diagnostic report has been generated and emailed to ${session.email}. Please check your inbox.`
-        : `Your diagnostic report has been generated and updated in your account. You can access it anytime.${userWantsEmail ? "" : " If you'd like it emailed, just ask!"}`;
+        : `Your diagnostic report has been generated and updated in your account. You can access it anytime.${
+            userWantsEmail ? "" : " If you'd like it emailed, just ask!"
+          }`;
 
       socket.emit("done", {
         diagnosticId: diagnostic.id,

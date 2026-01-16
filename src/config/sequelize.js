@@ -16,7 +16,7 @@ const sequelize = new Sequelize(DATABASE_URL, {
     },
   },
   pool: {
-    max: 10, // Maximum number of connections in pool
+    max: 20, // Maximum number of connections in pool (increased from 10)
     min: 2, // Minimum number of connections in pool
     acquire: 60000, // Maximum time (ms) to wait for a connection
     idle: 10000, // Maximum time (ms) a connection can be idle before being released
@@ -249,6 +249,26 @@ const initDb = async () => {
   } catch (err) {
     // If column doesn't exist or conversion fails, that's fine - sync will handle it
     console.log("Voice notes table migration:", err.message);
+  }
+
+  // Add missing columns to chat table if they don't exist
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        -- Add discoveryId column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'chat' 
+          AND column_name = 'discoveryId'
+        ) THEN
+          ALTER TABLE "chat" ADD COLUMN "discoveryId" INTEGER;
+        END IF;
+      END $$;
+    `);
+    console.log("Chat table columns migration completed");
+  } catch (err) {
+    console.log("Chat table columns migration:", err.message);
   }
 
   // Sync all models together to respect FK dependencies (e.g., users before diagnostics)

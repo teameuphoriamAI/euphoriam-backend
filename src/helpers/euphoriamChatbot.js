@@ -2022,8 +2022,51 @@ const extractMetricsFromReport = (reportText) => {
   if (!reportText) return {};
 
   // First, try to extract from METRICS GAUGE section specifically
-  const metricsGaugeMatch = reportText.match(/METRICS\s+GAUGE[\s\S]{0,1000}/i);
+  // Increase the match range to capture more of the section
+  const metricsGaugeMatch = reportText.match(/METRICS\s+GAUGE[\s\S]{0,2000}/i);
+  
+  // If we have a METRICS GAUGE section, try to extract from it first with a simpler approach
+  if (metricsGaugeMatch) {
+    const gaugeText = metricsGaugeMatch[0];
+    console.log(`[extractMetricsFromReport] Found METRICS GAUGE section, extracting with simple pattern`);
+    
+    // Simple extraction: match "**Label:** progress_bar NUMBER%" and capture NUMBER (first one, before any ~ or arrows)
+    // Format: **QGC Activation:** █████░░░░░░░ 46%  ~49%
+    const simpleExtract = (label) => {
+      // Match the label, progress bar, then capture the first number with %
+      const pattern = new RegExp(`\\*\\*${label}[^:]*:\\*\\*[^\\d]*(\\d+(?:\\.\\d+)?)%`, 'i');
+      const match = gaugeText.match(pattern);
+      if (match) {
+        console.log(`[extractMetricsFromReport] Simple extract for ${label}: ${match[1]} (from: "${match[0].substring(0, 80)}")`);
+        return parseFloat(match[1]);
+      }
+      return undefined;
+    };
+    
+    const gravity = simpleExtract('Gravity');
+    const signalCoherence = simpleExtract('Signal\\s+Coherence');
+    const signalOutput = simpleExtract('Signal\\s+Output');
+    const qgcActivation = simpleExtract('QGC\\s+Activation');
+    
+    // For Consciousness Level, extract percentage and convert to CL value
+    let consciousnessLevel = simpleExtract('Consciousness\\s+Level');
+    if (consciousnessLevel !== undefined && consciousnessLevel > 5) {
+      consciousnessLevel = consciousnessLevel / 20; // Convert percentage to CL (CL = percentage / 20)
+      console.log(`[extractMetricsFromReport] Converted CL from percentage to value: ${consciousnessLevel}`);
+    }
+    
+    // If we extracted at least some metrics from METRICS GAUGE, return them
+    if (gravity !== undefined || signalCoherence !== undefined || signalOutput !== undefined || qgcActivation !== undefined || consciousnessLevel !== undefined) {
+      const extracted = { gravity, signalCoherence, signalOutput, consciousnessLevel, qgcActivation };
+      const extractedCount = Object.values(extracted).filter(v => v !== undefined).length;
+      console.log(`[extractMetricsFromReport] Extracted ${extractedCount}/5 metrics from METRICS GAUGE:`, extracted);
+      return extracted;
+    }
+  }
+  
+  // Fallback: use the more complex extraction for other report formats
   const searchText = metricsGaugeMatch ? metricsGaugeMatch[0] : reportText;
+  console.log(`[extractMetricsFromReport] Falling back to complex extraction`);
 
   // Helper function to extract metric value, handling progress bars
   // Matches patterns like:
@@ -2031,41 +2074,73 @@ const extractMetricsFromReport = (reportText) => {
   // - "Gravity: █████████░░░ 74%"
   // - "Gravity (Load):      █████████░░░ 74%"
   // - "**Gravity** 95%"
+  // - "**Gravity:** ██████████░░ 82%  ↑" (ignore comparison values after ~ or arrows)
   const extractMetric = (label, patterns, isPercentage = true) => {
     for (const pattern of patterns) {
-      // Pattern 1: Direct match with optional progress bar
+      // Pattern 1: Markdown bold format with progress bar - get FIRST number (before ~ or arrow)
+      // Matches: **QGC Activation:** █████░░░░░░░ 46%  ~49%
+      // Must stop at ~, ↑, ↓, or end of line to avoid matching comparison values
+      // Use a more specific pattern that captures the number immediately after progress bar
       const match1 = searchText.match(
         new RegExp(
-          `${pattern}[:\\s]+(?:[█░\\s]+)?(\\d+(?:\\.\\d+)?)${
-            isPercentage ? "%?" : ""
-          }`,
+          `\\*\\*${pattern}\\*\\*[:\\s]*[█░]+\\s+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
+          }(?=\\s+[~↑↓]|\\s+\\d|\\s*\\n|\\s*$|\\s*\\*|\\s*-|\\s*##|\\s*FRICTION)`,
           "i"
         )
       );
-      if (match1) return parseFloat(match1[1]);
+      if (match1) {
+        const value = parseFloat(match1[1]);
+        console.log(`[extractMetric] Pattern 1 matched for ${label}: ${value} (from: "${match1[0]}")`);
+        return value;
+      }
 
-      // Pattern 2: Markdown bold format
+      // Pattern 2: Markdown bold format without progress bar
       const match2 = searchText.match(
         new RegExp(
-          `\\*\\*${pattern}\\*\\*[:\\s]*(?:[█░\\s]+)?(\\d+(?:\\.\\d+)?)${
-            isPercentage ? "%?" : ""
-          }`,
+          `\\*\\*${pattern}\\*\\*[:\\s]+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
+          }(?=\\s*[~↑↓]|\\s*\\n|\\s*$|\\s*\\*|\\s*-)`,
           "i"
         )
       );
-      if (match2) return parseFloat(match2[1]);
+      if (match2) {
+        const value = parseFloat(match2[1]);
+        console.log(`[extractMetric] Pattern 2 matched for ${label}: ${value} (from: ${match2[0]})`);
+        return value;
+      }
 
-      // Pattern 3: With progress bar characters before the number
+      // Pattern 3: Direct match with progress bar - get FIRST number
       const match3 = searchText.match(
         new RegExp(
-          `${pattern}[:\\s]+[█░\\s]+(\\d+(?:\\.\\d+)?)${
+          `${pattern}[:\\s]+[█░]+\\s+(\\d+(?:\\.\\d+)?)${
             isPercentage ? "%" : ""
-          }`,
+          }(?=\\s+[~↑↓]|\\s+\\d|\\s*\\n|\\s*$|\\s*\\*|\\s*-)`,
           "i"
         )
       );
-      if (match3) return parseFloat(match3[1]);
+      if (match3) {
+        const value = parseFloat(match3[1]);
+        console.log(`[extractMetric] Pattern 3 matched for ${label}: ${value} (from: "${match3[0]}")`);
+        return value;
+      }
+
+      // Pattern 4: Direct match without progress bar
+      const match4 = searchText.match(
+        new RegExp(
+          `${pattern}[:\\s]+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
+          }(?=\\s*[~↑↓]|\\s*\\n|\\s*$|\\s*\\*|\\s*-)`,
+          "i"
+        )
+      );
+      if (match4) {
+        const value = parseFloat(match4[1]);
+        console.log(`[extractMetric] Pattern 4 matched for ${label}: ${value} (from: ${match4[0]})`);
+        return value;
+      }
     }
+    console.log(`[extractMetric] No match found for ${label}`);
     return undefined;
   };
 
@@ -2088,11 +2163,32 @@ const extractMetricsFromReport = (reportText) => {
     true
   );
 
-  const consciousnessLevel = extractMetric(
+  // For Consciousness Level, the gauge shows it as a percentage: (CL/5)*100
+  // So if we see "48%", that means CL = 2.4 (48/20)
+  // Extract the percentage first, then convert to CL value
+  let consciousnessLevel = extractMetric(
     "Consciousness\\s+Level",
-    ["Consciousness\\s+Level", "CL"],
-    false
+    ["Consciousness\\s+Level"],
+    true // Extract as percentage first
   );
+  
+  // If we got a percentage value (> 5), convert it back to CL value (CL = percentage / 20)
+  if (consciousnessLevel !== undefined && consciousnessLevel > 5) {
+    // It's a percentage, convert to CL: CL = percentage / 20
+    consciousnessLevel = consciousnessLevel / 20;
+    console.log(`[extractMetricsFromReport] Converted CL percentage to value: ${consciousnessLevel}`);
+  }
+  
+  // If still not found, try extracting as a direct number (not percentage)
+  if (consciousnessLevel === undefined) {
+    const clDirectMatch = searchText.match(
+      /(?:Consciousness\s+Level|CL)[:\s]+(?:[█░\s]+)?(\d+\.\d+)(?:\s*[~↑↓]|\s*$)/i
+    );
+    if (clDirectMatch) {
+      consciousnessLevel = parseFloat(clDirectMatch[1]);
+      console.log(`[extractMetricsFromReport] Extracted CL as direct number: ${consciousnessLevel}`);
+    }
+  }
 
   const qgcActivation = extractMetric(
     "QGC",
@@ -2183,48 +2279,88 @@ const loadLatestDiscoveryMetrics = async (
     }
   }
 
-  // If no discovery metrics found, use last diagnostic report metrics
+  // Always try to extract from diagnostic report to compare dates
+  let diagnosticReportMetrics = {};
+  let diagnosticReportDate = null;
+  if (existingDiagnostic?.data?.aiReport) {
+    const diagnosticReport = existingDiagnostic.data.aiReport;
+    diagnosticReportMetrics = extractMetricsFromReport(diagnosticReport);
+    // Get diagnostic report date (use updatedAt if report was updated, otherwise createdAt)
+    diagnosticReportDate = existingDiagnostic.updatedAt || existingDiagnostic.createdAt;
+    console.log(
+      "[loadLatestDiscoveryMetrics] Extracted metrics from diagnostic report:",
+      diagnosticReportMetrics,
+      { date: diagnosticReportDate }
+    );
+  }
+
+  // Check if we have valid discovery metrics
   const hasDiscoveryMetrics =
     latestDiscoveryMetrics &&
+    Object.keys(latestDiscoveryMetrics).length > 0 &&
     (latestDiscoveryMetrics.gravity !== undefined ||
       latestDiscoveryMetrics.signalCoherence !== undefined ||
       latestDiscoveryMetrics.signalOutput !== undefined);
 
-  if (!hasDiscoveryMetrics) {
-    // Try to extract from diagnostic report
-    if (existingDiagnostic?.data?.aiReport) {
-      const diagnosticReport = existingDiagnostic.data.aiReport;
-      const extractedMetrics = extractMetricsFromReport(diagnosticReport);
+  // Check if we have valid diagnostic metrics
+  const hasDiagnosticMetrics =
+    diagnosticReportMetrics &&
+    Object.keys(diagnosticReportMetrics).length > 0 &&
+    (diagnosticReportMetrics.gravity !== undefined ||
+      diagnosticReportMetrics.signalCoherence !== undefined ||
+      diagnosticReportMetrics.signalOutput !== undefined);
 
-      if (
-        Object.keys(extractedMetrics).some(
-          (key) => extractedMetrics[key] !== undefined
-        )
-      ) {
-        latestDiscoveryMetrics = extractedMetrics;
-        console.log(
-          "[loadLatestDiscoveryMetrics] Using metrics from last diagnostic report:",
-          extractedMetrics
-        );
-      } else if (
-        diagnosticMetrics &&
-        Object.keys(diagnosticMetrics).length > 0
-      ) {
-        // Fallback to stored diagnostic metrics
-        latestDiscoveryMetrics = diagnosticMetrics;
-        console.log(
-          "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics:",
-          diagnosticMetrics
-        );
-      }
-    } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
-      // No report but have stored metrics
-      latestDiscoveryMetrics = diagnosticMetrics;
+  // Determine which report is more recent
+  const discoveryReportDate = latestDiscovery?.updatedAt || latestDiscovery?.createdAt;
+  
+  // Decide which metrics to use based on date comparison
+  if (hasDiscoveryMetrics && hasDiagnosticMetrics && discoveryReportDate && diagnosticReportDate) {
+    // Both reports exist - use the more recent one
+    const discoveryDate = new Date(discoveryReportDate);
+    const diagnosticDate = new Date(diagnosticReportDate);
+    
+    if (discoveryDate > diagnosticDate) {
+      // Discovery is more recent - use discovery metrics
       console.log(
-        "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (no report):",
-        diagnosticMetrics
+        "[loadLatestDiscoveryMetrics] Using metrics from discovery report (more recent):",
+        latestDiscoveryMetrics,
+        { discoveryDate: discoveryReportDate, diagnosticDate: diagnosticReportDate }
+      );
+      // latestDiscoveryMetrics already set above, keep it
+    } else {
+      // Diagnostic is more recent - use diagnostic metrics
+      latestDiscoveryMetrics = diagnosticReportMetrics;
+      console.log(
+        "[loadLatestDiscoveryMetrics] Using metrics from diagnostic report (more recent):",
+        diagnosticReportMetrics,
+        { diagnosticDate: diagnosticReportDate, discoveryDate: discoveryReportDate }
       );
     }
+  } else if (hasDiscoveryMetrics) {
+    // Only discovery metrics available
+    console.log(
+      "[loadLatestDiscoveryMetrics] Using metrics from discovery report (only discovery available):",
+      latestDiscoveryMetrics
+    );
+    // latestDiscoveryMetrics already set above, keep it
+  } else if (hasDiagnosticMetrics) {
+    // Only diagnostic metrics available (or discovery doesn't have valid metrics)
+    latestDiscoveryMetrics = diagnosticReportMetrics;
+    console.log(
+      "[loadLatestDiscoveryMetrics] Using metrics from diagnostic report:",
+      diagnosticReportMetrics
+    );
+  } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
+    // Fallback to stored diagnostic metrics if extraction failed
+    latestDiscoveryMetrics = diagnosticMetrics;
+    console.log(
+      "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (extraction failed):",
+      diagnosticMetrics
+    );
+  } else {
+    console.log(
+      "[loadLatestDiscoveryMetrics] No valid metrics found from any source"
+    );
   }
 
   return {

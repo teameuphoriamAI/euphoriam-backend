@@ -514,8 +514,31 @@ export async function detectUserWantsNewDiagnostic({
     userMessage?.substring(0, 100)
   );
 
+  // Check if assistant just said they're ready to generate the current report
+  const lastAssistantMessage = transcript
+    .filter((m) => m?.role === "assistant")
+    .slice(-1)[0]?.content || "";
+  const assistantSaysReadyToGenerate =
+    /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|can generate|will generate)/i.test(
+      lastAssistantMessage
+    );
+
+  // If assistant just said they're ready to generate, and user says "generate it" or similar,
+  // they want to generate the CURRENT report, not start a NEW diagnostic
+  if (assistantSaysReadyToGenerate) {
+    const userWantsToGenerateCurrent = /^(generate|generate it|generate my report|generate report|yes|go ahead|do it|please|ok)$/i.test(
+      userMessage.trim()
+    );
+    if (userWantsToGenerateCurrent) {
+      console.log(
+        "[detectUserWantsNewDiagnostic] Assistant is ready to generate, user wants to generate CURRENT report (not new diagnostic)"
+      );
+      return false; // They want to generate current report, not start new diagnostic
+    }
+  }
+
   const prompt = `
-You are a binary classifier. Analyze the user's message and determine if they EXPLICITLY want to CREATE A NEW DIAGNOSTIC REPORT.
+You are a binary classifier. Analyze the user's message and determine if they EXPLICITLY want to CREATE A NEW DIAGNOSTIC REPORT (start a completely new diagnostic from scratch).
 
 User's latest message: "${userMessage || ""}"
 
@@ -524,32 +547,38 @@ ${JSON.stringify(transcript.slice(-5), null, 2)}
 
 CRITICAL RULES - UNDERSTAND FULL CONTEXT:
 - Reply ONLY "yes" or "no"
-- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to create, start, do, or generate a NEW diagnostic/report
+- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to create, start, do, or generate a NEW diagnostic/report FROM SCRATCH
+- CRITICAL DISTINCTION:
+  * If the assistant just said "I have enough to generate your full diagnostic now" or similar, and user says "generate it" or "generate report" → NO (they want to generate the CURRENT report, not start a NEW one)
+  * "generate it" when assistant is ready → NO (generate current report)
+  * "generate my report" when assistant is ready → NO (generate current report)
+  * "create new diagnostic" → YES (explicit request for NEW diagnostic)
+  * "start new report" → YES (explicit request for NEW report)
+  * "do my diagnostics again" → YES (explicit request to start over)
 - UNDERSTAND CONTEXT: Words like "generate", "create", "report" can appear in normal conversation
   * "generate its report" → NO (describing a process, not requesting)
   * "write it down and then generate its report" → NO (describing steps, not requesting)
   * "my chest hurt ends and i start conversation im my head write it down and then generate its report" → NO (describing experience, not requesting)
-  * "create new diagnostic" → YES (explicit request)
-  * "start new report" → YES (explicit request)
-  * "do my diagnostics again" → YES (explicit request)
+  * "generate it" when assistant says they're ready → NO (generate current report, not new diagnostic)
 - Return "no" if the message is:
   * Answering a question
   * Continuing conversation
   * Sharing insights, updates, or reflections
   * Describing experiences or processes
-  * Using words like "generate", "create", "report" in a different context (e.g., "generate its report" describing a process)
-  * Any statement that doesn't clearly indicate intent to create a NEW diagnostic
-- When in doubt, return "no" - only return "yes" for very clear and explicit requests
-- Understand the FULL MEANING of the message, not just individual words
+  * Requesting to generate the CURRENT report (not a new one)
+  * Using words like "generate", "create", "report" in a different context
+  * Any statement that doesn't clearly indicate intent to create a NEW diagnostic FROM SCRATCH
+- When in doubt, return "no" - only return "yes" for very clear and explicit requests to START A NEW diagnostic
 
 Examples:
-- "create new diagnostic" → yes (explicit request)
-- "start new report" → yes (explicit request)
-- "do my diagnostics again" → yes (explicit request)
+- "create new diagnostic" → yes (explicit request for NEW)
+- "start new report" → yes (explicit request for NEW)
+- "do my diagnostics again" → yes (explicit request to start over)
+- "generate it" (when assistant said "I have enough to generate") → no (generate CURRENT report)
+- "generate my report" (when assistant said "I have enough") → no (generate CURRENT report)
 - "generate its report" → no (describing a process, not requesting)
 - "write it down and then generate its report" → no (describing steps, not requesting)
-- "my chest hurt ends and i start conversation im my head write it down and then generate its report" → no (describing experience, not requesting)
-- Any question or statement → no (unless explicitly about creating a new diagnostic)
+- Any question or statement → no (unless explicitly about creating a NEW diagnostic FROM SCRATCH)
 
 Reply:`;
 
@@ -618,21 +647,37 @@ You are a binary classifier. Analyze the user's message and determine if they EX
 4. Finish the conversation
 5. Email the report
 6. Send the report
-7. Stop/pause the conversation (e.g., "I'm good with this for now", "that's enough", "I'm done for now")
+7. Stop/pause the conversation
 
 User's latest message: "${userMessage || ""}"
 
 Recent conversation context (last 5 messages):
 ${JSON.stringify(transcript.slice(-5), null, 2)}
 
-CRITICAL RULES - UNDERSTAND FULL CONTEXT:
+CRITICAL RULES - BE VERY STRICT:
 - Reply ONLY "yes" or "no"
-- Return "yes" ONLY if the user EXPLICITLY and CLEARLY requests to end, finish, stop, pause, generate report, get report, email report, send report, OR indicates they're done/satisfied (e.g., "I'm good with this for now", "that's enough", "I'm done", "that's it for now", "I'm satisfied", "we can stop here")
+- Return "yes" ONLY if the user EXPLICITLY and CLEARLY uses ACTION WORDS like:
+  * "end chat", "finish chat", "stop chat", "close chat"
+  * "generate report", "generate my report", "get my report", "send report", "email report"
+  * "I'm done", "I'm finished", "that's enough for me", "we're done here"
+  * "I want to end", "let's end this", "end the conversation"
+- Return "no" for ANY casual responses, status updates, or answers to questions, including:
+  * "doing good" / "doing good for now" → NO (casual response to "how are you doing?")
+  * "I'm good" / "I'm good for now" → NO (casual response, NOT a request to end)
+  * "that's good" → NO (acknowledgment, not a request)
+  * "ok" / "okay" → NO (acknowledgment)
+  * "thanks" / "thank you" → NO (gratitude, not a request to end)
+  * "sounds good" → NO (agreement, not a request)
+  * Any answer to a question → NO
+  * Any status update or reflection → NO
+  * Any description of experience or process → NO
 - UNDERSTAND CONTEXT: Words like "end", "exit", "finish", "stop", "chat", "conversation", "generate", "report" can appear in normal conversation
   * "by the end" → NO (talking about a time period, not ending chat)
   * "today will end" → NO (talking about the day ending, not ending chat)
   * "exit to my world" → NO (talking about going somewhere, not ending chat)
   * "work can be anything" → NO (talking about work, not ending chat)
+  * "doing good for now" → NO (casual response to question, NOT requesting to end)
+  * "I'm good for now" → NO (casual response, NOT requesting to end - only YES if context clearly shows they want to stop)
   * "my chest hurt ends and i start conversation im my head write it down and then generate its report" → NO (describing a process/experience, NOT requesting to generate report)
   * "generate its report" → NO (describing a process, NOT requesting)
   * "write it down and then generate its report" → NO (describing steps, NOT requesting)
@@ -641,30 +686,36 @@ CRITICAL RULES - UNDERSTAND FULL CONTEXT:
   * "email me the report" → YES (explicit request)
   * "generate my report now" → YES (explicit request with action word)
 - Return "no" if the message is:
-  * Answering a question
+  * Answering a question (including "how are you doing?" → "doing good for now" = NO)
   * Continuing conversation
   * Sharing insights, updates, or reflections
   * Describing experiences, processes, or situations
-  * Using words like "end", "exit", "finish", "generate", "report" in a different context (e.g., "by the end", "today will end", "generate its report" describing a process)
-  * Describing what they do or what happens (e.g., "I write it down and then generate its report" = describing a process, NOT requesting)
+  * Casual responses or acknowledgments
+  * Using words like "end", "exit", "finish", "generate", "report" in a different context
+  * Describing what they do or what happens
   * Any statement that doesn't clearly indicate ending/generating intent
 - Return "no" if they want to start a NEW diagnostic (these are requests to START something new, not END)
-- When in doubt, return "no" - only return "yes" for very clear and explicit ending/generating requests
+- When in doubt, return "no" - only return "yes" for VERY CLEAR and EXPLICIT ending/generating requests with ACTION WORDS
 - Understand the FULL MEANING of the message, not just individual words
-- KEY DISTINCTION: "generate its report" or "generate the report" when describing a process = NO. "generate my report" or "generate the report now" when requesting = YES
+- KEY DISTINCTION: Casual responses like "doing good", "I'm good", "that's good" = NO. Only explicit requests with action words = YES
 
 Examples:
-- "email me the report" → yes (explicit request)
-- "generate my report" → yes (explicit request)
-- "generate my report now" → yes (explicit request with action)
-- "end chat" → yes (explicit request)
-- "that's it for today" → yes (clear ending intent)
-- "I'm good with this for now" → yes (indicates they want to stop)
-- "ok I'm good with this for now" → yes (indicates they want to stop)
-- "that's enough" → yes (indicates they want to stop)
-- "I'm done for now" → yes (indicates they want to stop)
-- "we can stop here" → yes (indicates they want to stop)
-- "that's it for now" → yes (indicates they want to stop)
+- "email me the report" → yes (explicit request with action word)
+- "generate my report" → yes (explicit request with action word)
+- "generate my report now" → yes (explicit request with action word)
+- "end chat" → yes (explicit request with action word)
+- "finish conversation" → yes (explicit request with action word)
+- "I want to end the chat" → yes (explicit request with action word)
+- "that's it for today" → yes (clear ending intent with "that's it")
+- "I'm done" → yes (clear ending statement)
+- "we're done here" → yes (clear ending statement)
+- "doing good for now" → no (casual response to question, NOT a request)
+- "I'm good" → no (casual response, NOT a request - only YES if clearly saying "I'm done/I'm finished")
+- "I'm good for now" → no (casual response, NOT a request - only YES if context shows clear ending intent)
+- "that's good" → no (acknowledgment, not a request)
+- "ok" / "okay" → no (acknowledgment)
+- "thanks" → no (gratitude, not a request)
+- "sounds good" → no (agreement, not a request)
 - "by the end of the day" → no (talking about time, not ending chat)
 - "today will end" → no (talking about the day, not ending chat)
 - "exit to my world" → no (talking about going somewhere, not ending chat)
@@ -673,7 +724,7 @@ Examples:
 - "generate its report" → no (describing a process, NOT requesting)
 - "write it down and then generate its report" → no (describing steps, NOT requesting)
 - "I think that's it" → no (ambiguous, could mean "that's my answer")
-- Any question or statement → no (unless explicitly about ending/generating report)
+- Any question or statement → no (unless explicitly about ending/generating report with action words)
 
 Reply:`;
 

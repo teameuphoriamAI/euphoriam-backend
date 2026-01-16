@@ -17,6 +17,10 @@ const Chat = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    discoveryId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
 
     data: {
       type: DataTypes.JSONB,

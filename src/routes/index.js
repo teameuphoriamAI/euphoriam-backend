@@ -7,6 +7,7 @@ const voiceRoutes = require("./voiceRoutes");
 const ragRoutes = require("./ragRoutes");
 const discoveryRoutes = require("./discoveryRoutes");
 const adminRoutes = require("./adminRoutes");
+const chatRoutes = require("./chatRoutes");
 
 const router = express.Router();
 
@@ -23,5 +24,6 @@ router.use("/voice-notes", voiceRoutes);
 router.use("/rag", ragRoutes);
 router.use("/discoveries", discoveryRoutes);
 router.use("/admin", adminRoutes);
+router.use("/chat", chatRoutes);
 
 module.exports = router;

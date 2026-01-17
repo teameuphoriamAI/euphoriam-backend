@@ -16,11 +16,12 @@ const sequelize = new Sequelize(DATABASE_URL, {
     },
   },
   pool: {
-    max: 20, // Maximum number of connections in pool (increased from 10)
-    min: 2, // Minimum number of connections in pool
-    acquire: 60000, // Maximum time (ms) to wait for a connection
+    max: 5, // Reduced for Supabase/Neon compatibility (they have strict connection limits)
+    min: 1, // Minimum number of connections in pool
+    acquire: 30000, // Maximum time (ms) to wait for a connection (reduced from 60000)
     idle: 10000, // Maximum time (ms) a connection can be idle before being released
     evict: 1000, // Interval (ms) to check for idle connections
+    handleDisconnects: true, // Automatically reconnect if connection is lost
   },
   retry: {
     max: 3,

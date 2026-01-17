@@ -11,6 +11,12 @@ const { CoachingSession } = require("../models/coachingSessionModel");
 const { buildKajabiDiagnosticContext } = require("./kajabi");
 const { sequelize } = require("../config/sequelize");
 const { Op } = require("sequelize");
+const { supabase } = require("../config/supabase");
+const pdfParse = require("pdf-parse");
+const {
+  loadDiagnosticState,
+  loadLatestDiscoveryMetrics,
+} = require("../helpers/euphoriamChatbot");
 const listUsers = async (_req, res) => {
   try {
     // First, get users without heavy includes to avoid timeout
@@ -123,9 +129,9 @@ const userReport = async (_req, res) => {
     // Check if Diagnostics exists and has items, and if data.pdfUrls exists
     const diagnosticCount =
       userJson.Diagnostics &&
-      userJson.Diagnostics.length > 0 &&
-      userJson.Diagnostics[0].data &&
-      Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+        userJson.Diagnostics.length > 0 &&
+        userJson.Diagnostics[0].data &&
+        Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
         ? userJson.Diagnostics[0].data.pdfUrls.length
         : 0;
     const discoveryCount =
@@ -135,9 +141,9 @@ const userReport = async (_req, res) => {
 
     let pdf =
       userJson.Diagnostics &&
-      userJson.Diagnostics.length > 0 &&
-      userJson.Diagnostics[0].data &&
-      Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+        userJson.Diagnostics.length > 0 &&
+        userJson.Diagnostics[0].data &&
+        Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
         ? userJson.Diagnostics[0].data.pdfUrls
         : null;
     return successResponse(res, "Users fetched", {
@@ -255,10 +261,285 @@ const findOrCreateCreatorUser = async ({ email, name }) => {
   return user;
 };
 
+/**
+ * Get comprehensive user profile data including metrics, goals, personal data, and membership
+ */
+const getUserProfile = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return errorResponse(res, " email is required", 400);
+    }
+
+    // Find user
+    const user = await User.findOne({
+      where: { email },
+      attributes: { exclude: ["password"] },
+    });
+
+    if (!user) {
+      return errorResponse(res, "User not found", 404);
+    }
+
+    // Get current metrics
+
+    const { existingDiagnostic, diagnosticMetrics } = await loadDiagnosticState(
+      user.email
+    );
+    const { latestDiscoveryMetrics } = await loadLatestDiscoveryMetrics(
+      existingDiagnostic,
+      diagnosticMetrics
+    );
+
+    // Use latest discovery metrics if available, otherwise use diagnostic metrics
+    const currentMetrics = latestDiscoveryMetrics || diagnosticMetrics || {};
+
+    // Get discovery counts
+    const discoveries = await Discovery.findAll({
+      where: { userId: user.id },
+      attributes: ["discoveryType"],
+    });
+
+    const discoveryCounts = {
+      alignment: 0,
+      freedom: 0,
+      prosperity: 0,
+      integrated: 0,
+      total: discoveries.length,
+    };
+
+    discoveries.forEach((d) => {
+      const type = d.discoveryType || "integrated";
+      if (discoveryCounts.hasOwnProperty(type)) {
+        discoveryCounts[type]++;
+      }
+    });
+
+    // Extract goals from latest report (diagnostic or discovery) - from report text directly
+    let goals = [];
+    let firstCorrection = null;
+    let angleOfGrowth = null;
+    try {
+      // Get latest diagnostic report
+      const latestDiagnostic = await Diagnostic.findOne({
+        where: { email: user.email },
+        order: [["updatedAt", "DESC"]],
+      });
+
+      // Get latest discovery report
+      const latestDiscovery = await Discovery.findOne({
+        where: { userId: user.id },
+        order: [["updatedAt", "DESC"]],
+      });
+
+      // Determine which is latest and get the report text
+      let latestReportText = null;
+      let reportSource = null;
+
+      if (latestDiagnostic && latestDiscovery) {
+        const diagDate = new Date(latestDiagnostic.updatedAt);
+        const discDate = new Date(latestDiscovery.updatedAt);
+        if (diagDate > discDate) {
+          latestReportText = latestDiagnostic.data?.aiReport || latestDiagnostic.report || null;
+          reportSource = "diagnostic";
+        } else {
+          latestReportText = latestDiscovery.data?.newReport || latestDiscovery.data?.previousReport || null;
+          reportSource = "discovery";
+        }
+      } else if (latestDiagnostic) {
+        latestReportText = latestDiagnostic.data?.aiReport || latestDiagnostic.report || null;
+        reportSource = "diagnostic";
+      } else if (latestDiscovery) {
+        latestReportText = latestDiscovery.data?.newReport || latestDiscovery.data?.previousReport || null;
+        reportSource = "discovery";
+      }
+
+      if (latestReportText && typeof latestReportText === "string") {
+        console.log(`[getUserProfile] Extracting goals from ${reportSource} report (${latestReportText.length} chars)`);
+
+        // Extract FIRST CORRECTION (the main goal)
+        // Pattern 1: ### 10. FIRST CORRECTION or SECTION 10 — First Correction
+        const firstCorrectionPatterns = [
+          /(?:###?\s*10\.\s*FIRST\s+CORRECTION|SECTION\s*10\s*[—–-]\s*First\s*Correction|First\s+Correction\s*\(Updated\))[^\n]*\n([\s\S]{0,1500}?)(?=\n---|\n###|\n\n##|\nSECTION\s+\d|\nMETRICS\s+GAUGE|\nDATA\s+QUALITY)/i,
+          // Pattern 2: Just "First Correction:" followed by content
+          /First\s+Correction[:\s]*\n([\s\S]{0,1000}?)(?=\n---|\n###|\n\n##|\nSECTION)/i,
+        ];
+
+        for (const pattern of firstCorrectionPatterns) {
+          const match = latestReportText.match(pattern);
+          if (match && match[1]) {
+            let correctionText = match[1].trim();
+            // Extract the bolded/quoted part which is the actual correction
+            const quotedMatch = correctionText.match(/>\s*\*\*([^*]+)\*\*|>\s*\*([^*]+)\*|>\s*"([^"]+)"|>\s*'([^']+)'|"([^"]{20,300})"|'([^']{20,300})'|\*\*([^*\n]{20,300})\*\*/);
+            if (quotedMatch) {
+              firstCorrection = (quotedMatch[1] || quotedMatch[2] || quotedMatch[3] || quotedMatch[4] || quotedMatch[5] || quotedMatch[6] || quotedMatch[7]).trim();
+            } else {
+              // Take the first meaningful sentence
+              const sentences = correctionText.split(/[.!?]/).filter(s => s.trim().length > 20);
+              if (sentences.length > 0) {
+                firstCorrection = sentences[0].trim().replace(/^[>\s*]+/, "").trim();
+              }
+            }
+            if (firstCorrection) {
+              console.log("[getUserProfile] Extracted First Correction:", firstCorrection.substring(0, 100));
+              break;
+            }
+          }
+        }
+
+        // Extract ANGLE OF GROWTH
+        const angleOfGrowthPatterns = [
+          /(?:###?\s*9\.\s*ANGLE\s+OF\s+GROWTH|SECTION\s*9\s*[—–-]\s*Angle\s*of\s*Growth|Angle\s+of\s+Growth\s*\(Updated\))[^\n]*\n([\s\S]{0,1500}?)(?=\n---|\n###|\n\n##|\nSECTION\s+10|\nFirst\s+Correction)/i,
+          /Angle\s+of\s+Growth[:\s]*\n([\s\S]{0,1000}?)(?=\n---|\n###|\n\n##)/i,
+        ];
+
+        for (const pattern of angleOfGrowthPatterns) {
+          const match = latestReportText.match(pattern);
+          if (match && match[1]) {
+            let angleText = match[1].trim();
+            // Look for "From X → to Y" pattern
+            const fromToMatch = angleText.match(/(?:From|from)\s*["']?([^"'\n→–-]+)["']?\s*[→–-]+\s*(?:to)?\s*["']?([^"'\n]+?)["']?(?:\.|$|\n)/i);
+            if (fromToMatch) {
+              angleOfGrowth = `From "${fromToMatch[1].trim()}" to "${fromToMatch[2].trim()}"`;
+            } else {
+              // Extract the current angle or growth direction
+              const currentAngleMatch = angleText.match(/\*\*Current\s+Angle:\*\*\s*\n?([^\n*]+)|Current\s+Angle[:\s]+([^\n]+)/i);
+              if (currentAngleMatch) {
+                angleOfGrowth = (currentAngleMatch[1] || currentAngleMatch[2]).trim();
+              } else {
+                // Take first meaningful line
+                const lines = angleText.split("\n").filter(l => l.trim().length > 20 && !l.match(/^Not:|^Why:|^\*\*/));
+                if (lines.length > 0) {
+                  angleOfGrowth = lines[0].trim();
+                }
+              }
+            }
+            if (angleOfGrowth) {
+              console.log("[getUserProfile] Extracted Angle of Growth:", angleOfGrowth.substring(0, 100));
+              break;
+            }
+          }
+        }
+
+        // Build goals array
+        if (firstCorrection) {
+          goals.push({
+            type: "first_correction",
+            title: "First Correction",
+            description: firstCorrection,
+          });
+        }
+        if (angleOfGrowth) {
+          goals.push({
+            type: "angle_of_growth",
+            title: "Angle of Growth",
+            description: angleOfGrowth,
+          });
+        }
+
+        // Also try to extract Discovery Recommendations if present
+        const discoveryRecsMatch = latestReportText.match(/DISCOVERY\s+RECOMMENDATIONS[^\n]*\n([\s\S]{0,2000}?)(?=\n---|\n###|\nUNLIMITED\s+CREATOR)/i);
+        if (discoveryRecsMatch && discoveryRecsMatch[1]) {
+          const recsText = discoveryRecsMatch[1];
+
+          // Extract Alignment Discoveries count
+          const alignmentMatch = recsText.match(/(\d+)\s*Alignment\s+Discover(?:y|ies)/i);
+          if (alignmentMatch) {
+            goals.push({
+              type: "discovery_recommendation",
+              title: "Alignment Discoveries",
+              description: `Complete ${alignmentMatch[1]} Alignment Discoveries`,
+            });
+          }
+
+          // Extract Freedom Discoveries count
+          const freedomMatch = recsText.match(/(\d+)\s*Freedom\s+Discover(?:y|ies)/i);
+          if (freedomMatch) {
+            goals.push({
+              type: "discovery_recommendation",
+              title: "Freedom Discoveries",
+              description: `Complete ${freedomMatch[1]} Freedom Discoveries`,
+            });
+          }
+
+          // Extract Prosperity Discoveries count
+          const prosperityMatch = recsText.match(/(\d+)\s*Prosperity\s+Discover(?:y|ies)/i);
+          if (prosperityMatch) {
+            goals.push({
+              type: "discovery_recommendation",
+              title: "Prosperity Discoveries",
+              description: `Complete ${prosperityMatch[1]} Prosperity Discoveries`,
+            });
+          }
+        }
+
+        console.log(`[getUserProfile] Extracted ${goals.length} goals from ${reportSource} report`);
+      } else {
+        console.log("[getUserProfile] No report text found for user");
+      }
+    } catch (error) {
+      console.error("[getUserProfile] Error extracting goals from report:", error);
+      // Fallback to metadata goals
+      goals = user.metadata?.goals || [];
+    }
+
+    // Extract personal data
+    const personalData = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      status: user.status,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      metadata: user.metadata || {},
+    };
+
+    // Extract membership level
+    const membership = user.membership || {};
+    const membershipLevel = {
+      isCreatorClub: membership.isCreatorClub || false,
+      level: membership.isCreatorClub ? "Creator Club" : "Standard",
+      products: membership.products || [],
+      offers: membership.offers || [],
+      lastUpdated: membership.lastUpdated || null,
+    };
+
+    // Format metrics
+    const formattedMetrics = {
+      signalOutput: currentMetrics.signalOutput || 0,
+      qgcActivation: currentMetrics.qgcActivation || 0,
+      consciousnessLevel: currentMetrics.consciousnessLevel || 0,
+      gravity: currentMetrics.gravity || 0,
+      signalCoherence: currentMetrics.signalCoherence || 0,
+      gravityDepth: currentMetrics.gravityDepth || 2,
+      vortexSignature: currentMetrics.vortexSignature || null,
+      eo: currentMetrics.eo || null,
+      lack: currentMetrics.lack || null,
+      avoid: currentMetrics.avoid || null,
+      lastUpdated:
+        existingDiagnostic?.updatedAt || existingDiagnostic?.createdAt || null,
+    };
+
+    return successResponse(res, "User profile fetched successfully", {
+      metrics: formattedMetrics,
+      goals: goals,
+      personalData: personalData,
+      membership: membershipLevel,
+      discoveryCounts: discoveryCounts,
+    });
+  } catch (error) {
+    console.error("[getUserProfile] Error:", error);
+    return errorResponse(res, "Failed to fetch user profile", 500);
+  }
+};
+
 module.exports = {
   listUsers,
   createUser,
   getMe,
   userReport,
   updateUserClubMembership,
+  getUserProfile,
 };

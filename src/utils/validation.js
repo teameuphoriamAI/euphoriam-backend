@@ -417,7 +417,10 @@ export async function extractReportDate(diagnostic) {
   if (date) {
     const dateObj = new Date(date);
     // Format as "Jan 10, 2024 14:30 UTC"
-    const month = dateObj.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+    const month = dateObj.toLocaleString("en-US", {
+      month: "short",
+      timeZone: "UTC",
+    });
     const day = dateObj.getUTCDate();
     const year = dateObj.getUTCFullYear();
     const hours = String(dateObj.getUTCHours()).padStart(2, "0");
@@ -515,9 +518,9 @@ export async function detectUserWantsNewDiagnostic({
   );
 
   // Check if assistant just said they're ready to generate the current report
-  const lastAssistantMessage = transcript
-    .filter((m) => m?.role === "assistant")
-    .slice(-1)[0]?.content || "";
+  const lastAssistantMessage =
+    transcript.filter((m) => m?.role === "assistant").slice(-1)[0]?.content ||
+    "";
   const assistantSaysReadyToGenerate =
     /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|can generate|will generate)/i.test(
       lastAssistantMessage
@@ -526,9 +529,10 @@ export async function detectUserWantsNewDiagnostic({
   // If assistant just said they're ready to generate, and user says "generate it" or similar,
   // they want to generate the CURRENT report, not start a NEW diagnostic
   if (assistantSaysReadyToGenerate) {
-    const userWantsToGenerateCurrent = /^(generate|generate it|generate my report|generate report|yes|go ahead|do it|please|ok)$/i.test(
-      userMessage.trim()
-    );
+    const userWantsToGenerateCurrent =
+      /^(generate|generate it|generate my report|generate report|yes|go ahead|do it|please|ok)$/i.test(
+        userMessage.trim()
+      );
     if (userWantsToGenerateCurrent) {
       console.log(
         "[detectUserWantsNewDiagnostic] Assistant is ready to generate, user wants to generate CURRENT report (not new diagnostic)"
@@ -613,6 +617,7 @@ Reply:`;
 export async function detectUserWantsToEndOrGenerateReport({
   userMessage,
   transcript = [],
+  wantsNewDiagnosticVal = null, // Optional pre-calculated value to save an LLM call
 }) {
   console.log(
     "[detectUserWantsToEndOrGenerateReport] Checking user message:",
@@ -620,10 +625,13 @@ export async function detectUserWantsToEndOrGenerateReport({
   );
 
   // FIRST: Check if user wants a new diagnostic - if so, they DON'T want to end/generate report
-  const wantsNewDiagnostic = await detectUserWantsNewDiagnostic({
-    userMessage,
-    transcript,
-  });
+  const wantsNewDiagnostic =
+    wantsNewDiagnosticVal !== null
+      ? wantsNewDiagnosticVal
+      : await detectUserWantsNewDiagnostic({
+          userMessage,
+          transcript,
+        });
 
   console.log(
     "[detectUserWantsToEndOrGenerateReport] wantsNewDiagnostic:",
@@ -759,6 +767,85 @@ Reply:`;
   }
 }
 
+// LLM-based detection: Combined intent classifier to save calls
+export async function detectCombinedIntents({
+  userMessage,
+  transcript = [],
+  lastAssistantQuestion = "",
+}) {
+  if (!userMessage) {
+    return {
+      wantsNewDiagnostic: false,
+      isAnswer: false,
+      wantsToEndOrGenerate: false,
+    };
+  }
+
+  // Check for assistant ready to generate state
+  const assistantSaysReadyToGenerate =
+    /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|can generate|will generate)/i.test(
+      lastAssistantQuestion
+    );
+
+  const prompt = `
+You are an intent classifier for a wellness chatbot. Analyize the user's latest message and the provided context.
+User's latest message: "${userMessage}"
+Last Assistant Question: "${lastAssistantQuestion || "N/A"}"
+
+Recent conversation context (last 3 messages):
+${JSON.stringify(transcript.slice(-3), null, 2)}
+
+Return ONLY a valid JSON object with these exactly 3 boolean flags:
+{
+  "wantsNewDiagnostic": boolean,
+  "isAnswer": boolean,
+  "wantsToEndOrGenerate": boolean
+}
+
+RULES for "wantsNewDiagnostic":
+- "yes" ONLY if user EXPLICITLY wants to start a BRAND NEW diagnostic from scratch (e.g., "start new diagnostic", "reset everything").
+- If assistant is ready to generate and user says "yes" or "go ahead", this is NO (they want to generate CURRENT report).
+
+RULES for "isAnswer":
+- "yes" if the message attempts to answer the last assistant question.
+- "no" if it is just a question back, a request for clarification, or completely unrelated.
+- Short answers like "yes", "alone", "at home" are DEFINITELY answers.
+
+RULES for "wantsToEndOrGenerate":
+- "yes" if user EXPLICITLY wants to end, finish, stop, generate report, or email report.
+- "no" for casual responses like "doing good", "I'm good", or "thanks".
+- "no" if they just want a NEW diagnostic.
+- If assistant just said they are ready and user says "generate it", this is YES.
+
+REPLY ONLY WITH JSON.`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_completion_tokens: 60,
+      response_format: { type: "json_object" },
+    });
+
+    const result = JSON.parse(resp?.choices?.[0]?.message?.content || "{}");
+    console.log("[detectCombinedIntents] result:", result);
+
+    return {
+      wantsNewDiagnostic: result.wantsNewDiagnostic === true,
+      isAnswer: result.isAnswer === true,
+      wantsToEndOrGenerate: result.wantsToEndOrGenerate === true,
+    };
+  } catch (err) {
+    console.error("[detectCombinedIntents] ❌ LLM error", err);
+    return {
+      wantsNewDiagnostic: false,
+      isAnswer: true, // Default to answer to be safe
+      wantsToEndOrGenerate: false,
+    };
+  }
+}
+
 // LLM-based detection: Check if bot's message signals the conversation should end
 export async function detectBotSignaledEnd({
   lastAssistantMessage,
@@ -766,47 +853,56 @@ export async function detectBotSignaledEnd({
 }) {
   if (!lastAssistantMessage?.content) return false;
 
+  const msgContent = lastAssistantMessage.content;
+
+  // CRITICAL: If the message contains a question mark (especially at the end) or asks for input,
+  // it's very likely continuing the conversation, NOT ending it
+  const hasQuestion =
+    /\?[\s]*$/.test(msgContent) || /\?[\s]*\n/.test(msgContent);
+  const asksPhrases =
+    /(feel free to share|what do you|how do you|can you|tell me|share your|answer that|what happened|what was)/i.test(
+      msgContent
+    );
+
+  if (hasQuestion || asksPhrases) {
+    // Only proceed if there are also strong end signals - otherwise return false
+    const strongEndSignals =
+      /(we'll pause here|pause here and let this integrate|let this integrate|reached today's integration limit|we stop here|this is enough for today|let this settle|work is complete|going to generate|lock this into.*report)/i;
+    if (!strongEndSignals.test(msgContent)) {
+      return false;
+    }
+  }
+
   const prompt = `
 You are a binary classifier. Determine if the assistant's message signals that the conversation should end.
 
-Assistant's last message: "${lastAssistantMessage.content}"
+Assistant's last message: "${msgContent}"
 
 Recent conversation (last 3 messages):
 ${JSON.stringify(transcript.slice(-3), null, 2)}
 
-Look for phrases like:
-- "This is enough for today"
-- "No more work is required"
-- "We stop here"
-- "This is enough"
-- "We stop here and let this land"
+IMPORTANT: The assistant is ENDING the conversation ONLY if it uses explicit closure phrases like:
 - "We'll pause here and let this integrate"
 - "pause here and let this integrate"
 - "let this integrate"
 - "You've reached today's integration limit"
 - "reached today's integration limit"
 - "Let this settle — we'll continue tomorrow"
-- "Let this settle"
-- "we'll continue tomorrow"
-- "For now: you're not stuck"
-- "I'm going to lock this into a clean Euphoriam diagnostic report"
+- "we stop here"
+- "This is enough for today"
+- "No more work is required"
+- "the work is complete"
+- "I'm going to generate your report"
 - "lock this into a clean Euphoriam diagnostic report"
-- "generate a report"
-- "generate your updated diagnostic report"
-- "We'll pause here. Let this settle."
-- "I'm going to generate"
-- "the work is complete for this phase"
-- "work is complete"
-- "That's it" (when followed by completion context, not a question)
-- "That's the confirmation" (when followed by completion context)
-- "That answer means the work is complete"
-- Any indication that the session is concluding, pausing, or a report should be generated
+
+CRITICAL: If the assistant is ASKING A QUESTION (e.g., "How does this feel?", "What happened?", "Can you share?", "Feel free to share your thoughts"), the answer is ALWAYS "no".
+CRITICAL: If the message ends with a question mark (?), the answer is almost always "no".
+CRITICAL: Phrases like "Thank you for your response" followed by more questions are NOT end signals.
 
 Rules:
 - Reply ONLY "yes" or "no"
-- "yes" if the assistant clearly signals the conversation should end or pause
-- "no" if the assistant is asking another question or continuing the conversation
-- Be sensitive to natural ending phrases
+- "yes" ONLY if the assistant clearly signals the conversation should end or pause with explicit closure language
+- "no" if the assistant is asking another question, requesting input, or continuing the conversation
 
 Reply:`;
 

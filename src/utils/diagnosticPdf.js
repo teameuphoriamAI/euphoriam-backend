@@ -10,34 +10,40 @@ const ensureDir = (dirPath) => {
 
 const addSection = (doc, title, bodyLines) => {
   if (!bodyLines || bodyLines.length === 0) return;
-  const sectionWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const sectionWidth =
+    doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(0.6);
-  doc.fontSize(13).text(title, { 
+  doc.fontSize(13).text(title, {
     underline: true,
     width: sectionWidth,
     lineGap: 2,
   });
   doc.moveDown(0.2);
-  bodyLines.forEach((line) => doc.fontSize(11).text(line, {
-    width: sectionWidth,
-    lineGap: 2,
-  }));
+  bodyLines.forEach((line) =>
+    doc.fontSize(11).text(line, {
+      width: sectionWidth,
+      lineGap: 2,
+    })
+  );
 };
 
 const addList = (doc, title, items) => {
   if (!items || items.length === 0) return;
-  const listWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const listWidth =
+    doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(0.6);
-  doc.fontSize(13).text(title, { 
+  doc.fontSize(13).text(title, {
     underline: true,
     width: listWidth,
     lineGap: 2,
   });
   doc.moveDown(0.2);
-  items.forEach((item) => doc.fontSize(11).text(`• ${item}`, {
-    width: listWidth,
-    lineGap: 2,
-  }));
+  items.forEach((item) =>
+    doc.fontSize(11).text(`• ${item}`, {
+      width: listWidth,
+      lineGap: 2,
+    })
+  );
 };
 
 const renderGauge = (value) => {
@@ -92,23 +98,18 @@ const drawMetricsTable = (doc, metrics) => {
 };
 
 const drawMetricsInterpretationTable = (doc) => {
-  const startX = doc.x;
-  let y = doc.y;
-  const pageWidth = doc.page.width;
-  const pageMargins = doc.page.margins;
-  const availableWidth = pageWidth - pageMargins.left - pageMargins.right;
-  
-  // Column widths for 5 columns
+  // Hardcoded fallback table (if no specific table provided in text)
+  const availableWidth =
+    doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const colWidths = [
-    availableWidth * 0.18, // Metric
-    availableWidth * 0.22, // What It Represents
-    availableWidth * 0.20, // Low (0-39)
-    availableWidth * 0.20, // Mid (40-69)
-    availableWidth * 0.20, // High (70-100)
+    availableWidth * 0.18,
+    availableWidth * 0.22,
+    availableWidth * 0.2,
+    availableWidth * 0.2,
+    availableWidth * 0.2,
   ];
 
   const tableData = [
-    // Header row
     [
       "Metric",
       "What It Represents",
@@ -116,7 +117,6 @@ const drawMetricsInterpretationTable = (doc) => {
       "Mid (40-69)",
       "High (70-100)",
     ],
-    // QGC Activation
     [
       "QGC Activation",
       "Access to your native creation codes",
@@ -124,7 +124,6 @@ const drawMetricsInterpretationTable = (doc) => {
       "Codes intermittent; talent present, inconsistent",
       "Codes online; expression is potent and clear",
     ],
-    // Consciousness Level
     [
       "Consciousness Level",
       "Vantage point of perception and authorship",
@@ -132,7 +131,6 @@ const drawMetricsInterpretationTable = (doc) => {
       "Mixed perception; oscillates under stress",
       "Author-level perception; stable self-leadership",
     ],
-    // Gravity
     [
       "Gravity",
       "Pull of old identity and inherited roles",
@@ -140,7 +138,6 @@ const drawMetricsInterpretationTable = (doc) => {
       "Moderate pull; requires structure to stabilize",
       "Strong pull; loyalty patterns dominate unless addressed",
     ],
-    // Signal Coherence
     [
       "Signal Coherence",
       "Alignment between truth, emotion, choice, action",
@@ -148,7 +145,6 @@ const drawMetricsInterpretationTable = (doc) => {
       "Partial alignment; results come with effort",
       "Clean alignment; reality responds quickly",
     ],
-    // Signal Output
     [
       "Signal Output",
       "Broadcast strength to reality (IP-protected)",
@@ -158,16 +154,22 @@ const drawMetricsInterpretationTable = (doc) => {
     ],
   ];
 
+  renderTableData(doc, tableData, colWidths);
+};
+
+const renderTableData = (doc, tableData, colWidths) => {
+  const startX = doc.x;
+  let y = doc.y;
+  const padding = 5;
   const headerRowHeight = 25;
-  const dataRowHeight = 35; // Taller rows for multi-line text
 
   // Draw header row
   doc.font("Helvetica-Bold").fontSize(9);
   let x = startX;
   tableData[0].forEach((cell, j) => {
     doc.rect(x, y, colWidths[j], headerRowHeight).stroke();
-    doc.text(cell, x + 3, y + 5, {
-      width: colWidths[j] - 6,
+    doc.text(cell, x + padding, y + padding, {
+      width: colWidths[j] - 2 * padding,
       align: "left",
       lineGap: 1,
     });
@@ -179,47 +181,53 @@ const drawMetricsInterpretationTable = (doc) => {
   doc.font("Helvetica").fontSize(8);
   for (let i = 1; i < tableData.length; i++) {
     const row = tableData[i];
-    
+
     // Check if we need a new page
-    const estimatedRowHeight = dataRowHeight;
-    if (y + estimatedRowHeight > doc.page.height - doc.page.margins.bottom) {
+    if (y > doc.page.height - doc.page.margins.bottom - 50) {
+      // -50 for some buffer
       doc.addPage();
       y = doc.page.margins.top;
     }
-    
+
     x = startX;
-    
-    // Calculate row height based on longest cell content
-    let maxLines = 1;
-    row.forEach((cell, cellIndex) => {
-      // Estimate lines by character count and width
-      const cellWidth = colWidths[cellIndex] - 6;
-      const estimatedCharsPerLine = Math.floor(cellWidth / 4); // Rough estimate: 4px per char
-      const cellLines = Math.ceil(cell.length / estimatedCharsPerLine) || 1;
-      maxLines = Math.max(maxLines, cellLines);
+
+    // Calculate row height
+    let maxHeight = 30; // Minimum row height
+    row.forEach((cell, j) => {
+      const height =
+        doc.heightOfString(cell, { width: colWidths[j] - 2 * padding }) +
+        2 * padding;
+      if (height > maxHeight) maxHeight = height;
     });
-    const currentRowHeight = Math.max(dataRowHeight, maxLines * 10 + 10);
 
     row.forEach((cell, j) => {
-      doc.rect(x, y, colWidths[j], currentRowHeight).stroke();
-      doc.text(cell, x + 3, y + 5, {
-        width: colWidths[j] - 6,
+      doc.rect(x, y, colWidths[j], maxHeight).stroke();
+      doc.text(cell, x + padding, y + padding, {
+        width: colWidths[j] - 2 * padding,
         align: "left",
         lineGap: 1,
       });
       x += colWidths[j];
     });
-    y += currentRowHeight;
+    y += maxHeight;
   }
 
   doc.moveDown(2);
-  // Reset x position to left margin after drawing table
   doc.x = doc.page.margins.left;
-  doc.font("Helvetica").fontSize(11); // Reset to default font size
+  doc.font("Helvetica").fontSize(11);
 };
 
-const isAllCapsHeader = (line) =>
-  /^[A-Z0-9][A-Z0-9\s/&()'".:-]{6,}$/.test(line) && line === line.toUpperCase();
+const isAllCapsHeader = (line) => {
+  if (!line) return false;
+  const cleanLine = line.replace(/^[\u2000-\u2BFF\s]+/, "").trim(); // Remove leading emojis/symbols
+  if (cleanLine.length < 6) return false;
+  // Allow letters, numbers, and common punctuation/symbols including TM and dashes
+  return (
+    /^[A-Z0-9]/.test(cleanLine) &&
+    cleanLine === cleanLine.toUpperCase() &&
+    !/^[0-9.]+$/.test(cleanLine)
+  ); // Don't match just numbers (like 1.4)
+};
 
 /**
  * Cleans text by removing problematic special characters
@@ -244,10 +252,10 @@ const cleanText = (text) => {
 const renderTextWithBold = (doc, text, options = {}) => {
   const { width, lineGap = 2, indent = 0 } = options;
   const fontSize = doc._fontSize || 11;
-  
+
   // Clean text first
   let cleanTextValue = cleanText(text);
-  
+
   // Check if text contains bold markers
   if (!cleanTextValue.includes("**")) {
     // No bold formatting, render normally
@@ -269,7 +277,7 @@ const renderTextWithBold = (doc, text, options = {}) => {
         segments.push({ text: normalText, bold: false });
       }
     }
-    
+
     // Add bold text
     segments.push({ text: match[1], bold: true });
     lastIndex = match.index + match[0].length;
@@ -299,12 +307,15 @@ const renderTextWithBold = (doc, text, options = {}) => {
       doc.font("Helvetica").fontSize(fontSize);
     }
 
+    const isLast = index === segments.length - 1;
+
     // Render segment - let PDFKit handle wrapping
-    // Only add lineGap on the last segment
+    // Use continued: true for all but the last segment so they flow on the same line
     doc.text(segment.text, {
       width: width,
-      lineGap: index === segments.length - 1 ? lineGap : 0,
+      lineGap: isLast ? lineGap : 0,
       indent: index === 0 ? indent : 0, // Only indent first segment
+      continued: !isLast,
     });
   });
 
@@ -319,7 +330,8 @@ const renderStyledReport = (doc, text, metrics = {}) => {
   doc.fillColor("#111111");
 
   // Calculate available width for text (page width minus margins)
-  const availableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const availableWidth =
+    doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
   let skipUntilNextSection = false;
   let foundMetricsInterpretation = false;
@@ -333,12 +345,15 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     if (/##\s+METRICS\s+GAUGE/i.test(line) || /METRICS\s+GAUGE/i.test(line)) {
       inMetricsGaugeSection = true;
       doc.moveDown(0.5);
-      doc.font("Helvetica-Bold").fontSize(14).text("METRICS GAUGE (Current Snapshot)", {
-        width: availableWidth,
-        lineGap: 2,
-      });
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(14)
+        .text("METRICS GAUGE (Current Snapshot)", {
+          width: availableWidth,
+          lineGap: 2,
+        });
       doc.moveDown(0.3);
-      
+
       // Helper to draw a visual gauge bar using rectangles (more reliable than Unicode)
       const drawGaugeBar = (doc, startX, startY, value, totalBlocks = 12) => {
         const v = Math.max(0, Math.min(100, Number(value || 0)));
@@ -346,12 +361,12 @@ const renderStyledReport = (doc, text, metrics = {}) => {
         const blockWidth = 8; // Width of each block in points
         const blockHeight = 10; // Height of each block in points
         const blockGap = 1; // Gap between blocks
-        
+
         // Save current fill color
         const savedFillColor = doc._fillColor;
-        
+
         let currentX = startX;
-        
+
         // Draw filled blocks (black)
         for (let i = 0; i < filled; i++) {
           doc
@@ -360,7 +375,7 @@ const renderStyledReport = (doc, text, metrics = {}) => {
             .fill();
           currentX += blockWidth + blockGap;
         }
-        
+
         // Draw empty blocks (white with gray border)
         for (let i = filled; i < totalBlocks; i++) {
           doc
@@ -371,21 +386,21 @@ const renderStyledReport = (doc, text, metrics = {}) => {
             .fillAndStroke();
           currentX += blockWidth + blockGap;
         }
-        
+
         // Restore fill color for text
         doc.fillColor(savedFillColor || "#111111");
-        
+
         return currentX; // Return the end X position
       };
-      
+
       // Helper to render a single line metric with proper spacing
       const renderMetricLine = (label, value, isPercentage = true) => {
         // Check if value is actually defined (not undefined, null, or NaN)
         const hasValue = value !== undefined && value !== null && !isNaN(value);
-        
+
         // Set font for label
         doc.font("Helvetica").fontSize(11);
-        
+
         // Calculate positions - everything on the same line
         const labelStartX = doc.page.margins.left;
         const currentY = doc.y;
@@ -397,14 +412,14 @@ const renderStyledReport = (doc, text, metrics = {}) => {
         const gaugeStartY = currentY + textBaselineOffset - blockHeight / 2;
         const totalBlockWidth = 12 * 8 + 11 * 1; // 12 blocks * 8pt + 11 gaps * 1pt = 107pt
         const valueStartX = gaugeStartX + totalBlockWidth + 8; // 8pt gap after gauge
-        
+
         // Draw label on the same line - use absolute positioning to prevent wrapping
         const labelText = label.replace(/:/g, ":"); // Ensure colon is included
         doc.text(labelText, labelStartX, currentY, {
           width: labelWidth,
           lineGap: 0,
         });
-        
+
         if (!hasValue) {
           // Draw empty gauge
           drawGaugeBar(doc, gaugeStartX, gaugeStartY, 0);
@@ -416,17 +431,21 @@ const renderStyledReport = (doc, text, metrics = {}) => {
           doc.moveDown(0.2);
           return;
         }
-        
+
         const displayValue = Number(value);
         // For gauge visualization: convert to percentage
         // For Consciousness Level (0-5), convert to percentage for visual bar
-        const percentageForGauge = isPercentage ? displayValue : (displayValue / 5) * 100;
+        const percentageForGauge = isPercentage
+          ? displayValue
+          : (displayValue / 5) * 100;
         // For display text: show percentage for percentage metrics, raw value for Consciousness Level
-        const valueText = isPercentage ? `${Math.round(displayValue)}%` : `${displayValue}`;
-        
+        const valueText = isPercentage
+          ? `${Math.round(displayValue)}%`
+          : `${displayValue}`;
+
         // Draw gauge bar
         drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);
-        
+
         // Draw value text (percentage) - on the same line
         doc.font("Helvetica").fontSize(11).fillColor("#111111");
         doc.text(valueText, valueStartX, currentY, {
@@ -434,38 +453,51 @@ const renderStyledReport = (doc, text, metrics = {}) => {
           align: "left",
           lineGap: 0,
         });
-        
+
         // Move to next line for next metric
         doc.moveDown(0.2);
       };
-      
-      console.log("[diagnosticPdf] Rendering METRICS GAUGE with metrics:", metrics);
-      
+
+      console.log(
+        "[diagnosticPdf] Rendering METRICS GAUGE with metrics:",
+        metrics
+      );
+
       // Render all metrics with minimal spacing (spacing is handled inside renderMetricLine)
       renderMetricLine("QGC Activation:", metrics.qgcActivation, true);
-      renderMetricLine("Consciousness Level:", metrics.consciousnessLevel, false);
+      renderMetricLine(
+        "Consciousness Level:",
+        metrics.consciousnessLevel,
+        false
+      );
       renderMetricLine("Gravity (Load):", metrics.gravity, true);
       renderMetricLine("Signal Coherence:", metrics.signalCoherence, true);
       renderMetricLine("Signal Output:", metrics.signalOutput, true);
-      
+
       // Small spacing after the metrics section
       doc.moveDown(0.3);
-      
+
       continue;
     }
-    
+
     // Skip lines in METRICS GAUGE section until we hit the next section
     if (inMetricsGaugeSection) {
       if (
-        (!line.trim() && i + 1 < lines.length && 
-         (isAllCapsHeader(lines[i + 1]?.trim()) || 
-          lines[i + 1]?.trim().startsWith("SECTION") ||
-          lines[i + 1]?.trim().startsWith("PHASE") ||
-          lines[i + 1]?.trim().startsWith("##") ||
-          lines[i + 1]?.trim() === "----------------------------------------")) ||
+        (!line.trim() &&
+          i + 1 < lines.length &&
+          (isAllCapsHeader(lines[i + 1]?.trim()) ||
+            /^SECTION\s+\d+/i.test(lines[i + 1]?.trim()) ||
+            /^PHASE\s+\d+/i.test(lines[i + 1]?.trim()) ||
+            lines[i + 1]?.trim().startsWith("##") ||
+            lines[i + 1]?.trim().startsWith("---") ||
+            lines[i + 1]?.trim() ===
+              "----------------------------------------" ||
+            lines[i + 1]?.trim() ===
+              "────────────────────────────────────────")) ||
         line === "----------------------------------------" ||
-        /^SECTION\s+\d+\s+—\s+/.test(line) ||
-        /^PHASE\s+\d+\s+—\s+/.test(line) ||
+        line === "────────────────────────────────────────" ||
+        /^SECTION\s+\d+/i.test(line) ||
+        /^PHASE\s+\d+/i.test(line) ||
         /^##\s+/.test(line) ||
         (isAllCapsHeader(line) && !/METRICS\s+GAUGE/i.test(line))
       ) {
@@ -483,17 +515,54 @@ const renderStyledReport = (doc, text, metrics = {}) => {
       /METRICS INTERPRETATION/i.test(line)
     ) {
       foundMetricsInterpretation = true;
-      skipUntilNextSection = true;
       doc.moveDown(0.5);
-      doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE", {
-        width: availableWidth,
-        lineGap: 2,
-      });
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(12)
+        .text("METRICS INTERPRETATION TABLE", {
+          width: availableWidth,
+          lineGap: 2,
+        });
       doc.moveDown(0.3);
+
+      // Peek ahead to see if there's a custom table
+      let tableLines = [];
+      let j = i + 1;
+      // Skip empty lines after header
+      while (j < lines.length && !lines[j].trim()) j++;
+
+      if (j < lines.length && lines[j].includes("|")) {
+        while (j < lines.length && lines[j].includes("|")) {
+          tableLines.push(lines[j]);
+          j++;
+        }
+
+        if (tableLines.length > 0) {
+          const tableData = tableLines.map((row) =>
+            row.split("|").map((c) => c.trim())
+          );
+          if (tableData.length > 0) {
+            const numCols = tableData[0].length;
+            const colWidths = Array(numCols).fill(availableWidth / numCols);
+            // Adjust col widths for specific 4-col interpretation table
+            if (numCols === 4) {
+              colWidths[0] = availableWidth * 0.15; // Metric
+              colWidths[1] = availableWidth * 0.3; // Evidence
+              colWidths[2] = availableWidth * 0.45; // Interpretation
+              colWidths[3] = availableWidth * 0.1; // Result
+            }
+            renderTableData(doc, tableData, colWidths);
+            i = j - 1; // Advance pointer
+            skipUntilNextSection = false; // We handled it
+            foundMetricsInterpretation = false;
+            continue;
+          }
+        }
+      }
+
+      // Fallback
       drawMetricsInterpretationTable(doc);
-      // Reset document position to left margin after drawing table
-      doc.x = doc.page.margins.left;
-      doc.font("Helvetica").fontSize(11); // Reset font
+      skipUntilNextSection = true;
       continue;
     }
 
@@ -501,15 +570,21 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     if (skipUntilNextSection) {
       // Check if we've hit a new section (empty line followed by header, or divider, or section marker)
       if (
-        (!line.trim() && i + 1 < lines.length && 
-         (isAllCapsHeader(lines[i + 1]?.trim()) || 
-          lines[i + 1]?.trim().startsWith("SECTION") ||
-          lines[i + 1]?.trim().startsWith("PHASE") ||
-          lines[i + 1]?.trim().startsWith("##") ||
-          lines[i + 1]?.trim() === "----------------------------------------")) ||
+        (!line.trim() &&
+          i + 1 < lines.length &&
+          (isAllCapsHeader(lines[i + 1]?.trim()) ||
+            /^SECTION\s+\d+/i.test(lines[i + 1]?.trim()) ||
+            /^PHASE\s+\d+/i.test(lines[i + 1]?.trim()) ||
+            lines[i + 1]?.trim().startsWith("##") ||
+            lines[i + 1]?.trim().startsWith("---") ||
+            lines[i + 1]?.trim() ===
+              "----------------------------------------" ||
+            lines[i + 1]?.trim() ===
+              "────────────────────────────────────────")) ||
         line === "----------------------------------------" ||
-        /^SECTION\s+\d+\s+—\s+/.test(line) ||
-        /^PHASE\s+\d+\s+—\s+/.test(line) ||
+        line === "────────────────────────────────────────" ||
+        /^SECTION\s+\d+/i.test(line) ||
+        /^PHASE\s+\d+/i.test(line) ||
         /^##\s+/.test(line) ||
         (isAllCapsHeader(line) && line !== "METRICS INTERPRETATION TABLE")
       ) {
@@ -526,6 +601,20 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     // Always ensure x position is at left margin before processing any line
     doc.x = doc.page.margins.left;
 
+    // Detect metadata lines like "Client: Yashal"
+    if (
+      /^(Client|Report Type|Version|Date|Status|Prepared by|Status):/i.test(
+        line
+      )
+    ) {
+      const parts = line.split(":");
+      const label = parts[0] + ":";
+      const value = parts.slice(1).join(":").trim();
+      doc.font("Helvetica-Bold").fontSize(11).text(label, { continued: true });
+      doc.font("Helvetica").text(" " + value, { width: availableWidth });
+      continue;
+    }
+
     if (!line.trim()) {
       doc.moveDown(0.8);
       continue;
@@ -537,7 +626,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
       continue;
     }
 
-    if (line === "----------------------------------------") {
+    if (
+      line === "----------------------------------------" ||
+      line === "────────────────────────────────────────"
+    ) {
       drawDivider(doc);
       continue;
     }
@@ -558,7 +650,14 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     if (/^#{1,6}\s+/.test(line)) {
       const headerText = line.replace(/^#{1,6}\s+/, "").trim();
       const headerLevel = (line.match(/^#+/)?.[0] || "").length;
-      const fontSize = headerLevel === 1 ? 16 : headerLevel === 2 ? 14 : headerLevel === 3 ? 13 : 12;
+      const fontSize =
+        headerLevel === 1
+          ? 16
+          : headerLevel === 2
+          ? 14
+          : headerLevel === 3
+          ? 13
+          : 12;
       doc.moveDown(0.3);
       doc.font("Helvetica-Bold").fontSize(fontSize).text(headerText, {
         width: availableWidth,
@@ -570,7 +669,7 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     }
 
     // Section headers
-    if (/^SECTION\s+\d+\s+—\s+/.test(line)) {
+    if (/^SECTION\s+\d+/i.test(line)) {
       doc.moveDown(0.2);
       doc.font("Helvetica-Bold").fontSize(13).text(line, {
         width: availableWidth,
@@ -582,7 +681,7 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     }
 
     // Phase headers
-    if (/^PHASE\s+\d+\s+—\s+/.test(line)) {
+    if (/^PHASE\s+\d+/i.test(line)) {
       doc.moveDown(0.2);
       doc.font("Helvetica-Bold").fontSize(12).text(line, {
         width: availableWidth,
@@ -616,9 +715,9 @@ const renderStyledReport = (doc, text, metrics = {}) => {
       continue;
     }
 
-    // Bullets: "- ..." or "• ..."
-    if (/^[\-\•]\s+/.test(line)) {
-      const bulletText = line.replace(/^[\-\•]\s+/, "").trim();
+    // Bullets: "- ...", "• ...", or "● ..."
+    if (/^[\-\•\●]\s+/.test(line)) {
+      const bulletText = line.replace(/^[\-\•\●]\s+/, "").trim();
       // Clean the text and render with bold support
       const cleanBulletText = cleanText(bulletText);
       renderTextWithBold(doc, `• ${cleanBulletText}`, {
@@ -643,15 +742,18 @@ const renderStyledReport = (doc, text, metrics = {}) => {
  */
 const extractWeekFromTitle = (title) => {
   if (!title) return null;
-  
+
   const titleLower = title.toLowerCase();
-  
+
   // Handle "Week Seven (B)" or "Week 7 (B)" -> "7B"
-  if (titleLower.includes("week seven (b)") || titleLower.includes("week 7 (b)") || 
-      (titleLower.includes("week seven") && titleLower.includes("(b)"))) {
+  if (
+    titleLower.includes("week seven (b)") ||
+    titleLower.includes("week 7 (b)") ||
+    (titleLower.includes("week seven") && titleLower.includes("(b)"))
+  ) {
     return "7B";
   }
-  
+
   // Handle numeric weeks: "Week 12", "Week 4"
   const weekMatch = title.match(/week\s+(\d+)/i);
   if (weekMatch) {
@@ -662,13 +764,23 @@ const extractWeekFromTitle = (title) => {
     }
     return weekNum;
   }
-  
+
   // Handle written weeks: "Week One", "Week Two", etc.
   const weekNames = {
-    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
-    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
   };
-  
+
   for (const [name, num] of Object.entries(weekNames)) {
     if (titleLower.includes(`week ${name}`)) {
       // Check if it's "Week Seven (B)"
@@ -678,7 +790,7 @@ const extractWeekFromTitle = (title) => {
       return num;
     }
   }
-  
+
   return null;
 };
 
@@ -688,22 +800,26 @@ const extractWeekFromTitle = (title) => {
 const fetchCourseWeekTitles = async (courseId = "2148785745") => {
   try {
     // Dynamic import for ES module
-    const { getCourseWithModulesAndLessons, extractVideosFromCourse } = await import("../controllers/kajabi.js");
+    const { getCourseWithModulesAndLessons, extractVideosFromCourse } =
+      await import("../controllers/kajabi.js");
     const courseData = await getCourseWithModulesAndLessons(courseId);
     const videos = extractVideosFromCourse(courseData);
-    
+
     // Build mapping: week number -> video title
     const weekToTitle = {};
     videos.forEach((video) => {
       const week = extractWeekFromTitle(video.title);
       if (week && !weekToTitle[week]) {
         // Prefer "Live & Journey" videos, but fallback to any week video
-        if (video.title.toLowerCase().includes("live & journey") || !weekToTitle[week]) {
+        if (
+          video.title.toLowerCase().includes("live & journey") ||
+          !weekToTitle[week]
+        ) {
           weekToTitle[week] = video.title;
         }
       }
     });
-    
+
     return weekToTitle;
   } catch (err) {
     console.error("[diagnosticPdf] Error fetching course videos:", err.message);
@@ -715,7 +831,11 @@ const fetchCourseWeekTitles = async (courseId = "2148785745") => {
  * Generate week-wise recommendations for Unlimited Created videos
  * based on user's current metrics and state
  */
-const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = {}, weekTitles = {}) => {
+const generateUnlimitedCreatedRecommendations = async (
+  metrics = {},
+  aiReport = {},
+  weekTitles = {}
+) => {
   const gravity = metrics.gravity || 0;
   const signalOutput = metrics.signalOutput || 0;
   const signalCoherence = metrics.signalCoherence || 0;
@@ -723,7 +843,8 @@ const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = 
   const qgcActivation = metrics.qgcActivation || 0;
 
   // Extract structure type and vortex status from report if available
-  const reportText = typeof aiReport === "string" ? aiReport : JSON.stringify(aiReport);
+  const reportText =
+    typeof aiReport === "string" ? aiReport : JSON.stringify(aiReport);
   const hasHighGravity = gravity >= 70;
   const hasLowSignalOutput = signalOutput < 30;
   const hasLowCoherence = signalCoherence < 70;
@@ -761,19 +882,28 @@ const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = 
   // Recommended when: High gravity, low signal output, or low coherence
   if (hasHighGravity || hasLowSignalOutput || hasLowCoherence) {
     // Week 4 — Fear Field & Power Expression (for high gravity or fear-based patterns)
-    if (hasHighGravity || (reportText && /fear|anxiety|worry/i.test(reportText))) {
+    if (
+      hasHighGravity ||
+      (reportText && /fear|anxiety|worry/i.test(reportText))
+    ) {
       recommendations.phase1.push({ week: 4, title: getWeekTitle(4) });
     }
 
     // Week 6 — Lineage Rules (for lineage patterns or inherited structures)
-    if (reportText && /lineage|father|mother|grandfather|family|inherited/i.test(reportText)) {
+    if (
+      reportText &&
+      /lineage|father|mother|grandfather|family|inherited/i.test(reportText)
+    ) {
       recommendations.phase1.push({ week: 6, title: getWeekTitle(6) });
     }
 
     // Week 7B — Visibility, Witch Lineage, Power Safety (for visibility issues or power safety)
     if (
       hasLowSignalOutput ||
-      (reportText && /visibility|invisible|witch|power.*safety|safety.*power/i.test(reportText))
+      (reportText &&
+        /visibility|invisible|witch|power.*safety|safety.*power/i.test(
+          reportText
+        ))
     ) {
       recommendations.phase1.push({ week: "7B", title: getWeekTitle("7B") });
     }
@@ -789,14 +919,25 @@ const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = 
 
   // PHASE 2 — Stabilise Identity
   // Recommended when: Low CL, low QGC, or identity instability
-  if (hasLowCL || hasLowQGC || (reportText && /identity|structure.*type|sovereignty/i.test(reportText))) {
+  if (
+    hasLowCL ||
+    hasLowQGC ||
+    (reportText && /identity|structure.*type|sovereignty/i.test(reportText))
+  ) {
     // Week 2 — Rising Out of Environment (for environment/sovereignty issues)
-    if (hasLowCL || (reportText && /environment|sovereignty|rising/i.test(reportText))) {
+    if (
+      hasLowCL ||
+      (reportText && /environment|sovereignty|rising/i.test(reportText))
+    ) {
       recommendations.phase2.push({ week: 2, title: getWeekTitle(2) });
     }
 
     // Week 3 — Identity as Creator (for identity/creator embodiment)
-    if (hasLowQGC || (reportText && /creator|identity|embodiment|code.*holder/i.test(reportText))) {
+    if (
+      hasLowQGC ||
+      (reportText &&
+        /creator|identity|embodiment|code.*holder/i.test(reportText))
+    ) {
       recommendations.phase2.push({ week: 3, title: getWeekTitle(3) });
     }
   }
@@ -806,10 +947,14 @@ const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = 
   if (
     signalOutput >= 30 ||
     consciousnessLevel >= 2.5 ||
-    (reportText && /prosperity|money|leadership|timeline|integration/i.test(reportText))
+    (reportText &&
+      /prosperity|money|leadership|timeline|integration/i.test(reportText))
   ) {
     // Week 9 — Merging Timelines (for timeline work or integration)
-    if (reportText && /timeline|past.*present|future|merging/i.test(reportText)) {
+    if (
+      reportText &&
+      /timeline|past.*present|future|merging/i.test(reportText)
+    ) {
       recommendations.phase3.push({ week: 9, title: getWeekTitle(9) });
     }
 
@@ -822,7 +967,10 @@ const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = 
     }
 
     // Week 11 — Higher Octave Identity Flip (for advanced identity work)
-    if (consciousnessLevel >= 3.0 || (reportText && /higher.*octave|identity.*flip/i.test(reportText))) {
+    if (
+      consciousnessLevel >= 3.0 ||
+      (reportText && /higher.*octave|identity.*flip/i.test(reportText))
+    ) {
       recommendations.phase3.push({ week: 11, title: getWeekTitle(11) });
     }
 
@@ -858,62 +1006,84 @@ const generateUnlimitedCreatedRecommendations = async (metrics = {}, aiReport = 
  * Render Unlimited Created recommendations section in PDF
  */
 const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
-  const sectionWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  
+  const sectionWidth =
+    doc.page.width - doc.page.margins.left - doc.page.margins.right;
+
   doc.moveDown(1);
-  doc.font("Helvetica-Bold").fontSize(14).text("UNLIMITED CREATED RECOMMENDATIONS", {
-    width: sectionWidth,
-    lineGap: 2,
-  });
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(14)
+    .text("UNLIMITED CREATED RECOMMENDATIONS", {
+      width: sectionWidth,
+      lineGap: 2,
+    });
   doc.moveDown(0.5);
 
   // PHASE 1
   if (recommendations.phase1.length > 0) {
-    doc.font("Helvetica-Bold").fontSize(12).text("PHASE 1 — Remove Gravity & Interference", {
-      width: sectionWidth,
-      lineGap: 2,
-    });
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .text("PHASE 1 — Remove Gravity & Interference", {
+        width: sectionWidth,
+        lineGap: 2,
+      });
     doc.moveDown(0.3);
     recommendations.phase1.forEach((rec) => {
-      doc.font("Helvetica").fontSize(11).text(`● Week ${rec.week} — ${rec.title}`, {
-        width: sectionWidth,
-        lineGap: 1.5,
-        indent: 10,
-      });
+      doc
+        .font("Helvetica")
+        .fontSize(11)
+        .text(`● Week ${rec.week} — ${rec.title}`, {
+          width: sectionWidth,
+          lineGap: 1.5,
+          indent: 10,
+        });
     });
     doc.moveDown(0.4);
   }
 
   // PHASE 2
   if (recommendations.phase2.length > 0) {
-    doc.font("Helvetica-Bold").fontSize(12).text("PHASE 2 — Stabilise Identity", {
-      width: sectionWidth,
-      lineGap: 2,
-    });
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .text("PHASE 2 — Stabilise Identity", {
+        width: sectionWidth,
+        lineGap: 2,
+      });
     doc.moveDown(0.3);
     recommendations.phase2.forEach((rec) => {
-      doc.font("Helvetica").fontSize(11).text(`● Week ${rec.week} — ${rec.title}`, {
-        width: sectionWidth,
-        lineGap: 1.5,
-        indent: 10,
-      });
+      doc
+        .font("Helvetica")
+        .fontSize(11)
+        .text(`● Week ${rec.week} — ${rec.title}`, {
+          width: sectionWidth,
+          lineGap: 1.5,
+          indent: 10,
+        });
     });
     doc.moveDown(0.4);
   }
 
   // PHASE 3
   if (recommendations.phase3.length > 0) {
-    doc.font("Helvetica-Bold").fontSize(12).text("PHASE 3 — Prosperity & Leadership", {
-      width: sectionWidth,
-      lineGap: 2,
-    });
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .text("PHASE 3 — Prosperity & Leadership", {
+        width: sectionWidth,
+        lineGap: 2,
+      });
     doc.moveDown(0.3);
     recommendations.phase3.forEach((rec) => {
-      doc.font("Helvetica").fontSize(11).text(`● Week ${rec.week} — ${rec.title}`, {
-        width: sectionWidth,
-        lineGap: 1.5,
-        indent: 10,
-      });
+      doc
+        .font("Helvetica")
+        .fontSize(11)
+        .text(`● Week ${rec.week} — ${rec.title}`, {
+          width: sectionWidth,
+          lineGap: 1.5,
+          indent: 10,
+        });
     });
     doc.moveDown(0.4);
   }
@@ -952,14 +1122,17 @@ const generateDiagnosticPdf = (diagnostic) =>
       let metrics = data.metrics || {};
 
       // If metrics are empty or incomplete, try to extract from report text
-      const hasAllMetrics = metrics.gravity !== undefined && 
-                            metrics.signalCoherence !== undefined && 
-                            metrics.signalOutput !== undefined &&
-                            metrics.consciousnessLevel !== undefined &&
-                            metrics.qgcActivation !== undefined;
-      
+      const hasAllMetrics =
+        metrics.gravity !== undefined &&
+        metrics.signalCoherence !== undefined &&
+        metrics.signalOutput !== undefined &&
+        metrics.consciousnessLevel !== undefined &&
+        metrics.qgcActivation !== undefined;
+
       if (typeof aiReport === "string" && !hasAllMetrics) {
-        const { extractMetricsFromReport } = require("../helpers/euphoriamChatbot");
+        const {
+          extractMetricsFromReport,
+        } = require("../helpers/euphoriamChatbot");
         const extractedMetrics = extractMetricsFromReport(aiReport);
         // Merge extracted metrics, preferring existing metrics over extracted ones
         metrics = {
@@ -967,10 +1140,13 @@ const generateDiagnosticPdf = (diagnostic) =>
           ...metrics, // Existing metrics take precedence
           // But use extracted if existing is undefined
           gravity: metrics.gravity ?? extractedMetrics.gravity,
-          signalCoherence: metrics.signalCoherence ?? extractedMetrics.signalCoherence,
+          signalCoherence:
+            metrics.signalCoherence ?? extractedMetrics.signalCoherence,
           signalOutput: metrics.signalOutput ?? extractedMetrics.signalOutput,
-          consciousnessLevel: metrics.consciousnessLevel ?? extractedMetrics.consciousnessLevel,
-          qgcActivation: metrics.qgcActivation ?? extractedMetrics.qgcActivation,
+          consciousnessLevel:
+            metrics.consciousnessLevel ?? extractedMetrics.consciousnessLevel,
+          qgcActivation:
+            metrics.qgcActivation ?? extractedMetrics.qgcActivation,
         };
         console.log("[diagnosticPdf] Metrics after extraction:", metrics);
       }
@@ -999,11 +1175,15 @@ const generateDiagnosticPdf = (diagnostic) =>
           trimmed
         );
         // Check for markdown format (--- followed by ## header, or just ## header)
-        const hasMarkdownHeader = /^---+[\s\n]*##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(
-          trimmed
-        ) || /^##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(trimmed);
+        const hasMarkdownHeader =
+          /^---+[\s\n]*##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(
+            trimmed
+          ) ||
+          /^##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(trimmed) ||
+          /^EUPHORIAM.*REPORT/i.test(trimmed);
         const startsWithMarkdownHeader = /^#+\s*EUPHORIAM/i.test(trimmed);
-        const startsWithMarkdownDivider = /^---+/.test(trimmed);
+        const startsWithMarkdownDivider =
+          /^---+/.test(trimmed) || /^───+/.test(trimmed);
 
         if (
           !startsWithDivider &&
@@ -1027,8 +1207,14 @@ const generateDiagnosticPdf = (diagnostic) =>
 
         // Add Unlimited Created week-wise recommendations after the report
         // Fetch course videos to get actual titles
-        const weekTitles = await fetchCourseWeekTitles("2148785745").catch(() => ({}));
-        const ucRecommendations = await generateUnlimitedCreatedRecommendations(metrics, aiReport, weekTitles);
+        const weekTitles = await fetchCourseWeekTitles("2148785745").catch(
+          () => ({})
+        );
+        const ucRecommendations = await generateUnlimitedCreatedRecommendations(
+          metrics,
+          aiReport,
+          weekTitles
+        );
         if (
           ucRecommendations.phase1.length > 0 ||
           ucRecommendations.phase2.length > 0 ||
@@ -1039,7 +1225,8 @@ const generateDiagnosticPdf = (diagnostic) =>
 
         // Optional metadata on a new page (after the report)
         doc.addPage();
-        const metadataWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        const metadataWidth =
+          doc.page.width - doc.page.margins.left - doc.page.margins.right;
         doc.font("Helvetica-Bold").fontSize(14).text("Diagnostic Metadata", {
           width: metadataWidth,
           lineGap: 2,
@@ -1061,33 +1248,33 @@ const generateDiagnosticPdf = (diagnostic) =>
             lineGap: 2,
           }
         );
-        doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
-          width: metadataWidth,
-          lineGap: 2,
-        });
-        doc.moveDown(0.6);
-        doc.text(`Customer ID: ${data.customerId || "N/A"}`, {
-          width: metadataWidth,
-          lineGap: 2,
-        });
-        doc.text(`Site ID: ${data.siteId || "N/A"}`, {
-          width: metadataWidth,
-          lineGap: 2,
-        });
-        doc.text(
-          `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`,
-          {
-            width: metadataWidth,
-            lineGap: 2,
-          }
-        );
-        doc.text(
-          `Kajabi Customer ID: ${data.rawSource?.kajabiCustomerId ?? "N/A"}`,
-          {
-            width: metadataWidth,
-            lineGap: 2,
-          }
-        );
+        // doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
+        //   width: metadataWidth,
+        //   lineGap: 2,
+        // });
+        // doc.moveDown(0.6);
+        // doc.text(`Customer ID: ${data.customerId || "N/A"}`, {
+        //   width: metadataWidth,
+        //   lineGap: 2,
+        // });
+        // doc.text(`Site ID: ${data.siteId || "N/A"}`, {
+        //   width: metadataWidth,
+        //   lineGap: 2,
+        // });
+        // doc.text(
+        //   `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`,
+        //   {
+        //     width: metadataWidth,
+        //     lineGap: 2,
+        //   }
+        // );
+        // doc.text(
+        //   `Kajabi Customer ID: ${data.rawSource?.kajabiCustomerId ?? "N/A"}`,
+        //   {
+        //     width: metadataWidth,
+        //     lineGap: 2,
+        //   }
+        // );
 
         doc.end();
         return;
@@ -1097,8 +1284,9 @@ const generateDiagnosticPdf = (diagnostic) =>
         aiReport?.headline?.title ||
         aiReport?.headline ||
         "Euphoriam Diagnostic Report";
-      const titleWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-      doc.fontSize(20).text(reportTitle, { 
+      const titleWidth =
+        doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      doc.fontSize(20).text(reportTitle, {
         align: "center",
         width: titleWidth,
         lineGap: 2,
@@ -1116,10 +1304,10 @@ const generateDiagnosticPdf = (diagnostic) =>
         width: titleWidth,
         lineGap: 2,
       });
-      doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
-        width: titleWidth,
-        lineGap: 2,
-      });
+      // doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
+      //   width: titleWidth,
+      //   lineGap: 2,
+      // });
 
       const isV2 = aiReport?.meta?.version === 2;
 
@@ -1199,10 +1387,13 @@ const generateDiagnosticPdf = (diagnostic) =>
         };
 
         drawMetricsTable(doc, gauge);
-        
+
         // Add Metrics Interpretation Table
         doc.moveDown(0.5);
-        doc.font("Helvetica-Bold").fontSize(12).text("METRICS INTERPRETATION TABLE");
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(12)
+          .text("METRICS INTERPRETATION TABLE");
         doc.moveDown(0.3);
         drawMetricsInterpretationTable(doc);
 
@@ -1226,8 +1417,14 @@ const generateDiagnosticPdf = (diagnostic) =>
 
         // Add Unlimited Created week-wise recommendations
         // Fetch course videos to get actual titles
-        const weekTitles = await fetchCourseWeekTitles("2148785745").catch(() => ({}));
-        const ucRecommendations = await generateUnlimitedCreatedRecommendations(metrics, aiReport, weekTitles);
+        const weekTitles = await fetchCourseWeekTitles("2148785745").catch(
+          () => ({})
+        );
+        const ucRecommendations = await generateUnlimitedCreatedRecommendations(
+          metrics,
+          aiReport,
+          weekTitles
+        );
         renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
 
         const finalSummary = aiReport.finalSummary || {};
@@ -1261,11 +1458,11 @@ const generateDiagnosticPdf = (diagnostic) =>
         );
       }
 
-      addSection(doc, "Raw Source", [
-        `Customer ID: ${data.customerId || "N/A"}`,
-        `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`,
-        `Site ID: ${data.siteId || "N/A"}`,
-      ]);
+      // addSection(doc, "Raw Source", [
+      //   `Customer ID: ${data.customerId || "N/A"}`,
+      //   `Kajabi Contact ID: ${data.rawSource?.kajabiContactId ?? "N/A"}`,
+      //   `Site ID: ${data.siteId || "N/A"}`,
+      // ]);
 
       doc.end();
     } catch (err) {

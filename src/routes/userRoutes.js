@@ -30,4 +30,9 @@ router.get(
   requireRole(["admin"]),
   asyncHandler(userController.userReport)
 );
+router.post(
+  "/profile",
+  // auth,
+  asyncHandler(userController.getUserProfile)
+);
 module.exports = router;

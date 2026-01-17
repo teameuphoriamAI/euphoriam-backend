@@ -6,6 +6,7 @@ const { User } = require("../models/userModel");
 const { Chat } = require("../models/chatModel");
 const validate = require("../helpers/validate");
 const openai = require("../config/openai");
+const { withTimeout } = require("../utils/timeout");
 const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
@@ -296,7 +297,7 @@ Rules:
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -335,9 +336,8 @@ const extractKeySentenceAndCorrectionWithLLM = async (reportText) => {
 
   try {
     // Truncate report to reasonable length for LLM (keep last 8000 chars which usually contains the relevant sections)
-    const reportSnippet = reportText.length > 8000 
-      ? reportText.slice(-8000) 
-      : reportText;
+    const reportSnippet =
+      reportText.length > 8000 ? reportText.slice(-8000) : reportText;
 
     const prompt = `You are extracting two specific pieces of information from a Euphoriam diagnostic report.
 
@@ -378,7 +378,8 @@ RULES:
       messages: [
         {
           role: "system",
-          content: "You are a precise text extraction tool. Extract only complete sentences. Return valid JSON only.",
+          content:
+            "You are a precise text extraction tool. Extract only complete sentences. Return valid JSON only.",
         },
         {
           role: "user",
@@ -836,18 +837,19 @@ Context: The user already has a completed diagnostic report and may have previou
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-        ? `Previous discovery report (reference):
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
 ${truncateForContext(
-          previousDiscovery.data?.newReport ||
-          previousDiscovery.data?.previousReport ||
-          previousDiscovery.newReportSnippet ||
-          previousDiscovery.data?.newReportSnippet ||
-          "",
-          4000
-        )}`
-        : ""
-      }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000
+)}`
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(updatedTranscript, null, 2)}
@@ -861,11 +863,15 @@ CRITICAL: You MUST generate the report in the EXACT format shown below. This is 
 
 **METRICS CALCULATION RULE:**
 - Calculate UPDATED metrics based on the NEW conversation transcript above
-- Compare previous metrics (Gravity: ~${diagnosticMetrics.gravity || "N/A"
-      }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%, Signal Coherence: ~${diagnosticMetrics.signalCoherence || "N/A"
-      }%, Signal Output: ~${diagnosticMetrics.signalOutput || "N/A"
-      }%) with evidence from the new conversation
+- Compare previous metrics (Gravity: ~${
+      diagnosticMetrics.gravity || "N/A"
+    }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%, Signal Coherence: ~${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%, Signal Output: ~${
+      diagnosticMetrics.signalOutput || "N/A"
+    }%) with evidence from the new conversation
 - Calculate what changed based on the new responses
 - Output updated metrics in the METRICS GAUGE section with actual calculated values
 - DO NOT use placeholders - calculate actual values based on evidence from the new conversation
@@ -952,8 +958,9 @@ Marker of shift:
 
 ### 7. SIGNAL COHERENCE
 
-**Signal Coherence:** [Current status - use exact value: ${diagnosticMetrics.signalCoherence || "N/A"
-      }%]
+**Signal Coherence:** [Current status - use exact value: ${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%]
 
 Important note:
 [Explain what the coherence level indicates]
@@ -992,20 +999,21 @@ That's it.
 
 ## METRICS GAUGE (Current Snapshot)
 
-* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%
 * **Consciousness Level:** ${renderGauge(
-        (diagnosticMetrics.consciousnessLevel || 0) * 20
-      )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+      (diagnosticMetrics.consciousnessLevel || 0) * 20
+    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
 * **Gravity:** ${renderGauge(
-        diagnosticMetrics.gravity || 0
-      )}  [Current status with arrow if changed]
+      diagnosticMetrics.gravity || 0
+    )}  [Current status with arrow if changed]
 * **Signal Coherence:** ${renderGauge(
-        diagnosticMetrics.signalCoherence || 0
-      )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+      diagnosticMetrics.signalCoherence || 0
+    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
 * **Signal Output:** ${renderGauge(
-        diagnosticMetrics.signalOutput || 0
-      )}  [Current status]
+      diagnosticMetrics.signalOutput || 0
+    )}  [Current status]
 
 ---
 
@@ -1090,18 +1098,6 @@ ${userName}, [Personalized summary based on the conversation - what shifted, wha
 
 ---
 
-### 📄 PDF STATUS
-
-Your **Euphoriam Diagnostic PDF (${reportVersion})** has been generated and logged internally under your profile.
-
-**Filename:**
-\`${userName}_Euphoriam_Diagnostic_${new Date()
-        .toISOString()
-        .split("T")[0]
-        .replace(/-/g, "")}_${reportVersion}.pdf\`
-
-[Closing message based on the conversation]
-
 We'll stop here.
 
 ---
@@ -1129,7 +1125,7 @@ METRICS_JSON_END`;
       );
 
       const aiDiscoveryPromise = openai.chat.completions.create({
-        model: "gpt-5.2",
+        model: "gpt-4o",
         messages: [{ role: "user", content: discoveryPrompt }],
         temperature: 0.15,
         max_completion_tokens: 4500,
@@ -1267,8 +1263,9 @@ METRICS_JSON_END`;
             data: {
               ...(chat.data || {}),
               transcript: updatedTranscript,
-              messages: updatedTranscript,
+              // messages: updatedTranscript,
               endedAt: new Date().toISOString(),
+              pdfSummary: discoveryReport || null, // Save PDF summary
             },
           });
           console.log(
@@ -1336,9 +1333,9 @@ METRICS_JSON_END`;
           "Discovery report generated. PDF are being processed in the background.",
         nextMessage: finalBotMessage
           ? {
-            role: "assistant",
-            content: finalBotMessage,
-          }
+              role: "assistant",
+              content: finalBotMessage,
+            }
           : nextMessage, // Include bot's final completion message + system message
         discoveryReport: discoveryReport || null,
         pdfPath: null, // Will be generated in background
@@ -1347,10 +1344,11 @@ METRICS_JSON_END`;
         status: "completed",
         statusMessage:
           "Report generated. PDF and email processing in background.",
-        userMessage: `Your discovery report has been generated. ${shouldEmail
-          ? "Email will be sent shortly."
-          : "You can access it in your account."
-          }`,
+        userMessage: `Your discovery report has been generated. ${
+          shouldEmail
+            ? "Email will be sent shortly."
+            : "You can access it in your account."
+        }`,
         emailed: false, // Will be updated in background
         // Don't include answeredCount or pendingQuestion in discovery mode - those are for diagnostic mode only
       });
@@ -1384,8 +1382,9 @@ METRICS_JSON_END`;
               const buffer = await fs.promises.readFile(pdfPath);
               const upload = await uploadBufferToSupabase({
                 buffer,
-                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                  }-${Date.now()}.pdf`,
+                objectPath: `discoveries/discovery-${
+                  existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
                 contentType: "application/pdf",
               });
 
@@ -1405,6 +1404,35 @@ METRICS_JSON_END`;
                 await latestDiscovery.update({
                   pdfUrl: pdfUrl,
                 });
+              }
+
+              // Also update the chat record with PDF URL
+              const chatToUpdate = await Chat.findOne({
+                where: {
+                  userId:
+                    userForDiscovery?.id || existingDiagnostic?.userId || null,
+                  chatType: "discovery",
+                  isChatEnded: true,
+                  ...(existingDiagnostic?.id
+                    ? { dignosticId: existingDiagnostic.id }
+                    : {}),
+                },
+                order: [["updatedAt", "DESC"]],
+              });
+
+              if (chatToUpdate) {
+                await chatToUpdate.update({
+                  data: {
+                    ...(chatToUpdate.data || {}),
+                    pdfUrl: pdfUrl,
+                    pdfGeneratedAt: new Date().toISOString(),
+                    pdfSummary:
+                      discoveryReport || chatToUpdate.data?.pdfSummary || null, // Save PDF summary
+                  },
+                });
+                console.log(
+                  `[discovery] Chat ${chatToUpdate.id} updated with PDF URL and summary`
+                );
               }
             }
           } catch (err) {
@@ -1464,8 +1492,9 @@ METRICS_JSON_END`;
       await Diagnostic.create({
         userId: appUser.id || null,
         email,
-        title: `Discovery Chat (Draft) – ${name || email?.split("@")[0] || "User"
-          }`,
+        title: `Discovery Chat (Draft) – ${
+          name || email?.split("@")[0] || "User"
+        }`,
         data: {
           profile: { name, email },
           intakeState: discoveryIntakeState,
@@ -1477,7 +1506,7 @@ METRICS_JSON_END`;
   // Get updated state after saving
   const updatedState = existingDiagnostic
     ? (await Diagnostic.findByPk(existingDiagnostic.id))?.data?.intakeState ||
-    existingState
+      existingState
     : existingState;
 
   // Final check: ensure nextMessage is never null
@@ -1501,7 +1530,7 @@ NEVER use generic phrases like "I'm here" or "How can I help you today?". Answer
         : "Provide a helpful response to the user. NEVER use generic phrases like 'I'm here' or 'How can I help you today?'.";
 
       const finalResponse = await openai.chat.completions.create({
-        model: "gpt-5.2",
+        model: "gpt-4o",
         messages: [
           {
             role: "system",
@@ -1607,18 +1636,19 @@ Context: The user already has a completed diagnostic report and may have previou
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-      ? `Previous discovery report (reference):
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
 ${truncateForContext(
-        previousDiscovery.data?.newReport ||
-        previousDiscovery.data?.previousReport ||
-        previousDiscovery.newReportSnippet ||
-        previousDiscovery.data?.newReportSnippet ||
-        "",
-        4000
-      )}`
-      : ""
-    }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000
+)}`
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(transcriptForFinal, null, 2)}
@@ -1708,8 +1738,9 @@ Marker of shift:
 
 ### 7. SIGNAL COHERENCE
 
-**Signal Coherence:** [Current status - use exact value: ${diagnosticMetrics.signalCoherence || "N/A"
-    }%]
+**Signal Coherence:** [Current status - use exact value: ${
+    diagnosticMetrics.signalCoherence || "N/A"
+  }%]
 
 Important note:
 [Explain what the coherence level indicates]
@@ -1748,20 +1779,21 @@ That's it.
 
 ## METRICS GAUGE (Current Snapshot)
 
-* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${diagnosticMetrics.qgcActivation || "N/A"
-    }%
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+    diagnosticMetrics.qgcActivation || "N/A"
+  }%
 * **Consciousness Level:** ${renderGauge(
-      (diagnosticMetrics.consciousnessLevel || 0) * 20
-    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+    (diagnosticMetrics.consciousnessLevel || 0) * 20
+  )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
 * **Gravity:** ${renderGauge(
-      diagnosticMetrics.gravity || 0
-    )}  [Current status with arrow if changed]
+    diagnosticMetrics.gravity || 0
+  )}  [Current status with arrow if changed]
 * **Signal Coherence:** ${renderGauge(
-      diagnosticMetrics.signalCoherence || 0
-    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+    diagnosticMetrics.signalCoherence || 0
+  )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
 * **Signal Output:** ${renderGauge(
-      diagnosticMetrics.signalOutput || 0
-    )}  [Current status]
+    diagnosticMetrics.signalOutput || 0
+  )}  [Current status]
 
 ---
 
@@ -1800,19 +1832,6 @@ What just happened is [rare/common] and [clean/complex]:
 ${userName}, [Personalized summary based on the conversation - what shifted, what it means, what's next]
 
 ---
-
-### 📄 PDF STATUS
-
-Your **Euphoriam Diagnostic PDF (${reportVersion})** has been generated and logged internally under your profile.
-
-**Filename:**
-\`${userName}_Euphoriam_Diagnostic_${new Date()
-      .toISOString()
-      .split("T")[0]
-      .replace(/-/g, "")}_${reportVersion}.pdf\`
-
-[Closing message based on the conversation]
-
 We'll stop here.
 
 ---
@@ -1861,8 +1880,9 @@ Generate the full report in this exact format. Use actual insights from the conv
         data: {
           ...(chat.data || {}),
           transcript: transcriptForFinal,
-          messages: transcriptForFinal,
+          // messages: transcriptForFinal,
           endedAt: new Date().toISOString(),
+          pdfSummary: null, // Will be updated when report is generated in background
         },
       });
       console.log(
@@ -1919,7 +1939,7 @@ Generate the full report in this exact format. Use actual insights from the conv
     let discoveryReport = "";
     try {
       const aiDiscovery = await openai.chat.completions.create({
-        model: "gpt-5.2",
+        model: "gpt-4o",
         messages: [{ role: "user", content: discoveryPrompt }],
         temperature: 0.15,
         max_completion_tokens: 4500,
@@ -1960,8 +1980,9 @@ Generate the full report in this exact format. Use actual insights from the conv
       try {
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Diagnostics Chat Report – ${name || email?.split("@")[0] || "User"
-            }`,
+          title: `Diagnostics Chat Report – ${
+            name || email?.split("@")[0] || "User"
+          }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
           data: {
             profile: {
@@ -1983,8 +2004,9 @@ Generate the full report in this exact format. Use actual insights from the conv
             const buffer = await fs.promises.readFile(pdfPath);
             const upload = await uploadBufferToSupabase({
               buffer,
-              objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                }-${Date.now()}.pdf`,
+              objectPath: `discoveries/discovery-${
+                existingDiagnostic?.id || Date.now()
+              }-${Date.now()}.pdf`,
               contentType: "application/pdf",
             });
             pdfUrl = upload.url || null;
@@ -2003,6 +2025,62 @@ Generate the full report in this exact format. Use actual insights from the conv
               await latestDiscovery.update({
                 pdfUrl: pdfUrl,
               });
+            }
+
+            // Update chat with PDF summary
+            if (appUser) {
+              const chat = await Chat.findOne({
+                where: {
+                  userId: appUser.id,
+                  chatType: "discovery",
+                  isChatEnded: true,
+                  ...(existingDiagnostic?.id
+                    ? { dignosticId: existingDiagnostic.id }
+                    : {}),
+                },
+                order: [["updatedAt", "DESC"]],
+              });
+
+              if (chat) {
+                await chat.update({
+                  data: {
+                    ...(chat.data || {}),
+                    pdfSummary: discoveryReport, // Save full report as PDF summary
+                  },
+                });
+                console.log(
+                  `[handleDiscoveryFinalize] Updated chat ${chat.id} with PDF summary`
+                );
+              }
+            }
+
+            // Also update the chat record with PDF URL
+            const chatToUpdate = await Chat.findOne({
+              where: {
+                userId:
+                  userForDiscovery?.id || existingDiagnostic?.userId || null,
+                chatType: "discovery",
+                isChatEnded: true,
+                ...(existingDiagnostic?.id
+                  ? { dignosticId: existingDiagnostic.id }
+                  : {}),
+              },
+              order: [["updatedAt", "DESC"]],
+            });
+
+            if (chatToUpdate) {
+              await chatToUpdate.update({
+                data: {
+                  ...(chatToUpdate.data || {}),
+                  pdfUrl: pdfUrl,
+                  pdfGeneratedAt: new Date().toISOString(),
+                  pdfSummary:
+                    discoveryReport || chatToUpdate.data?.pdfSummary || null, // Save PDF summary
+                },
+              });
+              console.log(
+                `[discovery finalize] Chat ${chatToUpdate.id} updated with PDF URL and summary`
+              );
             }
           }
         } catch (err) {
@@ -2156,7 +2234,7 @@ const handleDiagnosticFinalize = async ({
         data: {
           ...(chat.data || {}),
           transcript: transcriptForFinal,
-          messages: transcriptForFinal,
+          // messages: transcriptForFinal,
           endedAt: new Date().toISOString(),
         },
       });
@@ -2231,7 +2309,7 @@ const handleDiagnosticFinalize = async ({
     let reportText = "";
     try {
       const aiResponse = await openai.chat.completions.create({
-        model: "gpt-5.2",
+        model: "gpt-4o",
         messages: [
           { role: "system", content: safePromptContent },
           {
@@ -2362,6 +2440,34 @@ const handleDiagnosticFinalize = async ({
             await latestDiscovery.update({
               pdfUrl: pdf.url || null,
             });
+          }
+
+          // Update chat with PDF summary
+          if (appUser) {
+            const chatToUpdate = await Chat.findOne({
+              where: {
+                userId: appUser.id,
+                chatType: "dignostic",
+                isChatEnded: true,
+                ...(diagnostic?.id ? { dignosticId: diagnostic.id } : {}),
+              },
+              order: [["updatedAt", "DESC"]],
+            });
+
+            if (chatToUpdate) {
+              await chatToUpdate.update({
+                data: {
+                  ...(chatToUpdate.data || {}),
+                  pdfUrl: pdf.url || null,
+                  pdfGeneratedAt: new Date().toISOString(),
+                  pdfSummary:
+                    reportText || chatToUpdate.data?.pdfSummary || null, // Save PDF summary
+                },
+              });
+              console.log(
+                `[handleDiagnosticFinalize] Chat ${chatToUpdate.id} updated with PDF URL and summary`
+              );
+            }
           }
         } catch (err) {
           console.error(
@@ -2523,9 +2629,9 @@ const handleDiagnosticMode = async ({
   } = require("../utils/validation");
   const userWantsToGenerateReport = lastUser?.content
     ? await detectUserWantsToEndOrGenerateReport({
-      userMessage: lastUser.content,
-      transcript: transcript,
-    })
+        userMessage: lastUser.content,
+        transcript: transcript,
+      })
     : false;
 
   // CRITICAL: If assistant just said they're ready to generate AND we have 12+ questions answered,
@@ -2632,7 +2738,7 @@ const handleDiagnosticMode = async ({
     }
 
     const finalizeResponse = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o",
       messages: [
         { role: "system", content: safePromptContent },
         {
@@ -2844,8 +2950,9 @@ const handleDiagnosticMode = async ({
           data: {
             ...(chat.data || {}),
             transcript: updatedTranscript,
-            messages: updatedTranscript,
+            // messages: updatedTranscript,
             endedAt: new Date().toISOString(),
+            pdfSummary: null, // Will be updated when report is generated in background
           },
         });
         console.log(
@@ -2950,6 +3057,31 @@ const handleDiagnosticMode = async ({
               pdfUrl: pdf.url || null,
             });
           }
+
+          // Also update the chat record with PDF URL
+          const chatToUpdate = await Chat.findOne({
+            where: {
+              userId: appUser?.id || diagnostic.userId || null,
+              chatType: "dignostic",
+              isChatEnded: true,
+              ...(diagnostic?.id ? { dignosticId: diagnostic.id } : {}),
+            },
+            order: [["updatedAt", "DESC"]],
+          });
+
+          if (chatToUpdate) {
+            await chatToUpdate.update({
+              data: {
+                ...(chatToUpdate.data || {}),
+                pdfUrl: pdf.url || null,
+                pdfGeneratedAt: new Date().toISOString(),
+                pdfSummary: reportText || chatToUpdate.data?.pdfSummary || null, // Save PDF summary
+              },
+            });
+            console.log(
+              `[diagnostic] Chat ${chatToUpdate.id} updated with PDF URL and summary`
+            );
+          }
         } catch (err) {
           console.error(
             "[diagnostic] Failed to upload diagnostic PDF to Supabase (background)",
@@ -3017,7 +3149,7 @@ const handleDiagnosticMode = async ({
 };
 
 const chatbotDiagnosticFreeform = async (req, res) => {
-  const {
+  let {
     email,
     name,
     messages = [],
@@ -3027,218 +3159,174 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     targetCount = 12,
   } = req.body || {};
 
+  // 1. Declare all variables at the top to avoid ReferenceErrors across different logic paths
+  let transcript = [],
+    lastUser = null,
+    lastAssistant = null;
+  let hasAssistantTurn = false,
+    aiAnswered = false,
+    wantsToEndOrGenerate = false;
+  let wantsNewDiagnostic = false,
+    intakeInProgress = false,
+    pendingQuestion = false;
+  let answeredCount = 0,
+    distinctQuestionNumbers = [],
+    maxQuestionNumber = 0,
+    distinctQuestionsAnswered = 0;
+  let appUser = null,
+    diagState = null,
+    discoveryRes = null,
+    retrieved = [];
+  let latestDiscoveryMetrics = {},
+    latestDiscoveryReport = null,
+    reportDate = null;
+  let priorReportSnippet = null,
+    previousReports = [];
+  let lastTurnAssistant = false,
+    resumeNotice = null,
+    isDiscoveryMode = false;
+  let shouldShowExistingReportFirst = false,
+    discoveryType = null,
+    targetCountForRun = targetCount;
+
   // Validate request
   const validation = validateChatbotRequest(req);
   if (!validation.valid) {
     return errorResponse(res, validation.error, validation.statusCode);
   }
-  // Find user
-  let appUser = await User.findOne({ where: { email, name } });
-  // Load diagnostic state
+
+  // 2. Initialize core data: User and Diagnostic State
+  appUser = await User.findOne({ where: { email, name } });
+  diagState = await loadDiagnosticState(email);
   const {
     existingDiagnostic,
     existingState,
     existingReport,
     diagnosticMetrics,
-  } = await loadDiagnosticState(email);
+  } = diagState;
+  const hasExistingReport = Boolean(existingReport);
 
-  // If no messages provided, check for incomplete chat and return it if exists
+  // Load metrics for discovery/diagnostic
+  discoveryRes = await loadLatestDiscoveryMetrics(
+    existingDiagnostic,
+    diagnosticMetrics
+  );
+  latestDiscoveryMetrics = discoveryRes.latestDiscoveryMetrics;
+  latestDiscoveryReport = discoveryRes.latestDiscoveryReport;
+  reportDate = extractReportDate(
+    discoveryRes.latestDiscovery,
+    existingDiagnostic
+  );
+
+  // 3. Handle Empty Message (Resume/Start) Flow
   const hasNoMessages = !messages || messages.length === 0;
-
   if (hasNoMessages && !finalize) {
-    const hasExistingReport = Boolean(existingReport);
-    const transcript = existingState?.transcript || [];
-    const intakeState = existingState || {};
+    let metricsForResponse = latestDiscoveryMetrics || diagnosticMetrics;
+    const intakeStateInternal = existingState || {};
+    const transcriptInternal = intakeStateInternal?.transcript || [];
 
-    // Load metrics for discovery mode (extract from report if needed)
-    let metricsForResponse = diagnosticMetrics;
-    if (hasExistingReport) {
-      const { latestDiscoveryMetrics } = await loadLatestDiscoveryMetrics(
-        existingDiagnostic,
-        diagnosticMetrics
-      );
-      metricsForResponse = latestDiscoveryMetrics;
-      console.log("[diagnostic] Loaded metrics for incomplete chat:", {
-        hasExistingReport,
-        diagnosticMetricsKeys: Object.keys(diagnosticMetrics || {}),
-        latestDiscoveryMetricsKeys: Object.keys(latestDiscoveryMetrics || {}),
-        metricsForResponseKeys: Object.keys(metricsForResponse || {}),
-        hasReport: Boolean(existingDiagnostic?.data?.aiReport),
-        reportLength: existingDiagnostic?.data?.aiReport?.length || 0,
-      });
-    }
-
-    // Check if there's an incomplete chat (not completed)
-    // A chat is completed if:
-    // 1. completedAt or finalizedAt exists, OR
-    // 2. All 12 questions are answered (distinctQuestionsAnswered >= 12)
+    // Check if chat is completed
     const isCompleted =
-      intakeState?.completedAt || intakeState?.finalizedAt || false;
-
-    // Count questions to check if all 12 are answered
+      intakeStateInternal?.completedAt ||
+      intakeStateInternal?.finalizedAt ||
+      false;
     let allQuestionsAnswered = false;
-    if (transcript && transcript.length > 0) {
-      const { distinctQuestionsAnswered } = trackQuestionNumbers(transcript);
-      allQuestionsAnswered = distinctQuestionsAnswered >= 12;
-
-      // Also check if the last assistant message indicates report generation
-      const lastAssistant = [...transcript]
-        .reverse()
-        .find((m) => m?.role === "assistant");
-      const indicatesCompletion =
-        lastAssistant?.content &&
-        /(generate.*report|going to generate|full.*diagnostic.*report)/i.test(
-          lastAssistant.content
-        );
-
-      if (indicatesCompletion && allQuestionsAnswered) {
-        // Report generation was triggered but may not have completed
-        // Still consider it completed for UI purposes
-        console.log(
-          "[diagnostic] Chat appears completed - all questions answered and report generation indicated"
-        );
-      }
+    if (transcriptInternal && transcriptInternal.length > 0) {
+      const qStats = trackQuestionNumbers(transcriptInternal);
+      allQuestionsAnswered = qStats.distinctQuestionsAnswered >= 12;
     }
 
     const hasIncompleteChat =
-      transcript &&
-      transcript.length > 0 &&
+      transcriptInternal &&
+      transcriptInternal.length > 0 &&
       !isCompleted &&
       !allQuestionsAnswered;
 
-    // If chat is completed (finalizedAt exists) or all 12 questions answered, check if report exists
     if (
       (isCompleted || allQuestionsAnswered) &&
-      transcript &&
-      transcript.length > 0
+      transcriptInternal &&
+      transcriptInternal.length > 0
     ) {
-      // Check if diagnostic has a report
-      const hasReport =
-        existingDiagnostic?.data?.aiReport || existingDiagnostic?.report;
-
-      if (hasReport) {
-        // Report exists - return completed status and clear transcript for discovery mode
-        console.log(
-          "[diagnostic] Chat completed with existing report - switching to discovery mode"
-        );
-
-        // Update intakeState in database to clear transcript and set mode to discovery
-        if (existingDiagnostic) {
-          const updatedIntakeState = {
-            ...intakeState,
-            transcript: [], // Clear transcript
-            completedAt:
-              intakeState?.finalizedAt ||
-              intakeState?.completedAt ||
-              new Date().toISOString(),
-            mode: "discovery", // Set mode to discovery
-          };
-
-          await existingDiagnostic.update({
-            data: {
-              ...(existingDiagnostic.data || {}),
-              intakeState: updatedIntakeState,
-            },
-          });
-        }
-
-        return successResponse(res, "Diagnostic completed", {
-          hasIncompleteChat: false,
-          hasExistingReport: true,
-          mode: "discovery", // Switch to discovery mode since diagnostic is complete
-          transcript: [], // Clear transcript - start fresh discovery session
-          intakeState: {
-            ...intakeState,
-            transcript: [], // Clear transcript in intakeState too
-            completedAt:
-              intakeState?.finalizedAt ||
-              intakeState?.completedAt ||
-              new Date().toISOString(),
-            mode: "discovery", // Set mode to discovery
+      if (existingDiagnostic) {
+        const updatedIntakeState = {
+          ...intakeStateInternal,
+          transcript: [],
+          completedAt:
+            intakeStateInternal?.finalizedAt ||
+            intakeStateInternal?.completedAt ||
+            new Date().toISOString(),
+          mode: "discovery",
+        };
+        await existingDiagnostic.update({
+          data: {
+            ...(existingDiagnostic.data || {}),
+            intakeState: updatedIntakeState,
           },
-          diagnosticMetrics: metricsForResponse,
-          canResume: false,
-          status: "completed",
-          statusMessage:
-            "Your diagnostic report has been completed. You can start a new discovery session.",
         });
-      } else if (allQuestionsAnswered && !isCompleted) {
-        // All 12 questions answered but report not generated yet - trigger generation
-        console.log(
-          "[diagnostic] All 12 questions answered but report not generated - triggering generation"
-        );
-        // This will be handled by the normal flow below, which will trigger auto-finalization
       }
+
+      return successResponse(res, "Diagnostic completed", {
+        hasIncompleteChat: false,
+        hasExistingReport: true,
+        mode: "discovery",
+        transcript: [],
+        intakeState: {
+          ...intakeStateInternal,
+          transcript: [],
+          mode: "discovery",
+        },
+        diagnosticMetrics: metricsForResponse,
+        canResume: false,
+        status: "completed",
+        statusMessage:
+          "Your diagnostic report has been completed. You can start a new discovery session.",
+      });
     }
 
     if (hasIncompleteChat) {
-      const isIncompleteDiagnostic = !hasExistingReport;
       const isIncompleteDiscovery =
-        hasExistingReport && intakeState.mode === "discovery";
-
-      // If all 12 questions are answered or finalizedAt exists, switch to discovery mode
-      // (diagnostic is complete, user can now do discovery sessions)
-      const diagnosticComplete = allQuestionsAnswered || isCompleted;
-
-      // Determine mode
-      const mode = diagnosticComplete
-        ? "discovery" // Diagnostic complete - switch to discovery mode
-        : isIncompleteDiscovery
+        hasExistingReport && intakeStateInternal.mode === "discovery";
+      const mode =
+        allQuestionsAnswered || isCompleted
           ? "discovery"
-          : isIncompleteDiagnostic
-            ? "diagnostic"
-            : hasExistingReport
-              ? "discovery"
-              : "diagnostic";
-
-      // Calculate progress for diagnostic mode
-      let answeredCount = 0;
-      let pendingQuestion = false;
-      let distinctQuestionNumbers = [];
-      let maxQuestionNumber = 0;
-
-      // Always calculate question count, not just for incomplete diagnostic
+          : isIncompleteDiscovery
+          ? "discovery"
+          : "diagnostic";
       const {
-        distinctQuestionNumbers: questionNumbers,
-        maxQuestionNumber: maxQNum,
-        distinctQuestionsAnswered,
-      } = trackQuestionNumbers(transcript);
+        distinctQuestionNumbers: qNums,
+        maxQuestionNumber: maxQ,
+        distinctQuestionsAnswered: ansCount,
+      } = trackQuestionNumbers(transcriptInternal);
 
-      distinctQuestionNumbers = questionNumbers;
-      maxQuestionNumber = maxQNum;
-      answeredCount = distinctQuestionsAnswered || 0;
+      let pendingQ = false;
+      const lastAssistantInternal = [...transcriptInternal]
+        .reverse()
+        .find((m) => m?.role === "assistant");
+      const lastUserInternal = [...transcriptInternal]
+        .reverse()
+        .find((m) => m?.role === "user");
 
-      if (isIncompleteDiagnostic) {
-        const lastAssistant = [...transcript]
-          .reverse()
-          .find((m) => m?.role === "assistant");
-        const lastUser = [...transcript]
-          .reverse()
-          .find((m) => m?.role === "user");
-
-        if (lastAssistant && lastUser) {
-          const aiAnswered = await isAiLikelyAnswer({
-            question: lastAssistant.content,
-            reply: lastUser.content,
-          });
-          pendingQuestion = !aiAnswered;
-        } else if (lastAssistant) {
-          pendingQuestion = true;
-        }
+      if (lastAssistantInternal && lastUserInternal) {
+        const aiAns = await isAiLikelyAnswer({
+          question: lastAssistantInternal.content,
+          reply: lastUserInternal.content,
+        });
+        pendingQ = !aiAns;
+      } else if (lastAssistantInternal) {
+        pendingQ = true;
       }
 
-      // Return incomplete chat state
       return successResponse(res, "Incomplete chat loaded", {
         hasIncompleteChat: true,
         hasExistingReport,
         mode,
-        transcript,
+        transcript: transcriptInternal,
         intakeState: {
-          ...intakeState,
-          answeredCount,
-          pendingQuestion,
-          distinctQuestionNumbers,
-          maxQuestionNumber,
+          ...intakeStateInternal,
+          answeredCount: ansCount,
+          pendingQuestion: pendingQ,
+          distinctQuestionNumbers: qNums,
+          maxQuestionNumber: maxQ,
         },
         diagnosticMetrics: metricsForResponse,
         canResume: true,
@@ -3247,31 +3335,15 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           "Incomplete chat found. You can continue from where you left off.",
       });
     }
-    // If no incomplete chat, continue with normal flow (will start new conversation)
   }
 
-  // Load latest discovery metrics
-  const { latestDiscovery, latestDiscoveryReport, latestDiscoveryMetrics } =
-    await loadLatestDiscoveryMetrics(existingDiagnostic, diagnosticMetrics);
-
-  // Extract report date
-  reportDate = extractReportDate(latestDiscovery, existingDiagnostic);
-
-  // Get full prior report (for saving to DB) and truncated snippet (for prompts)
+  // 4. Prepare Context for AI Generation
   const fullPriorReport = latestDiscoveryReport || existingReport || null;
-  const priorReportSnippet = fullPriorReport
+  priorReportSnippet = fullPriorReport
     ? truncateForContext(fullPriorReport, 12000)
     : null;
+  previousReports = preparePreviousReports(existingDiagnostic, existingReport);
 
-  // Prepare previous reports
-  const previousReports = preparePreviousReports(
-    existingDiagnostic,
-    existingReport
-  );
-
-  const hasExistingReport = Boolean(existingReport);
-
-  // If a full report already exists and this is a finalize attempt without new data, short-circuit to avoid duplicate emails.
   if (finalize && existingReport) {
     return successResponse(res, "Existing diagnostic already completed", {
       message:
@@ -3281,115 +3353,62 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     });
   }
 
-  // Prepare transcript
-  const transcript = prepareTranscript(
+  transcript = prepareTranscript(
     messages,
     existingState,
     hasExistingReport,
     false
   );
-  const lastTurn = transcript[transcript.length - 1];
-  const lastTurnAssistant = lastTurn?.role === "assistant";
-
-  // Show resume notice when resuming after an assistant turn (only for diagnostic mode, not discovery).
-  const resumeNotice =
+  lastUser = [...transcript].reverse().find((m) => m?.role === "user");
+  lastAssistant = [...transcript]
+    .reverse()
+    .find((m) => m?.role === "assistant");
+  lastTurnAssistant = transcript[transcript.length - 1]?.role === "assistant";
+  resumeNotice =
     !hasExistingReport && transcript.length > 0 && lastTurnAssistant
       ? `Welcome back ${name}, let's continue where we left off.`
       : null;
-
-  const introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
-  const targetCountForRun = hasExistingReport
+  introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
+  targetCountForRun = hasExistingReport
     ? Math.min(targetCount, 6)
     : targetCount;
 
   if (!finalize) {
-    const lastUser = [...transcript].reverse().find((m) => m?.role === "user");
-
-    // EARLY CHECK: If user wants to email/generate report in discovery mode, skip bot response and generate report immediately
-    if (hasExistingReport && lastUser) {
-      const {
-        detectUserWantsToEndOrGenerateReport,
-      } = require("../utils/validation");
-
-      const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
-        userMessage: lastUser.content,
-        transcript: transcript,
-      });
-
-      if (wantsToEndOrGenerate) {
-        // User wants report - generate it immediately without bot response
-        const updatedTranscript = transcript;
-        return await handleDiscoveryMode({
-          req,
-          res,
-          email,
-          name,
-          messages,
-          transcript,
-          updatedTranscript,
-          existingDiagnostic,
-          existingState,
-          priorReportSnippet,
-          diagnosticMetrics,
-          latestDiscoveryMetrics,
-          reportDate,
-          appUser,
-          lastUser,
-          lastAssistant: null, // No assistant message yet
-          nextMessage: null, // Skip bot response
-          introText,
-          discoveryType: req.body.discoveryType || null,
-        });
-      }
-    }
-
-    const retrieved = lastUser?.content
+    retrieved = lastUser?.content
       ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
       : [];
 
-    const lastAssistant = [...transcript]
-      .reverse()
-      .find((m) => m?.role === "assistant");
-
-    const hasAssistantTurn = Boolean(lastAssistant);
-    const aiAnswered =
+    hasAssistantTurn = Boolean(lastAssistant);
+    aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-          question: lastAssistant.content,
-          reply: lastUser.content,
-        })
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          })
         : false;
 
-    // Track question numbers
-    const {
-      distinctQuestionNumbers,
-      maxQuestionNumber,
-      distinctQuestionsAnswered,
-    } = trackQuestionNumbers(transcript);
+    const qStats = trackQuestionNumbers(transcript);
+    distinctQuestionNumbers = qStats.distinctQuestionNumbers;
+    maxQuestionNumber = qStats.maxQuestionNumber;
+    distinctQuestionsAnswered = qStats.distinctQuestionsAnswered;
+    pendingQuestion = hasAssistantTurn && !aiAnswered;
 
-    // Determine if the last user turn actually answered the last assistant question.
-    const pendingQuestion = hasAssistantTurn && !aiAnswered;
+    const diagnosticCheck = await checkWantsNewDiagnostic(
+      transcript,
+      existingState
+    );
+    wantsNewDiagnostic = diagnosticCheck.wantsNewDiagnostic;
+    intakeInProgress = diagnosticCheck.intakeInProgress;
 
-    // Check if this is the first user interaction (no user messages in transcript yet)
     const isFirstUserInteraction =
       transcript.filter((m) => m?.role === "user").length === 0;
-
-    // Check if user wants a new diagnostic (using LLM for context understanding)
-    const { wantsNewDiagnostic, intakeInProgress } =
-      await checkWantsNewDiagnostic(transcript, existingState);
-
-    // If there's an existing report and this is the first user interaction,
-    // show the welcome message with existing report first
-    // Only start new intake if user explicitly requests it in their message OR intake is already in progress
-    const shouldShowExistingReportFirst =
+    shouldShowExistingReportFirst =
       hasExistingReport &&
       isFirstUserInteraction &&
       !wantsNewDiagnostic &&
       !intakeInProgress;
 
-    // Determine chat mode
-    // If we should show existing report first, use discovery mode
-    const isDiscoveryMode =
+    isDiscoveryMode =
       shouldShowExistingReportFirst ||
       determineChatMode(
         hasExistingReport,
@@ -3397,40 +3416,17 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         intakeInProgress
       );
 
-    // EARLY CHECK: If in discovery mode and user wants to email/generate report, skip bot response and generate report immediately
+    // EARLY CHECK: End/Generate report detection
     if (isDiscoveryMode && lastUser) {
-      console.log(
-        "[chatbotDiagnosticFreeform] 🔍 EARLY CHECK: Discovery mode - checking if user wants to end/generate report"
-      );
-      console.log(
-        "[chatbotDiagnosticFreeform] Last user message:",
-        lastUser.content?.substring(0, 100)
-      );
-
       const {
         detectUserWantsToEndOrGenerateReport,
       } = require("../utils/validation");
-
-      const wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
+      wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
         userMessage: lastUser.content,
-        transcript: transcript,
+        transcript,
       });
 
-      console.log(
-        "[chatbotDiagnosticFreeform] Early check result - wantsToEndOrGenerate:",
-        wantsToEndOrGenerate
-      );
-
       if (wantsToEndOrGenerate) {
-        console.log(
-          "[chatbotDiagnosticFreeform] ⚠️ EARLY CHECK TRIGGERED - User wants to end/generate report. Skipping bot response and generating report immediately."
-        );
-        // User wants report - generate it immediately without bot response
-        const updatedTranscript = transcript;
-        const lastAssistant = [...transcript]
-          .reverse()
-          .find((m) => m?.role === "assistant");
-
         return await handleDiscoveryMode({
           req,
           res,
@@ -3438,7 +3434,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           name,
           messages,
           transcript,
-          updatedTranscript,
+          updatedTranscript: transcript,
           existingDiagnostic,
           existingState,
           priorReportSnippet,
@@ -3448,1212 +3444,233 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           appUser,
           lastUser,
           lastAssistant,
-          nextMessage: null, // Skip bot response - generate report directly
+          nextMessage: null,
           introText,
           discoveryType: req.body.discoveryType || null,
         });
-      } else {
-        console.log(
-          "[chatbotDiagnosticFreeform] ✅ EARLY CHECK PASSED - User does NOT want to end/generate report. Continuing with normal chat flow."
-        );
       }
-    } else {
-      console.log(
-        "[chatbotDiagnosticFreeform] Skipping early check - not in discovery mode or no lastUser message"
-      );
     }
 
-    // Check if intake has started
+    // AI Call Preparation
+    let nextMessage = null;
     const intakeHasStarted = transcript.some(
       (m) => m.role === "assistant" && /Q\d+/i.test(m.content)
     );
+    discoveryType = req.body.discoveryType || null;
 
-    // Build prompts
-    const discoveryType = req.body.discoveryType || null;
-    const { userPrompt, systemPrompt } = await buildChatPrompts({
-      isDiscoveryMode,
-      transcript,
-      targetCount: targetCountForRun,
-      introText,
-      name,
-      retrieved,
-      priorReportSnippet,
-      lastTurnAssistant,
-      resumeNotice,
-      wantsNewDiagnostic,
-      intakeHasStarted,
-      distinctQuestionNumbers,
-      discoveryType,
-      latestDiscoveryMetrics,
-      reportDate,
-    });
-
-    // Build messages array for AI (rename to avoid shadowing the messages parameter)
-    // Ensure systemPrompt is a string
-    const safeSystemPrompt =
-      systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
-    if (!safeSystemPrompt) {
-      console.error("[diagnostic] Invalid system prompt");
-      return errorResponse(
-        res,
-        "Failed to generate response: missing system prompt",
-        500
-      );
-    }
-
-    let aiMessages = [{ role: "system", content: safeSystemPrompt }];
-
-    // Include prior report in system context for both modes (needed for discovery mode to answer questions about it)
-    if (priorReportSnippet) {
-      const priorReportContent = isDiscoveryMode
-        ? `Previous diagnostic report for ${name} (you have full access to this - use it to answer questions about what the report revealed, their patterns, insights, etc.):\n${priorReportSnippet}`
-        : `Existing diagnostic report for ${name} (reference for continuity; do not re-emit the full report here):\n${priorReportSnippet}`;
-      aiMessages.push({
-        role: "system",
-        content:
-          priorReportContent && typeof priorReportContent === "string"
-            ? priorReportContent
-            : "",
-      });
-    }
-
-    // Filter out messages with null/undefined content and ensure all content is strings
-    const validTranscriptMessages = transcript
-      .filter((m) => m && m.content && typeof m.content === "string")
-      .map((m) => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: String(m.content), // Ensure it's a string
-      }));
-
-    // Ensure userPrompt is a string
-    const safeUserPrompt =
-      userPrompt && typeof userPrompt === "string" ? userPrompt : "";
-    if (!safeUserPrompt) {
-      console.error("[diagnostic] Invalid user prompt");
-      return errorResponse(
-        res,
-        "Failed to generate response: missing user prompt",
-        500
-      );
-    }
-
-    aiMessages.push(...validTranscriptMessages, {
-      role: "user",
-      content: safeUserPrompt,
-    });
-
-    // Check if user is asking about diagnostic report (needs more tokens)
-    const lastUserMsg =
-      transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
-    const lowerMsg = lastUserMsg.toLowerCase();
-    const isAskingAboutReport =
-      /diagnostic|report|reveal|show|find|pattern|insight/i.test(lastUserMsg);
-    const isRequestingFullReport =
-      /full report|entire report|everything|go deeper|in depth|where can i improve|improve|tell me all|what did.*reveal/i.test(
-        lowerMsg
-      );
-    const maxTokens = isDiscoveryMode
-      ? isRequestingFullReport
-        ? 800
-        : isAskingAboutReport
-          ? 500
-          : 300 // Brief summary for full report requests (800 tokens to avoid truncation)
-      : 400;
-
-    // Update system prompt for full report requests
-    if (isDiscoveryMode && isRequestingFullReport && priorReportSnippet) {
-      const updatedSystemPrompt = `You are Euphoriam AI. The user asked: "${lastUserMsg}"
-
-You MUST write a brief summary of their diagnostic report. Start immediately with "**What Your Diagnostic Report Revealed:**"
-
-Your response must include:
-1. A 2-3 sentence overview
-2. Key patterns, metrics (with numbers), daily manifestations, strengths, friction points, growth path
-3. Section "**Where You Can Improve:**" with 3-5 actionable areas
-
-Be concise (300-500 words). Extract details from the report in the system context. Write now - do not ask permission.`;
-
-      // Update the system message in aiMessages array
-      aiMessages[0] = { role: "system", content: updatedSystemPrompt };
-    }
-
-    // For full report requests, use lower temperature for more focused responses
-    const temperature =
-      isDiscoveryMode && isRequestingFullReport
-        ? 0.3
-        : isDiscoveryMode
-          ? 0.7
-          : 0.3;
-
-    let aiResponse;
-    let nextMessage;
-    let retryCount = 0;
-    const maxRetries = isDiscoveryMode && isRequestingFullReport ? 1 : 0; // Retry once for full report requests
-
-    // Try to get response, with retry for full report requests
-    while (retryCount <= maxRetries) {
-      aiResponse = await openai.chat.completions.create({
-        model: "gpt-5.2",
-        messages: aiMessages,
-        temperature,
-        max_completion_tokens: maxTokens,
-      });
-      nextMessage = aiResponse?.choices?.[0]?.message;
-
-      // If we got content, break
-      if (nextMessage?.content && nextMessage.content.trim() !== "") {
-        break;
-      }
-
-      // If empty and we should retry, try again with more direct prompt
-      if (
-        retryCount < maxRetries &&
-        isRequestingFullReport &&
-        priorReportSnippet
-      ) {
-        // Retry with even more direct prompt
-        const retryMessages = [
-          {
-            role: "system",
-            content: `You MUST provide a detailed breakdown of the diagnostic report. Start immediately with "**What Your Diagnostic Report Revealed:**"`,
-          },
-          {
-            role: "system",
-            content: `DIAGNOSTIC REPORT:\n${priorReportSnippet.substring(
-              0,
-              10000
-            )}`,
-          },
-          ...transcript.slice(-3).map((m) => ({
-            role: m.role === "assistant" ? "assistant" : "user",
-            content: m.content,
-          })),
-          {
-            role: "user",
-            content: `Provide a comprehensive breakdown of my diagnostic report. Start with "**What Your Diagnostic Report Revealed:**" and then "**Where You Can Improve:**"`,
-          },
-        ];
-        aiMessages = retryMessages;
-        retryCount++;
-        continue;
-      }
-
-      break;
-    }
-
-    // Handle empty responses with better fallback
-    if (
-      !nextMessage ||
-      !nextMessage.content ||
-      nextMessage.content.trim() === ""
-    ) {
-      if (isDiscoveryMode) {
-        const lastUserMsg =
-          transcript.filter((m) => m.role === "user").slice(-1)[0]?.content ||
-          "";
-        const lowerMsg = lastUserMsg.toLowerCase();
-        const isRequestingFullReportFallback =
-          /full report|entire report|everything|go deeper|in depth|where can i improve|improve|tell me all/i.test(
-            lowerMsg
-          );
-
-        if (isRequestingFullReportFallback && priorReportSnippet) {
-          // Try one more time with a very simple, direct prompt
-          try {
-            const simplePrompt = `Summarize this diagnostic report in 300-500 words. Start with "**What Your Diagnostic Report Revealed:**" then "**Where You Can Improve:**"
-
-Report:
-${priorReportSnippet.substring(0, 8000)}
-
-Write the summary now.`;
-
-            const fallbackResponse = await openai.chat.completions.create({
-              model: "gpt-5.2",
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    "You are a helpful assistant. Provide concise summaries of diagnostic reports.",
-                },
-                { role: "user", content: simplePrompt },
-              ],
-              temperature: 0.3,
-              max_completion_tokens: 800,
-            });
-
-            const fallbackMessage = fallbackResponse?.choices?.[0]?.message;
-            if (
-              fallbackMessage?.content &&
-              fallbackMessage.content.trim() !== ""
-            ) {
-              nextMessage = fallbackMessage;
-            } else {
-              // Last resort - provide a helpful message
-              nextMessage = {
-                role: "assistant",
-                content: `**What Your Diagnostic Report Revealed:**
-
-I'm having trouble generating the summary right now. Your diagnostic report contains insights about your patterns, metrics, and growth areas. 
-
-**Where You Can Improve:**
-
-Please try asking again in a moment, or ask me about a specific area from your report (e.g., "what are my metrics?" or "where should I focus?").`,
-              };
-            }
-          } catch (err) {
-            console.error("[fallback] Error generating summary:", err);
-            nextMessage = {
-              role: "assistant",
-              content: `**What Your Diagnostic Report Revealed:**
-
-I'm having trouble generating the summary right now. Please try asking again, or ask about a specific area from your report.`,
-            };
-          }
-        } else {
-          // For discovery mode first message, use structure reflection fallback with actual metrics
-          if (
-            isDiscoveryMode &&
-            transcript.length === 0 &&
-            priorReportSnippet
-          ) {
-            // Use latestDiscoveryMetrics (from latest discovery report) if available, otherwise use diagnosticMetrics
-            // This ensures we show the most recent metrics, not old diagnostic metrics
-            const metricsToUse =
-              latestDiscoveryMetrics &&
-                Object.keys(latestDiscoveryMetrics).length > 0
-                ? latestDiscoveryMetrics
-                : diagnosticMetrics;
-
-            console.log("[welcome message] Metrics being used:", {
-              usingLatestDiscovery:
-                latestDiscoveryMetrics &&
-                Object.keys(latestDiscoveryMetrics).length > 0,
-              latestDiscoveryMetrics,
-              diagnosticMetrics,
-              metricsToUse,
-            });
-
-            // Format metrics for fallback message
-            // Validate and sanitize metric values to prevent negative or invalid values
-            const gravity =
-              typeof metricsToUse.gravity === "number" &&
-                !isNaN(metricsToUse.gravity)
-                ? Math.max(0, metricsToUse.gravity)
-                : undefined;
-            const signalCoherence =
-              typeof metricsToUse.signalCoherence === "number" &&
-                !isNaN(metricsToUse.signalCoherence)
-                ? Math.max(0, metricsToUse.signalCoherence)
-                : undefined;
-            const signalOutput =
-              typeof metricsToUse.signalOutput === "number" &&
-                !isNaN(metricsToUse.signalOutput)
-                ? Math.max(0, metricsToUse.signalOutput)
-                : undefined;
-            const consciousnessLevel =
-              typeof metricsToUse.consciousnessLevel === "number" &&
-                !isNaN(metricsToUse.consciousnessLevel)
-                ? Math.max(0, metricsToUse.consciousnessLevel)
-                : undefined;
-            const qgcActivation =
-              typeof metricsToUse.qgcActivation === "number" &&
-                !isNaN(metricsToUse.qgcActivation)
-                ? Math.max(0, metricsToUse.qgcActivation)
-                : undefined;
-
-            // Helper function to create progress bar
-            const createProgressBar = (value, max = 100, length = 12) => {
-              // Validate and sanitize input
-              if (value === undefined || value === null || isNaN(value)) {
-                value = 0;
-              }
-              // Ensure value is non-negative and within reasonable bounds
-              value = Math.max(0, Math.min(value, max * 2)); // Allow up to 200% for edge cases
-              const filled = Math.max(
-                0,
-                Math.min(Math.round((value / max) * length), length)
-              );
-              const empty = Math.max(0, length - filled);
-              return "█".repeat(filled) + "░".repeat(empty);
-            };
-
-            const metricsSection =
-              gravity !== undefined &&
-                signalCoherence !== undefined &&
-                signalOutput !== undefined &&
-                consciousnessLevel !== undefined &&
-                qgcActivation !== undefined
-                ? `QGC Activation:
-${createProgressBar(qgcActivation)}
-${qgcActivation}%
-
-Consciousness Level:
-${createProgressBar((consciousnessLevel / 5) * 100)}
-${Math.round((consciousnessLevel / 5) * 100)}%
-
-Gravity:
-${createProgressBar(gravity)}
-${gravity}%
-
-Signal Coherence:
-${createProgressBar(signalCoherence)}
-${signalCoherence}%
-
-Signal Output:
-${createProgressBar(signalOutput)}
-${signalOutput}%
-
-* Extremely high Gravity (${gravity}%) → the old identity has a powerful stabilising pull
-* Perfect Signal Coherence (${signalCoherence}%) → no fragmentation, no inner chaos
-* Very low Signal Output (${signalOutput}%) → not because of weakness, but because entry hadn't happened yet
-* Consciousness Level (CL) ${consciousnessLevel} → stabilisation phase
-* Quantum Genius Code (QGC) ${qgcActivation}% → genuine creative intelligence present but contained`
-                : `
-* **[Extract Gravity % from report]** → [what it means]
-* **[Extract Signal Coherence % from report]** → [what it means]
-* **[Extract Signal Output % from report]** → [what it means]
-* **CL [Extract from report]** → [what phase]
-* **QGC [Extract from report]%** → [what it indicates]`;
-
-          // Try to extract key sentence and correction from report
-          let keySentence = "";
-          let correction = "";
-
-          if (priorReportSnippet) {
-            // First, try LLM-based extraction for more reliable results
-            try {
-              const llmExtraction = await extractKeySentenceAndCorrectionWithLLM(priorReportSnippet);
-              if (llmExtraction.keySentence && llmExtraction.keySentence.length >= 15) {
-                keySentence = llmExtraction.keySentence;
-              }
-              if (llmExtraction.correction && llmExtraction.correction.length >= 15) {
-                correction = llmExtraction.correction;
-              }
-            } catch (error) {
-              console.error("[discovery] LLM extraction failed, falling back to regex:", error);
-            }
-
-            // Fall back to regex extraction if LLM didn't find both (or if LLM failed)
-            if (!keySentence || !correction) {
-              // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
-              // First try to find explicit "key sentence" or "distilled" markers with quotes
-              // Allow sentences that start with capital or lowercase (might be continuation)
-              // Increased max length to 500 to capture longer complete sentences
-              // First, try to find the complete quoted sentence by matching the quote pair
-              // Require the sentence to start with a capital letter to ensure it's complete
-              const keySentenceWithQuotes = priorReportSnippet.match(
-                /(?:key sentence|distilled|pattern|identity statement|structure type|primary structure)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i
-              );
-
-              let explicitKeySentenceMatch = null;
-              if (keySentenceWithQuotes && keySentenceWithQuotes[2]) {
-                // Found a complete quoted sentence - use it directly
-                explicitKeySentenceMatch = [null, keySentenceWithQuotes[2]];
-              } else {
-                // Fallback: try pattern that might catch partial quotes
-                // Require capital letter start to avoid fragments
-                explicitKeySentenceMatch = priorReportSnippet.match(
-                  /(?:key sentence|distilled|pattern|identity statement|structure type|primary structure)[\s\S]{0,500}["']([A-Z][^"']{20,500}?)(?:\.|"|'|$)/i
-                );
-              }
-
-              // Try to find structure type patterns in parentheses (e.g., "(Sensitivity-Sensitive Variant) — "Wrong-Avoidant Starter" subtype")
-              // This handles cases where the key sentence starts with a parenthetical structure type
-              const structureTypeMatch = priorReportSnippet.match(
-                /\(([A-Z][^)]{10,80})\)\s*[—–-]\s*["']([^"']{10,80})["']/i
-              );
-
-              // Try to find quoted identity statements with "I will", "I must", etc.
-              // Must start with capital letter
-              // Increased max length to capture longer complete sentences
-              const identityStatementMatch = priorReportSnippet.match(
-                /["']([A-Z][^"']{10,500}(?:I will|I must|I can't|I won't|I need|I have to|I move when|I stay|answering|considering|but against|against any|redundancy|matured|verification|system doesn't)[^"']{0,200}(?:\.|"|'|$))["']?/i
-              );
-
-              // Try to find unquoted identity statements (complete sentences starting with capital)
-              const unquotedIdentityMatch = priorReportSnippet.match(
-                /(?:I will|I must|I can't|I won't|I need|I have to|I move when|I stay|Answering|Considering)[A-Za-z\s,:'"()-]{20,150}\./i
-              );
-
-              // Try to find key sentence in "Key refinement" section specifically
-              // This section often contains the distilled pattern
-              const keyRefinementMatch = priorReportSnippet.match(
-                /(?:Key refinement|key refinement)[\s\S]{0,300}["']([^"']{20,500}?)(?:["']|\.)(?:\n\n|$)/i
-              );
-
-              // Try to find quoted text after "distilled" or "key sentence"
-              const distilledQuotedMatch = priorReportSnippet.match(
-                /(?:key sentence|distilled)[\s\S]{0,300}["']([^"']{20,500}?)["']/i
-              );
-
-              if (explicitKeySentenceMatch && explicitKeySentenceMatch[1]) {
-                keySentence = explicitKeySentenceMatch[1].trim();
-              } else if (distilledQuotedMatch && distilledQuotedMatch[1]) {
-                keySentence = distilledQuotedMatch[1].trim();
-              } else if (keyRefinementMatch && keyRefinementMatch[1]) {
-                keySentence = keyRefinementMatch[1].trim();
-              } else if (structureTypeMatch) {
-                // Combine structure type pattern: "(Variant) — "Subtype""
-                const variant = structureTypeMatch[1]?.trim() || "";
-                const subtype = structureTypeMatch[2]?.trim() || "";
-                if (variant && subtype) {
-                  keySentence = `(${variant}) — "${subtype}"`;
-                } else if (variant) {
-                  keySentence = `(${variant})`;
-                }
-              } else if (identityStatementMatch && identityStatementMatch[1]) {
-                keySentence = identityStatementMatch[1].trim();
-              } else if (unquotedIdentityMatch && unquotedIdentityMatch[0]) {
-                keySentence = unquotedIdentityMatch[0].trim();
-              }
-
-              // Validate key sentence - must be complete and meaningful
-              if (keySentence) {
-                // Clean up: remove trailing quotes, periods, etc. that might be part of the match
-                keySentence = keySentence.replace(/["']+$/, "").trim();
-
-                // Remove if too short, doesn't start with capital letter or parenthesis, or looks incomplete
-                // Allow structure type patterns that start with parentheses
-                // Reject fragments that start with lowercase (unless it's a structure type pattern)
-                if (
-                  keySentence.length < 15 ||
-                  // Reject fragments that start with lowercase (unless it's a structure type pattern in parentheses)
-                  (/^[a-z]/.test(keySentence) &&
-                    !keySentence.startsWith("(")) ||
-                  // Reject common fragment patterns
-                  /^(ile|Updated|One sentence|Exact|while staying|ering|tes|ty-|ayer|d,\s*no|no\s*["']|,\s*no)/i.test(
-                    keySentence
-                  ) || // Common fragments/cropped text
-                  // Reject if it starts with a comma or other punctuation (likely a fragment)
-                  /^[,;:—–-]/.test(keySentence) ||
-                  // Reject if it ends with incomplete punctuation
-                  (/[)\]]$/.test(keySentence) &&
-                    !/[.!?"']$/.test(keySentence) &&
-                    !keySentence.includes("—") &&
-                    keySentence.length < 50) // Ends with ) or ] but not sentence-ending punctuation and is short (unless it's a structure type pattern)
-                ) {
-                  keySentence = "";
-                }
-              }
-
-              // No length limit - use full text
-
-              // Look for correction section - stop before metrics sections
-              // CRITICAL: Only extract from "First Correction" or "10. FIRST CORRECTION" section
-              // DO NOT extract from "Key refinement" or other sections
-              // Find correction text that ends before hitting metrics/FRICTION sections or "Key refinement"
-              // Must start with capital letter to ensure it's a complete sentence
-              // Exclude placeholder text like "One correction. Small. Structural. Repeatable."
-              const correctionMatch =
-                // First try: Look for "First Correction" or "10. FIRST CORRECTION" section header
-                // Stop before "Key refinement", metrics, or other sections
-                priorReportSnippet.match(
-                  /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION|10\.\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i
-                ) ||
-                // Second try: Look for "First Correction" (not "Key refinement") followed by quoted text or direct text
-                // Explicitly exclude "Key refinement" sections - use negative lookahead
-                priorReportSnippet.match(
-                  /(?:^|\n)(?:###?\s*)?(?:10\.\s*)?FIRST\s+CORRECTION(?!.*Key refinement)[\s\S]{0,500}?(?:One sentence\.\s*Exact\.\s*)?\n\n?>?\s*\*?\s*["']?([A-Z][^█"']{20,500}?)(?:["']|\.|$)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i
-                ) ||
-                // Third try: Look for correction keywords with quoted text, but only if NOT in "Key refinement" section
-                // Match "When you feel" or "write one line" patterns that are specific to corrections
-                priorReportSnippet.match(
-                  /(?:When you feel|write one line|Before you type)[\s\S]{0,500}?["']([A-Z][^█"']{20,500}?)(?:["']|\.)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i
-                );
-
-              if (correctionMatch && correctionMatch[1]) {
-                correction = correctionMatch[1].trim();
-
-                // CRITICAL: Check if this correction came from "Key refinement" section
-                // If it did, reject it - we only want corrections from "First Correction" section
-                const correctionIndex = priorReportSnippet.indexOf(correction);
-                if (correctionIndex !== -1) {
-                  const beforeCorrection = priorReportSnippet.substring(
-                    0,
-                    correctionIndex
-                  );
-                  const keyRefinementIndex =
-                    beforeCorrection.lastIndexOf("Key refinement");
-                  const firstCorrectionIndex =
-                    beforeCorrection.lastIndexOf("First Correction");
-
-                  // If "Key refinement" appears after the last "First Correction" before this text, reject it
-                  if (
-                    keyRefinementIndex !== -1 &&
-                    (firstCorrectionIndex === -1 ||
-                      keyRefinementIndex > firstCorrectionIndex)
-                  ) {
-                    correction = ""; // Reject - this came from "Key refinement" section
-                  }
-                }
-
-                // UPDATED: Prevent Key Sentence from being identical to Correction
-                if (keySentence && correction && (keySentence.includes(correction) || correction.includes(keySentence))) {
-                  console.log("[discovery] Key Sentence and Correction overlap detected. Clearing Key Sentence to force fallback.");
-                  keySentence = "";
-                }
-
-                // Additional validation: ensure it doesn't contain metrics indicators
-                if (
-                  correction &&
-                  /\█|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|\d+%|↓|↑/i.test(
-                    correction
-                  )
-                ) {
-                  // Still contains metrics - try to extract just the text before metrics
-                  const textOnly = correction.split(
-                    /(?:Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|█|\d+%)/i
-                  )[0];
-                  if (textOnly && textOnly.trim().length >= 20) {
-                    correction = textOnly.trim();
-                  } else {
-                    correction = ""; // Clear if we can't extract clean text
-                  }
-                }
-
-                // Validate correction - must be complete and meaningful
-                // Exclude placeholder text like "One correction. Small. Structural. Repeatable."
-                if (correction) {
-                  // Remove if too short, doesn't start with capital letter, or looks like placeholder/incomplete
-                  if (
-                    correction.length < 20 ||
-                    !/^[A-Z]/.test(correction) || // Must start with capital letter
-                    /^(Updated|One sentence|Exact|while staying|ile|ering|tes|One correction|Small|Structural|Repeatable)/i.test(
-                      correction
-                    ) || // Common fragments/placeholders/cropped text
-                    /^[a-z]/.test(correction) || // Starts with lowercase = cropped
-                    /\)\s*One sentence/i.test(correction) || // Pattern like "Updated) One sentence"
-                    /One correction\.\s*Small\.\s*Structural\.\s*Repeatable/i.test(
-                      correction
-                    ) || // Placeholder pattern
-                    (/[)\]]$/.test(correction) && !/[.!?]$/.test(correction)) // Ends with ) or ] but not sentence-ending punctuation
-                  ) {
-                    correction = ""; // Clear if it doesn't look valid
-                  }
-                }
-              }
-            }
-            } // End of regex fallback block
-
-            // If we can't extract key sentence, try to infer from report structure
-            let keySentenceText = "";
-            if (keySentence && keySentence.length >= 20) {
-              keySentenceText = `> *"${keySentence}"*`;
-            } else if (priorReportSnippet) {
-              // Try to find structure type or identity description - be more specific
-              // Look for "Structure Type" section or similar
-              const structureTypeMatch = priorReportSnippet.match(
-                /(?:Structure Type|Primary Structure|Your structure)[\s\S]{0,300}(?:is|means|indicates)[\s\S]{0,200}([^.\n]{20,120})/i
-              );
-
-              // Look for identity patterns in quotes
-              const identityPatternMatch = priorReportSnippet.match(
-                /(?:identity|structure)[\s\S]{0,200}["']([^"']{20,120})["']/i
-              );
-
-              if (structureTypeMatch && structureTypeMatch[1]) {
-                const extracted = structureTypeMatch[1].trim();
-                if (extracted.length >= 20 && extracted.length <= 120) {
-                  keySentenceText = `> *"${extracted}"*`;
-                }
-              } else if (identityPatternMatch && identityPatternMatch[1]) {
-                const extracted = identityPatternMatch[1].trim();
-                if (extracted.length >= 20 && extracted.length <= 120) {
-                  keySentenceText = `> *"${extracted}"*`;
-                }
-              } else {
-                // Skip key sentence section if we truly can't extract it
-                keySentenceText = "";
-              }
-            }
-
-            // If we can't extract correction, try to infer from report recommendations
-            let correctionText = "";
-            if (correction && correction.length >= 15) {
-              correctionText = `**${correction}**`;
-            } else if (priorReportSnippet) {
-              // Try to infer from report - look for action items or focus areas
-              const actionMatch = priorReportSnippet.match(
-                /(?:focus|work on|action|next step|correction is|recommendation is)[\s\S]{0,200}(.{30,500})/i
-              );
-              if (actionMatch && actionMatch[1]) {
-                const extracted = actionMatch[1].trim();
-                // Validate extracted text
-                if (
-                  extracted.length >= 30 &&
-                  /^[a-zA-Z]/.test(extracted) &&
-                  !/^(Updated|One sentence)/i.test(extracted)
-                ) {
-                  correctionText = `**${extracted}**`;
-                }
-              }
-              // Don't use generic fallback - if we can't extract, skip the section
-            }
-
-            // Clean up correction text to ensure it ends properly (no truncation)
-            const cleanCorrection = correction
-              ? correction
-                .replace(/[.*?]+$/, "") // Remove trailing special chars
-                .replace(/\s+$/, "") // Remove trailing whitespace
-                .trim()
-              : "";
-
-            const questionText = cleanCorrection
-              ? `Since this report (${reportDate || "recently"
-              }), have you made any progress on ${cleanCorrection}?`
-              : `Since this report (${reportDate || "recently"
-              }), what has changed or stayed the same?`;
-
-            nextMessage = {
-              role: "assistant",
-              content: `Welcome back ${name}!. I've loaded your last report.
-
-I want to reflect it back to you first — simply and cleanly — before we move anywhere.
-
-Your structure at the last check-in was very clear:
-${metricsSection}
-
-${keySentenceText && keySentenceText.length > 20
-                  ? `This is the key sentence from your map, distilled:
-
-${keySentenceText}
-
-`
-                  : ""
-                }${correction && correction.length >= 15
-                  ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction}.`
-                  : ""
-                }
-
-${correctionText && correctionText.length > 20
-                  ? `Your **entire correction** was about one thing only:
-${correctionText}
-
-`
-                  : ""
-                }Before I update anything, I need to check one thing — slowly.
-
-**Since this report (${reportDate || "recently"}):**
-
-${questionText}
-
-Just answer that.`,
-            };
-          } else {
-            // Don't use hardcoded fallback - if LLM returns empty, it should be handled upstream
-            console.error(
-              "[discovery] Empty response after cleanup - LLM response may be invalid"
-            );
-            nextMessage = null;
-          }
-        }
-      } else {
-        // For discovery mode first message, use structure reflection with actual metrics
-        if (isDiscoveryMode && transcript.length === 0 && priorReportSnippet) {
-          // Use latestDiscoveryMetrics (from latest discovery report) if available, otherwise use diagnosticMetrics
-          // This ensures we show the most recent metrics, not old diagnostic metrics
-          const metricsToUse =
-            latestDiscoveryMetrics &&
-              Object.keys(latestDiscoveryMetrics).length > 0
-              ? latestDiscoveryMetrics
-              : diagnosticMetrics;
-
-          // Format metrics for fallback message
-          // Validate and sanitize metric values to prevent negative or invalid values
-          const gravity =
-            typeof metricsToUse.gravity === "number" &&
-              !isNaN(metricsToUse.gravity)
-              ? Math.max(0, metricsToUse.gravity)
-              : undefined;
-          const signalCoherence =
-            typeof metricsToUse.signalCoherence === "number" &&
-              !isNaN(metricsToUse.signalCoherence)
-              ? Math.max(0, metricsToUse.signalCoherence)
-              : undefined;
-          const signalOutput =
-            typeof metricsToUse.signalOutput === "number" &&
-              !isNaN(metricsToUse.signalOutput)
-              ? Math.max(0, metricsToUse.signalOutput)
-              : undefined;
-          const consciousnessLevel =
-            typeof metricsToUse.consciousnessLevel === "number" &&
-              !isNaN(metricsToUse.consciousnessLevel)
-              ? Math.max(0, metricsToUse.consciousnessLevel)
-              : undefined;
-          const qgcActivation =
-            typeof metricsToUse.qgcActivation === "number" &&
-              !isNaN(metricsToUse.qgcActivation)
-              ? Math.max(0, metricsToUse.qgcActivation)
-              : undefined;
-
-          // Helper function to create progress bar
-          const createProgressBar = (value, max = 100, length = 12) => {
-            // Validate and sanitize input
-            if (value === undefined || value === null || isNaN(value)) {
-              value = 0;
-            }
-            // Ensure value is non-negative and within reasonable bounds
-            value = Math.max(0, Math.min(value, max * 2)); // Allow up to 200% for edge cases
-            const filled = Math.max(
-              0,
-              Math.min(Math.round((value / max) * length), length)
-            );
-            const empty = Math.max(0, length - filled);
-            return "█".repeat(filled) + "░".repeat(empty);
-          };
-
-          const metricsSection =
-            gravity !== undefined &&
-              signalCoherence !== undefined &&
-              signalOutput !== undefined &&
-              consciousnessLevel !== undefined &&
-              qgcActivation !== undefined
-              ? `QGC Activation:
-${createProgressBar(qgcActivation)}
-${qgcActivation}%
-
-Consciousness Level:
-${createProgressBar((consciousnessLevel / 5) * 100)}
-${Math.round((consciousnessLevel / 5) * 100)}%
-
-Gravity:
-${createProgressBar(gravity)}
-${gravity}%
-
-Signal Coherence:
-${createProgressBar(signalCoherence)}
-${signalCoherence}%
-
-Signal Output:
-${createProgressBar(signalOutput)}
-${signalOutput}%
-
-* Extremely high Gravity (${gravity}%) → the old identity has a powerful stabilising pull
-* Perfect Signal Coherence (${signalCoherence}%) → no fragmentation, no inner chaos
-* Very low Signal Output (${signalOutput}%) → not because of weakness, but because entry hadn't happened yet
-* Consciousness Level (CL) ${consciousnessLevel} → stabilisation phase
-* Quantum Genius Code (QGC) ${qgcActivation}% → genuine creative intelligence present but contained`
-              : `
-* **[Extract Gravity % from report]** → [what it means]
-* **[Extract Signal Coherence % from report]** → [what it means]
-* **[Extract Signal Output % from report]** → [what it means]
-* **CL [Extract from report]** → [what phase]
-* **QGC [Extract from report]%** → [what it indicates]`;
-
-          // Try to extract key sentence and correction from report
-          let keySentence = "";
-          let correction = "";
-
-          if (priorReportSnippet) {
-            // First, try LLM-based extraction for more reliable results
-            try {
-              const llmExtraction = await extractKeySentenceAndCorrectionWithLLM(priorReportSnippet);
-              if (llmExtraction.keySentence && llmExtraction.keySentence.length >= 15) {
-                keySentence = llmExtraction.keySentence;
-              }
-              if (llmExtraction.correction && llmExtraction.correction.length >= 15) {
-                correction = llmExtraction.correction;
-              }
-            } catch (error) {
-              console.error("[discovery] LLM extraction failed, falling back to regex:", error);
-            }
-
-            // Fall back to regex extraction if LLM didn't find both
-            if (!keySentence || !correction) {
-              // Look for key sentence patterns (quoted sentences, "I will..." patterns, etc.)
-            // First try to find explicit "key sentence" or "distilled" markers with quotes
-            // Allow sentences that start with capital or lowercase (might be continuation)
-            // Increased max length to 500 to capture longer complete sentences
-            // First, try to find the complete quoted sentence by matching the quote pair
-            // Require the sentence to start with a capital letter to ensure it's complete
-            const keySentenceWithQuotes = priorReportSnippet.match(
-              /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i
-            );
-
-            let explicitKeySentenceMatch = null;
-            if (keySentenceWithQuotes && keySentenceWithQuotes[2]) {
-              // Found a complete quoted sentence - use it directly
-              explicitKeySentenceMatch = [null, keySentenceWithQuotes[2]];
-            } else {
-              // Fallback: try pattern that might catch partial quotes or unquoted sentences
-              // Require capital letter start to avoid fragments
-              // UPDATED: Handle markdown delimiters (> ** " ') and internal apostrophes
-              // Greedy prefix consumption to handle > ** " prefix
-              explicitKeySentenceMatch = priorReportSnippet.match(
-                /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}?(?:[\s>:\-—*"'`\u2018\u2019\u201C\u201D]*)([A-Z](?:[^█\n]|['\u2019](?=[a-z]))+?)(?:\*\*|\*|["'\u2018\u2019\u201C\u201D]|\.|$)/i
-              );
-            }
-
-            // Try to find quoted identity statements with "I will", "I must", etc.
-            // Increased max length to capture longer complete sentences
-            const identityStatementMatch = priorReportSnippet.match(
-              /["']([A-Z][^"']{10,500}(?:I will|I must|I can't|I won't|I need|I have to|I move when|I stay|answering|considering|but against|against any|redundancy|matured|verification|system doesn't)[^"']{0,200}(?:\.|"|'|$))["']?/i
-            );
-
-            // Try to find unquoted identity statements (complete sentences starting with capital)
-            const unquotedIdentityMatch = priorReportSnippet.match(
-              /(?:I will|I must|I can't|I won't|I need|I have to|I move when|I stay|Answering|Considering)[A-Za-z\s,:'"()-]{20,150}\./i
-            );
-
-            // Try to find structural descriptions that might not be in quotes (e.g., "redundancy layer has matured...")
-            // Look for patterns like "X has Y" or "X from Y into Z" that describe structural changes
-            // Also look in "Key refinement" sections
-            const structuralDescriptionMatch = priorReportSnippet.match(
-              /(?:key sentence|distilled|pattern|structure|refinement|Key refinement)[\s\S]{0,500}["']?([a-z][^"']{20,500}?(?:has|from|into|matured|shifted|changed|doesn't|system|layer|verification|closure)[^"']{0,200}?[.;:])["']?/i
-            );
-
-            // Try to find key sentence in "Key refinement" section specifically
-            // This section often contains the distilled pattern
-            const keyRefinementMatch = priorReportSnippet.match(
-              /(?:Key refinement|key refinement)[\s\S]{0,300}["']([^"']{20,500}?)(?:["']|\.)(?:\n\n|$)/i
-            );
-
-            // Try to find quoted text after "distilled" or "key sentence"
-            const distilledQuotedMatch = priorReportSnippet.match(
-              /(?:key sentence|distilled)[\s\S]{0,300}["']([^"']{20,500}?)["']/i
-            );
-
-            // Try to find structure type patterns in parentheses (e.g., "(Sensitivity-Sensitive Variant) — "Wrong-Avoidant Starter" subtype")
-            const structureTypeMatch = priorReportSnippet.match(
-              /\(([A-Z][^)]{10,80})\)\s*[—–-]\s*["']([^"']{10,80})["']/i
-            );
-
-            if (explicitKeySentenceMatch && explicitKeySentenceMatch[1]) {
-              keySentence = explicitKeySentenceMatch[1].trim();
-            } else if (distilledQuotedMatch && distilledQuotedMatch[1]) {
-              keySentence = distilledQuotedMatch[1].trim();
-            } else if (keyRefinementMatch && keyRefinementMatch[1]) {
-              keySentence = keyRefinementMatch[1].trim();
-            } else if (structureTypeMatch) {
-              // Combine structure type pattern: "(Variant) — "Subtype""
-              const variant = structureTypeMatch[1]?.trim() || "";
-              const subtype = structureTypeMatch[2]?.trim() || "";
-              if (variant && subtype) {
-                keySentence = `(${variant}) — "${subtype}"`;
-              } else if (variant) {
-                keySentence = `(${variant})`;
-              }
-            } else if (identityStatementMatch && identityStatementMatch[1]) {
-              keySentence = identityStatementMatch[1].trim();
-            } else if (
-              structuralDescriptionMatch &&
-              structuralDescriptionMatch[1]
-            ) {
-              keySentence = structuralDescriptionMatch[1].trim();
-            } else if (unquotedIdentityMatch && unquotedIdentityMatch[0]) {
-              keySentence = unquotedIdentityMatch[0].trim();
-            }
-
-            // Validate key sentence - must be complete and meaningful
-            if (keySentence) {
-              // Clean up: remove trailing quotes, periods, etc. that might be part of the match
-              keySentence = keySentence.replace(/["']+$/, "").trim();
-
-              // Remove if too short, looks like a fragment, or is clearly incomplete
-              if (
-                keySentence.length < 15 ||
-                // Reject fragments that start with lowercase (unless it's a structure type pattern in parentheses)
-                (/^[a-z]/.test(keySentence) && !keySentence.startsWith("(")) ||
-                // Reject common fragment patterns
-                /^(ile|Updated|One sentence|Exact|while staying|ering|tes|ty-|ayer|d,\s*no|no\s*["']|,\s*no)/i.test(
-                  keySentence
-                ) || // Common fragments/cropped text
-                // Reject if it starts with a comma or other punctuation (likely a fragment)
-                /^[,;:—–-]/.test(keySentence) ||
-                // Reject if it ends with incomplete punctuation
-                (/[)\]]$/.test(keySentence) &&
-                  !/[.!?"';]$/.test(keySentence) &&
-                  !keySentence.includes("—") &&
-                  keySentence.length < 50) // Ends with ) or ] but not sentence-ending punctuation and is short (unless it's a structure type pattern)
-              ) {
-                keySentence = "";
-              }
-            }
-
-            // No length limit - use full text
-
-            // Look for correction section - stop before metrics sections
-            // CRITICAL: Only extract from "First Correction" or "10. FIRST CORRECTION" section
-            // DO NOT extract from "Key refinement" or other sections
-            // Find correction text that ends before hitting metrics/FRICTION sections or "Key refinement"
-            // Must start with capital letter to ensure it's a complete sentence
-            // Exclude placeholder text like "One correction. Small. Structural. Repeatable."
-            const correctionMatch =
-              // First try: Look for "First Correction" or "10. FIRST CORRECTION" section header
-              // Stop before "Key refinement", metrics, or other sections
-              priorReportSnippet.match(
-                /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION|10\.\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i
-              ) ||
-              // Second try: Look for "First Correction" (not "Key refinement") followed by quoted text or direct text
-              // Explicitly exclude "Key refinement" sections
-              // Second try: Look for "First Correction" (not "Key refinement") followed by quoted text or direct text
-              // Explicitly exclude "Key refinement" sections
-              // UPDATED: Handle markdown delimiters and exclude boilerplate "One sentence. Exact."
-              // Second try: Look for "First Correction" (not "Key refinement") followed by quoted text or direct text
-              // Explicitly exclude "Key refinement" sections
-              // UPDATED: Handle markdown delimiters, exclude boilerplate, capture multi-sentence text
-              priorReportSnippet.match(
-                /(?:FIRST\s+CORRECTION)(?:[\s\S]*?One sentence\.\s*Exact\.[\s\S]*?)?(?:[\n\r]+)(?:[\s>:\-—*"'`\u2018\u2019\u201C\u201D]*)([A-Z](?:[^█]|\n(?!\n))+?)(?:\*\*|\*|["'\u2018\u2019\u201C\u201D]|$)(?=\s*(?:\n\n|\n\*|Gravity|Signal|QGC|CL|###|$))/i
-              ) ||
-              // Third try: Look for correction keywords with quoted text, but only if NOT in "Key refinement" section
-              // Match "When you feel" or "write one line" patterns that are specific to corrections
-              priorReportSnippet.match(
-                /(?:When you feel|write one line|Before you type)[\s\S]{0,500}?["']([A-Z][^█"']{20,500}?)(?:["']|\.)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i
-              );
-
-            if (correctionMatch && correctionMatch[1]) {
-              correction = correctionMatch[1].trim();
-
-              // CRITICAL: Check if this correction came from "Key refinement" section
-              // If it did, reject it - we only want corrections from "First Correction" section
-              const correctionIndex = priorReportSnippet.indexOf(correction);
-              if (correctionIndex !== -1) {
-                const beforeCorrection = priorReportSnippet.substring(
-                  0,
-                  correctionIndex
-                );
-                const keyRefinementIndex =
-                  beforeCorrection.lastIndexOf("Key refinement");
-                const firstCorrectionIndex =
-                  beforeCorrection.lastIndexOf("First Correction");
-
-                // If "Key refinement" appears after the last "First Correction" before this text, reject it
-                if (
-                  keyRefinementIndex !== -1 &&
-                  (firstCorrectionIndex === -1 ||
-                    keyRefinementIndex > firstCorrectionIndex)
-                ) {
-                  correction = ""; // Reject - this came from "Key refinement" section
-                }
-              }
-
-              // Additional validation: ensure it doesn't contain metrics indicators
-              if (
-                correction &&
-                /\█|Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|\d+%|↓|↑/i.test(
-                  correction
-                )
-              ) {
-                // Still contains metrics - try to extract just the text before metrics
-                const textOnly = correction.split(
-                  /(?:Gravity|Signal|QGC|CL|Consciousness|FRICTION|METRICS|█|\d+%)/i
-                )[0];
-                if (textOnly && textOnly.trim().length >= 20) {
-                  correction = textOnly.trim();
-                } else {
-                  correction = ""; // Clear if we can't extract clean text
-                }
-              }
-
-              // Validate correction - must be complete and meaningful
-              // Exclude placeholder text like "One correction. Small. Structural. Repeatable."
-              if (correction) {
-                // Remove if too short, doesn't start with capital letter, or looks like placeholder/incomplete
-                if (
-                  correction.length < 20 ||
-                  !/^[A-Z]/.test(correction) || // Must start with capital letter
-                  /^(Updated|One sentence|Exact|while staying|ile|ering|tes|One correction|Small|Structural|Repeatable)/i.test(
-                    correction
-                  ) || // Common fragments/placeholders/cropped text
-                  /^[a-z]/.test(correction) || // Starts with lowercase = cropped
-                  /\)\s*One sentence/i.test(correction) || // Pattern like "Updated) One sentence"
-                  /One correction\.\s*Small\.\s*Structural\.\s*Repeatable/i.test(
-                    correction
-                  ) || // Placeholder pattern
-                  (/[)\]]$/.test(correction) && !/[.!?]$/.test(correction)) // Ends with ) or ] but not sentence-ending punctuation
-                ) {
-                  correction = ""; // Clear if it doesn't look valid
-                }
-              }
-            }
-            } // End of regex fallback block
-          }
-
-          // If we can't extract key sentence, try to infer from report structure
-          let keySentenceText = "";
-          if (keySentence && keySentence.length >= 15) {
-            keySentenceText = `> *"${keySentence}"*`;
-          } else if (priorReportSnippet) {
-            // Try to find structure type or identity description - be more specific
-            // Look for "Structure Type" section or similar
-            const structureTypeMatch = priorReportSnippet.match(
-              /(?:Structure Type|Primary Structure|Your structure)[\s\S]{0,300}(?:is|means|indicates)[\s\S]{0,200}([^.\n]{20,120})/i
-            );
-
-            // Look for identity patterns in quotes
-            const identityPatternMatch = priorReportSnippet.match(
-              /(?:identity|structure)[\s\S]{0,200}["']([^"']{20,120})["']/i
-            );
-
-            if (structureTypeMatch && structureTypeMatch[1]) {
-              const extracted = structureTypeMatch[1].trim();
-              if (extracted.length >= 20 && extracted.length <= 120) {
-                keySentenceText = `> *"${extracted}"*`;
-              }
-            } else if (identityPatternMatch && identityPatternMatch[1]) {
-              const extracted = identityPatternMatch[1].trim();
-              if (extracted.length >= 20 && extracted.length <= 120) {
-                keySentenceText = `> *"${extracted}"*`;
-              }
-            } else {
-              // Skip key sentence section if we truly can't extract it
-              keySentenceText = "";
-            }
-          }
-
-          // If we can't extract correction, try to infer from report recommendations
-          let correctionText = "";
-          if (correction) {
-            correctionText = `**${correction}**`;
-          } else if (priorReportSnippet) {
-            // Try to infer from report - look for action items or focus areas
-            const actionMatch = priorReportSnippet.match(
-              /(?:focus|work on|action|next step)[\s\S]{0,100}(.{30,100})/i
-            );
-            if (actionMatch) {
-              correctionText = `**${actionMatch[1].trim()}**`;
-            } else {
-              // Use a generic but meaningful fallback
-              correctionText = `**structural alignment and entry threshold work**`;
-            }
-          }
-
-          // Clean up correction text to ensure it ends properly (no truncation)
-          const cleanCorrection = correction
-            ? correction
-              .replace(/[.*?]+$/, "") // Remove trailing special chars
-              .replace(/\s+$/, "") // Remove trailing whitespace
-              .trim()
-            : "";
-
-          const questionText = cleanCorrection
-            ? `Since this report (${reportDate || "recently"
-            }), have you made any progress on ${cleanCorrection}?`
-            : `Since this report (${reportDate || "recently"
-            }), what has changed or stayed the same?`;
-
-          nextMessage = {
-            role: "assistant",
-            content: `Welcome back ${name}. I've loaded your last report.
-
-I want to reflect it back to you first — simply and cleanly — before we move anywhere.
-
-Your structure at the last check-in was very clear:
-${metricsSection}
-
-${keySentenceText && keySentenceText.length > 20
-                ? `This is the key sentence from your map, distilled:
-
-${keySentenceText}
-
-`
-                : ""
-              }${correction && correction.length >= 15
-                ? `Nothing in your report pointed to laziness, lack of capacity, or being "behind." It pointed to your structure — ${correction}.`
-                : ""
-              }
-
-${correctionText && correctionText.length > 20
-                ? `Your **entire correction** was about one thing only:
-${correctionText}
-
-`
-                : ""
-              }Before I update anything, I need to check one thing — slowly.
-
-**Since this report (${reportDate || "recently"}):**
-
-${questionText}
-
-Just answer that.`,
-          };
-        }
-        // Note: Removed hardcoded fallback - if LLM returns empty, it should be handled upstream
-      }
-    }
-
-    // Clean up numbered questions in discovery mode
     if (
       isDiscoveryMode &&
-      nextMessage &&
-      typeof nextMessage.content === "string"
+      isFirstUserInteraction &&
+      !wantsNewDiagnostic &&
+      !intakeInProgress
     ) {
-      nextMessage.content = nextMessage.content
-        .replace(/^\s*Q\d+\s*[—–-]?\s*/gim, "") // Remove Q1 — at start
-        .replace(/\*\*Q\d+\s*[—–-]?\s*\*\*/g, "") // Remove **Q1 —**
-        .replace(/Q\d+\s*[—–-]?\s*/g, "") // Remove any Q1 — in text
-        .replace(/Q\d+\)\s*/g, "") // Remove Q1) pattern
-        .trim();
+      // Logic for first message in discovery mode handled via fallback below
+    } else {
+      const { userPrompt, systemPrompt } = await buildChatPrompts({
+        isDiscoveryMode,
+        transcript,
+        targetCount: targetCountForRun,
+        introText,
+        name,
+        retrieved,
+        priorReportSnippet,
+        lastTurnAssistant,
+        resumeNotice,
+        wantsNewDiagnostic,
+        intakeHasStarted,
+        distinctQuestionNumbers,
+        discoveryType,
+        latestDiscoveryMetrics,
+        reportDate,
+      });
 
-      // If cleanup results in empty content, this indicates an issue with the LLM response
-      // Don't use hardcoded fallback - let it be handled upstream or retry LLM call
-      if (!nextMessage.content || nextMessage.content.trim() === "") {
-        console.error(
-          "[discovery] Content became empty after cleanup - LLM response may be invalid"
+      const safeSystemPrompt =
+        systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
+      if (safeSystemPrompt) {
+        let aiMessages = [{ role: "system", content: safeSystemPrompt }];
+        if (priorReportSnippet) {
+          aiMessages.push({
+            role: "system",
+            content: isDiscoveryMode
+              ? `Previous report for ${name}:\n${priorReportSnippet}`
+              : `Existing report for context:\n${priorReportSnippet}`,
+          });
+        }
+        aiMessages.push(
+          ...transcript
+            .filter((m) => m?.content)
+            .map((m) => ({ role: m.role, content: String(m.content) }))
         );
-        // Set to null so upstream can handle it (retry or error)
-        nextMessage = null;
+        aiMessages.push({ role: "user", content: userPrompt || "" });
+
+        const lowerMsg = (lastUser?.content || "").toLowerCase();
+        const isRequestingFullReport =
+          isDiscoveryMode &&
+          /full report|entire report|everything|go deeper|in depth|what did.*reveal/i.test(
+            lowerMsg
+          );
+        if (isRequestingFullReport) {
+          aiMessages[0] = {
+            role: "system",
+            content: `Summarize the diagnostic report for ${name}. Start with "**What Your Diagnostic Report Revealed:**".`,
+          };
+        }
+
+        try {
+          const response = await withTimeout(
+            openai.chat.completions.create({
+              model: "gpt-4o",
+              messages: aiMessages,
+              temperature: isRequestingFullReport ? 0.3 : 0.7,
+              max_tokens: isRequestingFullReport ? 800 : 400,
+            }),
+            30000
+          );
+          nextMessage = response.choices[0].message;
+          if (nextMessage?.content) aiAnswered = true;
+        } catch (err) {
+          console.error("[diagnostic] AI Call failed or timed out:", err);
+        }
       }
     }
 
-    // Hard-prefix the resume notice if provided, last turn was assistant, and not already present (only for diagnostic mode).
-    if (
-      !isDiscoveryMode &&
-      resumeNotice &&
-      lastTurnAssistant &&
-      nextMessage &&
-      typeof nextMessage.content === "string" &&
-      !nextMessage.content.includes(resumeNotice)
-    ) {
+    // Fallback for Discovery First Message or AI Failure
+    if (isDiscoveryMode && (!nextMessage || !nextMessage.content)) {
+      const metricsToUse =
+        latestDiscoveryMetrics && Object.keys(latestDiscoveryMetrics).length > 0
+          ? latestDiscoveryMetrics
+          : diagnosticMetrics;
+
+      const createProgressBar = (value, max = 100, length = 12) => {
+        if (value === undefined || value === null || isNaN(value)) value = 0;
+        value = Math.max(0, Math.min(value, max * 2));
+        const filled = Math.max(
+          0,
+          Math.min(Math.round((value / max) * length), length)
+        );
+        const empty = Math.max(0, length - filled);
+        return "█".repeat(filled) + "░".repeat(empty);
+      };
+
+      const gravity = metricsToUse.gravity;
+      const signalCoherence = metricsToUse.signalCoherence;
+      const signalOutput = metricsToUse.signalOutput;
+      const consciousnessLevel = metricsToUse.consciousnessLevel;
+      const qgcActivation = metricsToUse.qgcActivation;
+
+      const metricsSection =
+        gravity !== undefined &&
+        signalCoherence !== undefined &&
+        signalOutput !== undefined &&
+        consciousnessLevel !== undefined &&
+        qgcActivation !== undefined
+          ? `QGC Activation:
+${createProgressBar(qgcActivation)}
+${qgcActivation}%
+
+Consciousness Level:
+${createProgressBar((consciousnessLevel / 5) * 100)}
+${Math.round((consciousnessLevel / 5) * 100)}%
+
+Gravity:
+${createProgressBar(gravity)}
+${gravity}%
+
+Signal Coherence:
+${createProgressBar(signalCoherence)}
+${signalCoherence}%
+
+Signal Output:
+${createProgressBar(signalOutput)}
+${signalOutput}%`
+          : `(Metrics loading failed. Please refer to your report dashboard.)`;
+
+      let keySentence = "",
+        correction = "";
+      if (priorReportSnippet) {
+        try {
+          const llmExt = await extractKeySentenceAndCorrectionWithLLM(
+            priorReportSnippet
+          );
+          if (llmExt.keySentence && llmExt.keySentence.length >= 15)
+            keySentence = llmExt.keySentence;
+          if (llmExt.correction && llmExt.correction.length >= 15)
+            correction = llmExt.correction;
+        } catch (e) {
+          console.error("[discovery] LLM extraction failed:", e);
+        }
+
+        if (!keySentence || !correction) {
+          const ksMatch = priorReportSnippet.match(
+            /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i
+          );
+          if (ksMatch) keySentence = ksMatch[2].trim();
+
+          const corrMatch = priorReportSnippet.match(
+            /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i
+          );
+          if (corrMatch) correction = corrMatch[1].trim();
+        }
+      }
+
+      const qText = correction
+        ? `Since this report (${
+            reportDate || "recently"
+          }), have you made any progress on ${correction}?`
+        : `Since this report (${
+            reportDate || "recently"
+          }), what has changed or stayed the same?`;
+
       nextMessage = {
-        ...nextMessage,
-        content: `${resumeNotice}\n\n${nextMessage.content}`.trim(),
+        role: "assistant",
+        content: `Welcome back ${name}. I've loaded your last report.
+
+I want to reflect it back to you first — simply and cleanly — before we move anywhere.
+
+Your structure at the last check-in was very clear:
+${metricsSection}
+
+${
+  keySentence
+    ? `This is the key sentence from your map, distilled:
+> *"${keySentence}"*
+
+`
+    : ""
+}${
+          correction
+            ? `Your **entire correction** was about one thing only:
+**${correction}**
+
+`
+            : ""
+        }Before I update anything, I need to check one thing — slowly.
+
+**Since this report (${reportDate || "recently"}):**
+
+${qText}
+
+Just answer that.`,
       };
     }
 
-    // Strip any leading filler before the first Q-line; keep resume notice if present (only for diagnostic mode).
-    if (
-      !isDiscoveryMode &&
-      nextMessage &&
-      typeof nextMessage.content === "string"
-    ) {
-      const lines = nextMessage.content.split(/\r?\n/);
-      // Only strip down to the Q-line when resuming after an assistant turn; otherwise keep acknowledgments.
-      if (lastTurnAssistant) {
-        const qIndex = lines.findIndex((ln) => /^\s*\**Q\d+/i.test(ln.trim()));
-        if (qIndex > -1) {
-          const kept = lines.slice(qIndex).join("\n").trim();
-          const hasResume =
-            resumeNotice && nextMessage.content.includes(resumeNotice);
-          nextMessage = {
-            ...nextMessage,
-            content: hasResume ? `${resumeNotice}\n\n${kept}`.trim() : kept,
-          };
-        }
-      }
+    // Cleanup and Routing
+    if (isDiscoveryMode && nextMessage?.content) {
+      nextMessage.content = nextMessage.content
+        .replace(/^\s*Q\d+\s*[—–-]?\s*/gim, "")
+        .trim();
     }
-
-    // Build updated transcript including the assistant reply we just generated (for resume after refresh).
     const updatedTranscript = nextMessage
       ? [...transcript, nextMessage]
       : [...transcript];
 
-    // Save chat incrementally to database (for chat history)
     if (appUser && updatedTranscript.length > 0) {
-      const chatType = isDiscoveryMode ? "discovery" : "dignostic";
-      // Only force new chat if this is truly a new session (first message in transcript)
-      // Don't use wantsNewDiagnostic here - that's for diagnostic flow, not chat session management
-      // A new diagnostic can happen within the same chat session
-      const isFirstMessage =
-        transcript.filter((m) => m?.role === "user").length <= 1;
       await saveChatIncrementally({
         userId: appUser.id,
         diagnosticId: existingDiagnostic?.id || null,
-        discoveryId: null, // Will be set if discovery record exists
-        chatType: chatType,
+        chatType: isDiscoveryMode ? "discovery" : "dignostic",
         transcript: updatedTranscript,
         isChatEnded: false,
-        forceNewChat: false, // Let the function determine if it's a new session based on existing chats
       });
     }
 
@@ -4672,58 +3689,47 @@ Just answer that.`,
           questionText: lastAssistant.content,
           answerText: lastUser?.content || "",
         };
-        if (idx >= 0) {
-          acceptedAnswers[idx] = entry;
-        } else {
-          acceptedAnswers.push(entry);
-        }
+        if (idx >= 0) acceptedAnswers[idx] = entry;
+        else acceptedAnswers.push(entry);
       }
     }
 
-    // Compute distinct questions answered: count unique/distinct question numbers only, excluding the pending one.
-    const answeredCount = distinctQuestionsAnswered
-      ? distinctQuestionsAnswered - (pendingQuestion ? 1 : 0)
-      : 0;
-
-    // Persist intake progress (draft) so we can resume after refresh.
     const intakeState = {
       transcript: updatedTranscript,
       acceptedAnswers,
-      answeredCount,
+      answeredCount: distinctQuestionsAnswered - (pendingQuestion ? 1 : 0),
       lastQuestionNumber: maxQuestionNumber,
       pendingQuestion,
       updatedAt: new Date().toISOString(),
-      // Persist the "requesting new diagnostic" flag so we stay in diagnostic mode
-      // Clear it if we're showing existing report first (user can request new diagnostic explicitly after)
       requestingNewDiagnostic: shouldShowExistingReportFirst
-        ? false // Clear flag when showing existing report first
+        ? false
         : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
     };
 
     if (existingDiagnostic) {
       await existingDiagnostic.update({
-        title:
-          existingDiagnostic.title ||
-          `Euphoriam Intake (Draft) – ${existingDiagnostic?.data?.profile?.name || name
-          }`,
-        data: {
-          ...(existingDiagnostic.data || {}),
-          intakeState,
-        },
+        data: { ...(existingDiagnostic.data || {}), intakeState },
       });
     } else {
-      await Diagnostic.create({
-        userId: appUser.id || null,
-        email,
-        title: `Euphoriam Intake (Draft) – ${name}`,
-        data: {
-          profile: { name, email },
-          intakeState,
-        },
-      });
+      try {
+        await Diagnostic.create({
+          userId: appUser.id,
+          email,
+          title: `Intake – ${name}`,
+          data: { profile: { name, email }, intakeState },
+        });
+      } catch (createErr) {
+        if (createErr.name === "SequelizeUniqueConstraintError") {
+          const diag = await Diagnostic.findOne({ where: { email } });
+          if (diag) {
+            await diag.update({ data: { ...(diag.data || {}), intakeState } });
+          }
+        } else {
+          throw createErr;
+        }
+      }
     }
 
-    // Route to appropriate handler based on mode
     if (isDiscoveryMode) {
       return await handleDiscoveryMode({
         req,
@@ -4765,7 +3771,7 @@ Just answer that.`,
         nextMessage,
         introText,
         targetCount: targetCountForRun,
-        answeredCount,
+        answeredCount: intakeState.answeredCount,
         pendingQuestion,
         aiAnswered,
         distinctQuestionNumbers,
@@ -4781,107 +3787,72 @@ Just answer that.`,
   // ============================================
   // FINALIZE FLOW (finalize=true)
   // ============================================
-  // Handle manual finalization requests
-  // Check if user said "end chat" - if so, save chat immediately and return response
-
   const transcriptForFinal =
     (Array.isArray(existingState.transcript) && existingState.transcript.length
       ? existingState.transcript
       : transcript) || [];
-
-  const lastUser = [...transcriptForFinal]
+  const finalUser = [...transcriptForFinal]
     .reverse()
     .find((m) => m?.role === "user");
-  const lastUserMsg = lastUser?.content || "";
-  const lowerMessage = lastUserMsg.toLowerCase();
+  const lowerMessage = (finalUser?.content || "").toLowerCase();
 
-  // Check if user just said "end chat" (not "email report")
   const justEndingChat =
     /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
     !/(email|send|report)/i.test(lowerMessage);
 
   if (justEndingChat) {
-    // User just wants to end chat - save immediately and return response
-    // Report will be generated in background
-
-    // Find or create chat record
-    let chat = null;
-    if (existingDiagnostic?.chatId) {
-      chat = await Chat.findByPk(existingDiagnostic.chatId);
-    }
-
+    let chat = existingDiagnostic?.chatId
+      ? await Chat.findByPk(existingDiagnostic.chatId)
+      : null;
     if (!chat) {
-      // Find latest incomplete chat
       chat = await Chat.findOne({
-        where: {
-          userId: appUser.id,
-          isChatEnded: false,
-        },
+        where: { userId: appUser.id, isChatEnded: false },
         order: [["createdAt", "DESC"]],
       });
     }
 
-    // Save chat with transcript and mark as ended
     if (chat) {
       await chat.update({
         isChatEnded: true,
         data: {
           ...(chat.data || {}),
           transcript: transcriptForFinal,
-          messages: transcriptForFinal,
           endedAt: new Date().toISOString(),
+          pdfSummary: null, // Will be updated when report is generated in background
         },
       });
-      console.log(
-        `[chatbotDiagnosticFreeform] Chat ${chat.id} saved and marked as ended for user ${email}`
-      );
     } else {
-      // Create new chat record if none exists
-      const chatType = hasExistingReport ? "discovery" : "dignostic";
       chat = await Chat.create({
         userId: appUser.id,
         dignosticId: existingDiagnostic?.id || null,
-        chatType: chatType,
+        chatType: hasExistingReport ? "discovery" : "dignostic",
         isChatEnded: true,
         data: {
           transcript: transcriptForFinal,
-          messages: transcriptForFinal,
           endedAt: new Date().toISOString(),
+          pdfSummary: null, // Will be updated when report is generated in background
         },
       });
-      console.log(
-        `[chatbotDiagnosticFreeform] New chat ${chat.id} created and marked as ended for user ${email}`
-      );
-
-      // Link chat to diagnostic if exists
-      if (existingDiagnostic && !existingDiagnostic.chatId) {
-        await existingDiagnostic.update({ chatId: chat.id });
-      }
     }
 
-    // Return response immediately
-    const response = successResponse(res, "Chat ended and saved", {
-      message: "Your chat is ended and saved.",
+    const response = successResponse(res, "Chat ended", {
+      message: "Your chat is ended.",
       status: "saved",
-      statusMessage: "Chat saved. Report is being generated in the background.",
-      userMessage:
-        "Your chat has been ended and saved. Your report is being generated in the background and will be available in your account shortly.",
       chatId: chat.id,
       transcript: transcriptForFinal,
+      userMessage:
+        "Your chat has been ended and saved. Your report is being generated.",
     });
 
-    // Generate report in background (don't await - fire and forget)
     (async () => {
       try {
-        const retrievedForBackground = lastUser?.content
-          ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+        const retrievedForBg = finalUser?.content
+          ? await retrieveSimilarChunks({ query: finalUser.content, topK: 3 })
           : [];
-
         if (hasExistingReport) {
-          // DISCOVERY: Generate discovery follow-up report
           await handleDiscoveryFinalize({
             req,
-            res: null, // No response needed - already sent
+            res: null,
             email,
             name,
             transcriptForFinal,
@@ -4890,13 +3861,12 @@ Just answer that.`,
             diagnosticMetrics,
             appUser,
             introText,
-            backgroundMode: true, // Flag to skip email
+            backgroundMode: true,
           });
         } else {
-          // DIAGNOSTIC: Generate full diagnostic report
           await handleDiagnosticFinalize({
             req,
-            res: null, // No response needed - already sent
+            res: null,
             email,
             name,
             transcriptForFinal,
@@ -4906,27 +3876,19 @@ Just answer that.`,
             appUser,
             existingState,
             introText,
-            retrieved: retrievedForBackground,
-            backgroundMode: true, // Flag to skip email
+            retrieved: retrievedForBg,
+            backgroundMode: true,
           });
         }
-        console.log(
-          `[chatbotDiagnosticFreeform] Report generated and saved in background for user ${email}`
-        );
       } catch (err) {
-        console.error(
-          `[chatbotDiagnosticFreeform] Background report generation failed for user ${email}:`,
-          err
-        );
+        console.error("[diagnostic] Background report generation failed:", err);
       }
     })();
 
     return response;
   }
 
-  // If user wants email or report, use existing handlers
   if (hasExistingReport) {
-    // DISCOVERY FINALIZE: User has existing report, generate discovery follow-up
     return await handleDiscoveryFinalize({
       req,
       res,
@@ -4940,7 +3902,6 @@ Just answer that.`,
       introText,
     });
   } else {
-    // DIAGNOSTIC FINALIZE: First-time user, generate full diagnostic
     return await handleDiagnosticFinalize({
       req,
       res,
@@ -4953,8 +3914,8 @@ Just answer that.`,
       appUser,
       existingState,
       introText,
-      retrieved: lastUser?.content
-        ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
+      retrieved: finalUser?.content
+        ? await retrieveSimilarChunks({ query: finalUser.content, topK: 3 })
         : [],
     });
   }
@@ -4985,7 +3946,10 @@ const getById = async (req, res) => {
     return successResponse(res, "Diagnostic fetched", diagnostic);
   } catch (error) {
     console.error("[getById] Error:", error);
-    if (error.name === "SequelizeConnectionError" || error.original?.code === "XX000") {
+    if (
+      error.name === "SequelizeConnectionError" ||
+      error.original?.code === "XX000"
+    ) {
       return errorResponse(
         res,
         "Database connection pool exhausted. Please try again in a moment.",
@@ -5130,7 +4094,10 @@ const getAllPdfUrls = async (req, res) => {
     });
   } catch (error) {
     console.error("[getAllPdfUrls] Error:", error);
-    if (error.name === "SequelizeConnectionError" || error.original?.code === "XX000") {
+    if (
+      error.name === "SequelizeConnectionError" ||
+      error.original?.code === "XX000"
+    ) {
       return errorResponse(
         res,
         "Database connection pool exhausted. Please try again in a moment.",

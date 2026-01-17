@@ -55,6 +55,7 @@ const saveChatIncrementally = async ({
   transcript = [],
   isChatEnded = false,
   forceNewChat = false,
+  pdfSummary = null, // PDF report summary to save with chat
 }) => {
   try {
     if (!userId) {
@@ -128,7 +129,11 @@ const saveChatIncrementally = async ({
 
         if (chat) {
           console.log(
-            `[saveChatIncrementally] Found chat ${chat.id} without diagnosticId filter, will update it${diagnosticId ? ` with diagnosticId ${diagnosticId}` : ''}`
+            `[saveChatIncrementally] Found chat ${
+              chat.id
+            } without diagnosticId filter, will update it${
+              diagnosticId ? ` with diagnosticId ${diagnosticId}` : ""
+            }`
           );
         } else {
           console.log(
@@ -173,8 +178,9 @@ const saveChatIncrementally = async ({
         data: {
           ...(chat.data || {}),
           transcript: transcript,
-          messages: transcript,
+          // messages: transcript,
           lastUpdated: new Date().toISOString(),
+          ...(pdfSummary ? { pdfSummary: pdfSummary } : {}), // Add PDF summary if provided
         },
         isChatEnded: isChatEnded,
       };
@@ -205,6 +211,7 @@ const saveChatIncrementally = async ({
           transcript: transcript,
           sessionStartedAt: new Date().toISOString(),
           lastUpdated: new Date().toISOString(),
+          ...(pdfSummary ? { pdfSummary: pdfSummary } : {}), // Add PDF summary if provided
         },
       });
       console.log(
@@ -276,11 +283,12 @@ const getChatHistory = async (req, res) => {
     const formattedChats = chats.map((chat) => ({
       id: chat.id,
       userId: chat.userId,
+      pdfSummary: chat.data?.pdfSummary || null,
       diagnosticId: chat.dignosticId,
       discoveryId: chat.discoveryId,
       chatType: chat.chatType,
       isChatEnded: chat.isChatEnded,
-      transcript: chat.data?.transcript || chat.data?.messages || [],
+      transcript: chat.data?.transcript || [],
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
       endedAt: chat.data?.endedAt || null,

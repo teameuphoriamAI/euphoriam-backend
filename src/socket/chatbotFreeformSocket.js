@@ -201,22 +201,22 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
       discoveryChatTranscript: session.transcript,
       previousReports: Array.isArray(existing.data.previousReports)
         ? [
-            ...existing.data.previousReports,
-            {
-              aiReport: existing.data.aiReport,
-              pdfUrl: existing.data.pdf?.url || null,
-              savedAt: existing.updatedAt || existing.createdAt,
-            },
-          ]
+          ...existing.data.previousReports,
+          {
+            aiReport: existing.data.aiReport,
+            pdfUrl: existing.data.pdf?.url || null,
+            savedAt: existing.updatedAt || existing.createdAt,
+          },
+        ]
         : existing.data.aiReport
-        ? [
+          ? [
             {
               aiReport: existing.data.aiReport,
               pdfUrl: existing.data.pdf?.url || null,
               savedAt: existing.updatedAt || existing.createdAt,
             },
           ]
-        : [],
+          : [],
     };
 
     // Generate PDF for updated diagnostic
@@ -243,8 +243,8 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
         updatedData.pdfUrls = Array.isArray(existing.data.pdfUrls)
           ? [...existing.data.pdfUrls, upload.url]
           : existing.data.pdf?.url
-          ? [existing.data.pdf.url, upload.url]
-          : [upload.url];
+            ? [existing.data.pdf.url, upload.url]
+            : [upload.url];
       } catch (err) {
         console.error("[socket discovery] PDF upload failed", err);
       }
@@ -293,10 +293,12 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
             transcript: session.transcript,
             messages: session.transcript,
             endedAt: new Date().toISOString(),
+            pdfUrl: pdfUrl || existing.data.pdf?.url || null,
+            pdfGeneratedAt: pdfUrl ? new Date().toISOString() : null,
           },
         });
         console.log(
-          `[endChatAsDiscovery] Chat ${chat.id} marked as ended for user ${session.email} (socket)`
+          `[endChatAsDiscovery] Chat ${chat.id} marked as ended for user ${session.email} (socket) with PDF URL: ${pdfUrl || 'none'}`
         );
       }
     }
@@ -567,32 +569,32 @@ const wireChatbotFreeform = (io) => {
       const chatPrompt =
         session.mode === "discovery"
           ? buildDiscoveryChatPrompt({
-              transcript: session.transcript,
-              retrieved,
-              // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
-              factsContext: null, // Not using Kajabi data for now
-              userName: session.email?.split("@")[0] || "there",
-              priorReport: session.priorReportSnippet,
-              metrics: session.latestDiscoveryMetrics || session.metrics || {}, // Use latest discovery metrics (includes updated vortex, pmatrice)
-              reportDate: session.existingDiagnostic?.updatedAt
-                ? new Date(
-                    session.existingDiagnostic.updatedAt
-                  ).toLocaleDateString("en-US", {
-                    month: "short",
-                    day: "numeric",
-                  })
-                : null,
-            })
+            transcript: session.transcript,
+            retrieved,
+            // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
+            factsContext: null, // Not using Kajabi data for now
+            userName: session.email?.split("@")[0] || "there",
+            priorReport: session.priorReportSnippet,
+            metrics: session.latestDiscoveryMetrics || session.metrics || {}, // Use latest discovery metrics (includes updated vortex, pmatrice)
+            reportDate: session.existingDiagnostic?.updatedAt
+              ? new Date(
+                session.existingDiagnostic.updatedAt
+              ).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+              })
+              : null,
+          })
           : buildFreeformIntakePrompt({
-              transcript: session.transcript,
-              targetCount: session.targetCount,
-              introPageText: session.introPageText,
-              // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
-              factsContext: null, // Not using Kajabi data for now
-              retrieved,
-              priorReport: session.priorReportSnippet,
-              distinctQuestionNumbers: distinctQuestionNumbers, // Pass distinct question numbers
-            });
+            transcript: session.transcript,
+            targetCount: session.targetCount,
+            introPageText: session.introPageText,
+            // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
+            factsContext: null, // Not using Kajabi data for now
+            retrieved,
+            priorReport: session.priorReportSnippet,
+            distinctQuestionNumbers: distinctQuestionNumbers, // Pass distinct question numbers
+          });
 
       const systemPrompt =
         session.mode === "discovery"
@@ -912,9 +914,8 @@ CRITICAL RULES:
 
       const userMessage = shouldEmail
         ? `Your diagnostic report has been generated and emailed to ${session.email}. Please check your inbox.`
-        : `Your diagnostic report has been generated and updated in your account. You can access it anytime.${
-            userWantsEmail ? "" : " If you'd like it emailed, just ask!"
-          }`;
+        : `Your diagnostic report has been generated and updated in your account. You can access it anytime.${userWantsEmail ? "" : " If you'd like it emailed, just ask!"
+        }`;
 
       socket.emit("done", {
         diagnosticId: diagnostic.id,

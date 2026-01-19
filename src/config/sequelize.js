@@ -6,6 +6,20 @@ if (!DATABASE_URL) {
   throw new Error("DATABASE_URL is required");
 }
 
+// Check if using Supabase/Neon (Session mode databases with strict limits)
+const isSupabaseOrNeon = 
+  DATABASE_URL.includes("supabase.co") || 
+  DATABASE_URL.includes("neon.tech") ||
+  DATABASE_URL.includes("neon.tech");
+
+if (isSupabaseOrNeon && !DATABASE_URL.includes("pooler")) {
+  console.warn("\n⚠️  WARNING: Using direct connection to Supabase/Neon (Session mode)");
+  console.warn("   Session mode has very strict connection limits (usually 1 connection)");
+  console.warn("   Consider using a connection pooler URL for better performance:");
+  console.warn("   - Supabase: Use the 'Connection Pooling' URL from your dashboard");
+  console.warn("   - Neon: Use the 'Pooled' connection string\n");
+}
+
 const sequelize = new Sequelize(DATABASE_URL, {
   dialect: "postgres",
   logging: false,
@@ -16,15 +30,31 @@ const sequelize = new Sequelize(DATABASE_URL, {
     },
   },
   pool: {
-    max: 5, // Reduced for Supabase/Neon compatibility (they have strict connection limits)
-    min: 1, // Minimum number of connections in pool
-    acquire: 30000, // Maximum time (ms) to wait for a connection (reduced from 60000)
-    idle: 10000, // Maximum time (ms) a connection can be idle before being released
+    max: 1, // Absolute minimum for Session mode databases (Supabase/Neon free tier)
+    min: 0, // Start with 0 connections, create as needed
+    acquire: 30000, // Maximum time (ms) to wait for a connection
+    idle: 5000, // Reduced: Maximum time (ms) a connection can be idle before being released
     evict: 1000, // Interval (ms) to check for idle connections
     handleDisconnects: true, // Automatically reconnect if connection is lost
   },
   retry: {
     max: 3,
+    match: [
+      /ConnectionError/,
+      /SequelizeConnectionError/,
+      /SequelizeConnectionRefusedError/,
+      /SequelizeHostNotFoundError/,
+      /SequelizeHostNotReachableError/,
+      /SequelizeInvalidConnectionError/,
+      /SequelizeConnectionTimedOutError/,
+      /MaxClientsInSessionMode/,
+    ],
+  },
+  // Close all connections on process exit
+  hooks: {
+    beforeDisconnect: async () => {
+      console.log("Closing database connections...");
+    },
   },
 });
 
@@ -93,8 +123,41 @@ const ensureDiagnosticEmailUnique = async () => {
   }
 };
 
-const initDb = async () => {
-  await sequelize.authenticate();
+const initDb = async (retries = 5, initialDelay = 10000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await sequelize.authenticate();
+      console.log("Database connection established successfully");
+      break; // Success, exit retry loop
+    } catch (error) {
+      const isConnectionError = 
+        error.message?.includes("MaxClientsInSessionMode") ||
+        error.message?.includes("max clients reached") ||
+        error.original?.code === "XX000";
+      
+      if (isConnectionError && i < retries - 1) {
+        // Exponential backoff: 10s, 20s, 30s, 40s, 50s
+        const delay = initialDelay * (i + 1);
+        console.log(`\n⚠️  Connection limit reached. Database connections are still in use.`);
+        console.log(`   Waiting ${delay/1000}s before retry ${i + 1}/${retries}...`);
+        console.log(`   Tip: Check your Supabase/Neon dashboard for active connections.`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      if (isConnectionError && i === retries - 1) {
+        console.error("\n❌ Failed to connect after all retries.");
+        console.error("   All database connections are currently in use.");
+        console.error("   Solutions:");
+        console.error("   1. Wait 2-3 minutes for connections to timeout");
+        console.error("   2. Check your Supabase/Neon dashboard and close idle connections");
+        console.error("   3. Restart your database instance (if possible)");
+        console.error("   4. Consider upgrading your database plan for more connections");
+      }
+      
+      throw error; // Re-throw if not a connection error or out of retries
+    }
+  }
   // Register models and associations before sync
   const models = require("../models");
   models.applyAssociations();
@@ -170,6 +233,47 @@ const initDb = async () => {
     console.log("Diagnostics table columns migration completed");
   } catch (err) {
     console.log("Diagnostics columns migration:", err.message);
+  }
+
+  // Handle user_sessions table creation
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        -- Create user_sessions table if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.tables 
+          WHERE table_name = 'user_sessions'
+        ) THEN
+          CREATE TABLE "user_sessions" (
+            "id" SERIAL PRIMARY KEY,
+            "userId" INTEGER,
+            "email" VARCHAR(255),
+            "transcript" JSONB NOT NULL,
+            "sessionDate" TIMESTAMP WITH TIME ZONE,
+            "metadata" JSONB DEFAULT '{}',
+            "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            CONSTRAINT "user_sessions_userId_fkey" 
+              FOREIGN KEY ("userId") 
+              REFERENCES "users"("id") 
+              ON DELETE CASCADE
+          );
+          
+          -- Create index on userId for faster lookups
+          CREATE INDEX IF NOT EXISTS "user_sessions_userId_idx" ON "user_sessions"("userId");
+          
+          -- Create index on email for faster lookups
+          CREATE INDEX IF NOT EXISTS "user_sessions_email_idx" ON "user_sessions"("email");
+          
+          -- Create index on sessionDate for sorting
+          CREATE INDEX IF NOT EXISTS "user_sessions_sessionDate_idx" ON "user_sessions"("sessionDate" DESC);
+        END IF;
+      END $$;
+    `);
+    console.log("User sessions table migration completed");
+  } catch (err) {
+    console.log("User sessions table migration:", err.message);
   }
 
   // Handle voice_notes table migrations
@@ -273,7 +377,7 @@ const initDb = async () => {
   }
 
   // Sync all models together to respect FK dependencies (e.g., users before diagnostics)
-  await sequelize.sync({ alter: true });
+  // await sequelize.sync({ alter: true });
 
   // Backfill and enforce email uniqueness on diagnostics after tables exist
   await backfillDiagnosticEmails();

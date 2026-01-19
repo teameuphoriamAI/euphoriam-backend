@@ -8,6 +8,7 @@ const { IntegrationEvent } = require("./integrationEventModel");
 const { VoiceNote } = require("./voiceNoteModel");
 const { Document } = require("./documentModel");
 const { Prompt, PromptHistory } = require("./promptModel");
+const { UserSession } = require("./userSessionModel");
 
 const applyAssociations = () => {
   User.hasMany(Purchase, { foreignKey: "userId" });
@@ -32,6 +33,12 @@ const applyAssociations = () => {
     foreignKey: "userId",
     onDelete: "CASCADE",
   });
+
+  User.hasMany(UserSession, {
+    foreignKey: "userId",
+    onDelete: "CASCADE",
+  });
+  UserSession.belongsTo(User, { foreignKey: "userId", as: "user" });
 };
 
 module.exports = {
@@ -46,6 +53,7 @@ module.exports = {
   Document,
   Prompt,
   PromptHistory,
+  UserSession,
   applyAssociations,
 };
 

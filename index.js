@@ -1,7 +1,7 @@
 require("dotenv").config();
 const http = require("http");
 const app = require("./src/app");
-const { initDb } = require("./src/config/sequelize");
+const { initDb, sequelize } = require("./src/config/sequelize");
 const cors = require("cors");
 const { initSockets } = require("./src/socket");
 
@@ -23,18 +23,37 @@ initDb()
   .then(() => {
     io = initSockets(server);
 
-    // Increase server timeout for long-running operations (report generation, PDF, etc.)
-    // 5 minutes = 300000ms
-    // This allows API requests to take up to 5 minutes before timing out
-    server.timeout = 300000; // 5 minutes - maximum time for request to complete
-    server.keepAliveTimeout = 300000; // 5 minutes - keep connections alive for full duration
-    server.headersTimeout = 301000; // 5 minutes + 1 second - allow time for headers
-
-    console.log("Server timeouts configured: 5 minutes (300000ms)");
-
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
+
+    // Graceful shutdown handlers
+    const gracefulShutdown = async (signal) => {
+      console.log(`\n${signal} received. Closing server gracefully...`);
+      
+      server.close(async () => {
+        console.log("HTTP server closed.");
+        
+        // Close database connections
+        try {
+          await sequelize.close();
+          console.log("Database connections closed.");
+        } catch (err) {
+          console.error("Error closing database connections:", err);
+        }
+        
+        process.exit(0);
+      });
+
+      // Force close after 10 seconds
+      setTimeout(() => {
+        console.error("Forced shutdown after timeout");
+        process.exit(1);
+      }, 10000);
+    };
+
+    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   })
   .catch((err) => {
     console.error("Failed to initialize database:", err);

@@ -336,10 +336,105 @@ const renderStyledReport = (doc, text, metrics = {}) => {
   let skipUntilNextSection = false;
   let foundMetricsInterpretation = false;
   let inMetricsGaugeSection = false;
+  let inIntroSection = false;
+  let introEnded = false;
+  let introLines = [];
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     const line = rawLine.trimEnd();
+
+    // Detect intro section start
+    if (/BEFORE YOU READ THIS DIAGNOSTIC/i.test(line) || /✨\s*BEFORE YOU READ/i.test(line)) {
+      inIntroSection = true;
+      introLines = [];
+    }
+
+    // Collect intro lines
+    if (inIntroSection && !introEnded) {
+      introLines.push(line);
+    }
+
+    // Detect intro section end (divider, major header, or report title)
+    if (inIntroSection && !introEnded) {
+      const isDivider = line === "----------------------------------------" || 
+                       line === "────────────────────────────────────────" ||
+                       /^---+$/.test(line);
+      const isMajorHeader = /^##\s+EUPHORIAM/i.test(line) ||
+                           /^EUPHORIAM.*DIAGNOSTIC REPORT/i.test(line.toUpperCase()) ||
+                           /^EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(line.toUpperCase());
+      
+      if (isDivider || isMajorHeader) {
+        introEnded = true;
+        inIntroSection = false;
+        
+        // Render intro lines
+        introLines.forEach(introLine => {
+          if (introLine.trim()) {
+            const cleanedLine = cleanText(introLine);
+            renderTextWithBold(doc, cleanedLine, {
+              width: availableWidth,
+              lineGap: 2,
+            });
+          } else {
+            doc.moveDown(0.5);
+          }
+        });
+        
+        // Add short summary section after intro
+        doc.moveDown(1);
+        doc.font("Helvetica-Bold").fontSize(14).text("SHORT SUMMARY", {
+          width: availableWidth,
+          lineGap: 2,
+        });
+        doc.moveDown(0.3);
+        
+        // Extract summary from report text (look for summary section or generate from first few sections)
+        const reportText = lines.join("\n");
+        let summaryText = "";
+        
+        // Try to find a summary section in the report
+        const summaryMatch = reportText.match(/##\s*SHORT\s+SUMMARY[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i) ||
+                            reportText.match(/SUMMARY[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
+        
+        if (summaryMatch && summaryMatch[1]) {
+          summaryText = summaryMatch[1].trim();
+        } else {
+          // Generate a brief summary from structure type and key patterns
+          const structureMatch = reportText.match(/STRUCTURE\s+TYPE[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
+          const avoidanceMatch = reportText.match(/AVOIDANCE[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
+          
+          if (structureMatch || avoidanceMatch) {
+            summaryText = "This diagnostic reveals your structural patterns, avoidance behaviors, and current metrics. " +
+                         "Review the detailed sections below to understand your unique structure and recommended corrections.";
+          } else {
+            summaryText = "This diagnostic report provides a comprehensive analysis of your structural patterns, " +
+                         "avoidance behaviors, and current state. Review each section to understand your unique structure " +
+                         "and the recommended path forward.";
+          }
+        }
+        
+        doc.font("Helvetica").fontSize(11);
+        const summaryLines = summaryText.split(/\n/).filter(l => l.trim());
+        summaryLines.forEach(summaryLine => {
+          const cleanedLine = cleanText(summaryLine.trim());
+          renderTextWithBold(doc, cleanedLine, {
+            width: availableWidth,
+            lineGap: 2,
+          });
+        });
+        
+        doc.moveDown(0.8);
+        
+        // Continue processing the current line (divider or header)
+        // Don't skip it, let it be processed normally
+      }
+    }
+
+    // Skip intro lines that were already rendered
+    if (inIntroSection && !introEnded) {
+      continue;
+    }
 
     // Check if we've found the METRICS GAUGE section
     if (/##\s+METRICS\s+GAUGE/i.test(line) || /METRICS\s+GAUGE/i.test(line)) {
@@ -491,9 +586,9 @@ const renderStyledReport = (doc, text, metrics = {}) => {
             lines[i + 1]?.trim().startsWith("##") ||
             lines[i + 1]?.trim().startsWith("---") ||
             lines[i + 1]?.trim() ===
-              "----------------------------------------" ||
+            "----------------------------------------" ||
             lines[i + 1]?.trim() ===
-              "────────────────────────────────────────")) ||
+            "────────────────────────────────────────")) ||
         line === "----------------------------------------" ||
         line === "────────────────────────────────────────" ||
         /^SECTION\s+\d+/i.test(line) ||
@@ -578,9 +673,9 @@ const renderStyledReport = (doc, text, metrics = {}) => {
             lines[i + 1]?.trim().startsWith("##") ||
             lines[i + 1]?.trim().startsWith("---") ||
             lines[i + 1]?.trim() ===
-              "----------------------------------------" ||
+            "----------------------------------------" ||
             lines[i + 1]?.trim() ===
-              "────────────────────────────────────────")) ||
+            "────────────────────────────────────────")) ||
         line === "----------------------------------------" ||
         line === "────────────────────────────────────────" ||
         /^SECTION\s+\d+/i.test(line) ||
@@ -654,10 +749,10 @@ const renderStyledReport = (doc, text, metrics = {}) => {
         headerLevel === 1
           ? 16
           : headerLevel === 2
-          ? 14
-          : headerLevel === 3
-          ? 13
-          : 12;
+            ? 14
+            : headerLevel === 3
+              ? 13
+              : 12;
       doc.moveDown(0.3);
       doc.font("Helvetica-Bold").fontSize(fontSize).text(headerText, {
         width: availableWidth,
@@ -1196,10 +1291,16 @@ const generateDiagnosticPdf = (diagnostic) =>
           !startsWithMarkdownDivider
         ) {
           const head = aiReport.slice(0, 300);
+
+          // Check for typical AI refusal patterns
+          const isRefusal = /i'm sorry|can't assist|cannot assist|policy|guidelines|unsafe/i.test(head);
+
           const err = new Error(
-            `aiReport does not start with a recognized header. First 300 chars:\n${head}`
+            isRefusal
+              ? `AI refused to generate the report. Response: "${head.trim()}"`
+              : `aiReport does not start with a recognized header. First 300 chars:\n${head}`
           );
-          err.code = "AI_REPORT_TEMPLATE_MISMATCH";
+          err.code = isRefusal ? "AI_REPORT_REFUSAL" : "AI_REPORT_TEMPLATE_MISMATCH";
           throw err;
         }
 
@@ -1371,8 +1472,7 @@ const generateDiagnosticPdf = (diagnostic) =>
         const courses = facts.courses || metrics.assessments || {};
         addSection(doc, "Course Assessments", [
           `Courses: ${courses.coursesCount ?? 0}`,
-          `Assessments: total=${courses.totalAssessments ?? 0}, completed=${
-            courses.completed ?? 0
+          `Assessments: total=${courses.totalAssessments ?? 0}, completed=${courses.completed ?? 0
           }, pending=${courses.pending ?? 0}`,
           `Completion: ${courses.completionPercentage ?? 0}%`,
           `Pass rate: ${courses.passRate ?? 0}%`,

@@ -3,9 +3,12 @@ const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { Prompt, PromptHistory } = require("../models/promptModel");
+const { UserSession } = require("../models/userSessionModel");
 const { successResponse, errorResponse } = require("../utils/response");
 const { createPromptSchemaValidator } = require("../utils/validator");
 const validate = require("../helpers/validate");
+const { parseWebVTT } = require("../utils/webvttParser");
+const { extractTextFromPdf } = require("../utils/pdfParser");
 // const Joi = require("joi");
 
 // Admin login (uses existing auth but ensures admin role)
@@ -476,6 +479,345 @@ const getStats = async (req, res) => {
   }
 };
 
+// Upload user session (1:1 coaching session transcript)
+const uploadUserSession = async (req, res) => {
+  try {
+    const { transcript, webvtt, email, sessionDate, coachNames } = req.body;
+    const pdfFile = req.file; // PDF file from multer
+
+    let parsedTranscript = null;
+    let extractedText = null;
+
+    // Handle PDF upload
+    if (pdfFile) {
+      try {
+        // Extract text from PDF
+        extractedText = await extractTextFromPdf(pdfFile.buffer);
+        
+        if (!extractedText || extractedText.trim().length === 0) {
+          return errorResponse(
+            res,
+            "PDF appears to be empty or could not extract text",
+            400
+          );
+        }
+
+        // Try to parse as WEBVTT format (common for transcripts)
+        try {
+          parsedTranscript = parseWebVTT(extractedText, {
+            coachNames: Array.isArray(coachNames)
+              ? coachNames
+              : coachNames
+              ? [coachNames]
+              : [],
+          });
+        } catch (webvttError) {
+          // If WEBVTT parsing fails, try to parse as plain text transcript
+          // Split by lines and try to identify speakers
+          const lines = extractedText.split("\n").filter((l) => l.trim().length > 0);
+          
+          // Simple fallback: look for "Speaker: text" pattern
+          parsedTranscript = lines
+            .map((line) => {
+              const match = line.match(/^([^:]+):\s*(.+)$/);
+              if (match) {
+                const speakerName = match[1].trim();
+                const content = match[2].trim();
+                const isCoach =
+                  (Array.isArray(coachNames)
+                    ? coachNames
+                    : coachNames
+                    ? [coachNames]
+                    : []
+                  ).some((name) =>
+                    speakerName.toLowerCase().includes(name.toLowerCase())
+                  ) || /nathan|coach|therapist|counselor/i.test(speakerName);
+
+                return {
+                  role: isCoach ? "assistant" : "user",
+                  content,
+                  speaker: speakerName,
+                };
+              }
+              return null;
+            })
+            .filter((msg) => msg !== null);
+
+          if (parsedTranscript.length === 0) {
+            return errorResponse(
+              res,
+              "Could not parse transcript from PDF. Please ensure the PDF contains a transcript with speaker names (e.g., 'Speaker: text').",
+              400
+            );
+          }
+        }
+      } catch (pdfError) {
+        return errorResponse(
+          res,
+          `Failed to process PDF: ${pdfError.message}`,
+          400
+        );
+      }
+    }
+    // Handle WEBVTT format (text input)
+    else if (webvtt) {
+      if (typeof webvtt !== "string") {
+        return errorResponse(res, "WEBVTT must be a string", 400);
+      }
+
+      try {
+        // coachNames can be an array of names to identify as coach/assistant role
+        // e.g., ["Nathan King", "Nathan"] - any speaker containing these will be "assistant"
+        parsedTranscript = parseWebVTT(webvtt, {
+          coachNames: Array.isArray(coachNames)
+            ? coachNames
+            : coachNames
+            ? [coachNames]
+            : [],
+        });
+      } catch (parseError) {
+        return errorResponse(
+          res,
+          `Failed to parse WEBVTT: ${parseError.message}`,
+          400
+        );
+      }
+    }
+    // Handle JSON transcript format
+    else if (transcript) {
+      // Validate transcript is an array
+      if (!Array.isArray(transcript)) {
+        return errorResponse(
+          res,
+          "Transcript must be an array of message objects",
+          400
+        );
+      }
+
+      // Validate transcript format (should have role and content)
+      const isValidTranscript = transcript.every(
+        (msg) => msg.role && msg.content
+      );
+      if (!isValidTranscript) {
+        return errorResponse(
+          res,
+          "Transcript must contain messages with 'role' and 'content' fields",
+          400
+        );
+      }
+
+      parsedTranscript = transcript;
+    } else {
+      return errorResponse(
+        res,
+        "Either 'pdf' (file upload), 'transcript' (JSON array), or 'webvtt' (WEBVTT string) is required",
+        400
+      );
+    }
+
+    // Parse sessionDate if provided
+    let parsedDate = null;
+    if (sessionDate) {
+      parsedDate = new Date(sessionDate);
+      if (isNaN(parsedDate.getTime())) {
+        return errorResponse(res, "Invalid sessionDate format", 400);
+      }
+    }
+
+    // Find user by email if provided
+    let userId = null;
+    if (email) {
+      const user = await User.findOne({ where: { email } });
+      if (user) {
+        userId = user.id;
+      }
+    }
+
+    // Create user session
+    const userSession = await UserSession.create({
+      transcript: parsedTranscript,
+      email: email || null,
+      userId: userId || null,
+      sessionDate: parsedDate,
+    });
+
+    return successResponse(res, "User session uploaded successfully", {
+      session: userSession,
+      message: userId
+        ? "Session created and associated with user"
+        : "Session created. Use attachUser endpoint to associate with user.",
+    });
+  } catch (error) {
+    console.error("[admin] Error uploading user session:", error);
+    return errorResponse(res, error.message || "Failed to upload session", 500);
+  }
+};
+
+// Attach user session to user (similar to voice notes)
+const attachUserSessionToUser = async (req, res) => {
+  try {
+    const { email, sessionId } = req.body;
+
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+    if (!sessionId) {
+      return errorResponse(res, "sessionId is required", 400);
+    }
+
+    // Find user by email
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return errorResponse(res, `No user found for email: ${email}`, 404);
+    }
+
+    // Find the session
+    const session = await UserSession.findOne({ where: { id: sessionId } });
+    if (!session) {
+      return errorResponse(res, "User session not found", 404);
+    }
+
+    // Check if session is already attached to another user
+    if (session.userId && session.userId !== user.id) {
+      return errorResponse(
+        res,
+        "Session is already attached to another user",
+        400
+      );
+    }
+
+    // Update the userId and email
+    await session.update({
+      userId: user.id,
+      email: user.email,
+    });
+
+    return successResponse(res, "Session attached to user successfully", session);
+  } catch (error) {
+    console.error("[admin] Error attaching session to user:", error);
+    return errorResponse(res, error.message || "Failed to attach session", 500);
+  }
+};
+
+// Get all user sessions
+const getAllUserSessions = async (req, res) => {
+  try {
+    const sessions = await UserSession.findAll({
+      order: [["createdAt", "DESC"]],
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "email", "name", "createdAt"],
+        },
+      ],
+    });
+
+    return successResponse(res, "User sessions retrieved", sessions);
+  } catch (error) {
+    console.error("[admin] Error fetching user sessions:", error);
+    return errorResponse(res, "Failed to fetch user sessions", 500);
+  }
+};
+
+// Get user sessions by user ID or email
+const getUserSessions = async (req, res) => {
+  try {
+    const { userId, email } = req.query;
+
+    if (!userId && !email) {
+      return errorResponse(res, "userId or email is required", 400);
+    }
+
+    let whereClause = {};
+    if (userId) {
+      whereClause.userId = userId;
+    } else if (email) {
+      whereClause.email = email;
+    }
+
+    const sessions = await UserSession.findAll({
+      where: whereClause,
+      order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "email", "name"],
+        },
+      ],
+    });
+
+    return successResponse(res, "User sessions retrieved", sessions);
+  } catch (error) {
+    console.error("[admin] Error fetching user sessions:", error);
+    return errorResponse(res, "Failed to fetch user sessions", 500);
+  }
+};
+const getUserLatestSession = async (req, res) => {
+  try {
+    const { userId, email } = req.query;
+
+    if (!userId && !email) {
+      return errorResponse(res, "userId or email is required", 400);
+    }
+
+    const whereClause = userId ? { userId } : { email };
+
+    const latestSession = await UserSession.findOne({
+      where: whereClause,
+      order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "email", "name"],
+        },
+      ],
+    });
+
+    if (!latestSession) {
+      return successResponse(res, "No sessions found for user", null);
+    }
+
+    return successResponse(res, "Latest user session retrieved", latestSession);
+  } catch (error) {
+    console.error("[admin] Error fetching latest user session:", error);
+    return errorResponse(res, "Failed to fetch latest user session", 500);
+  }
+};
+const singleUserSessionToUser = async (req, res) => {
+  try {
+    const { email, id } = req.params;
+
+    // if (!email) {
+    //   return errorResponse(res, "Email is required", 400);
+    // }
+    if (!id) {
+      return errorResponse(res, "sessionId is required", 400);
+    }
+
+    // // Find user by email
+    // const user = await User.findOne({ where: { email } });
+    // if (!user) {
+    //   return errorResponse(res, `No user found for email: ${email}`, 404);
+    // }
+
+    // Find the session
+    const session = await UserSession.findOne({ where: { id: id } });
+    if (!session) {
+      return errorResponse(res, "User session not found", 404);
+    }
+
+   
+
+    return successResponse(res, "Session fetched successfully", session);
+  } catch (error) {
+    console.error("[admin] Error fetching single session to user:", error);
+    return errorResponse(res, error.message || "Failed to fetch session", 500);
+  }
+};
+
 module.exports = {
   adminLogin,
   getAllUsers,
@@ -487,4 +829,8 @@ module.exports = {
   deletePrompt,
   getPromptHistory,
   getStats,
+  uploadUserSession,
+  attachUserSessionToUser,
+  getAllUserSessions,
+  getUserSessions,getUserLatestSession,singleUserSessionToUser
 };

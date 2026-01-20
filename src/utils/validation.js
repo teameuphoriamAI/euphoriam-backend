@@ -8,7 +8,6 @@ import openai from "../config/openai.js";
 import {
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
-  EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   sanitizeReportText,

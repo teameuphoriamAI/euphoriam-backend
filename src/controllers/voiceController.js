@@ -265,4 +265,132 @@ const createVoiceNote = async (req, res) => {
   return successResponse(res, "Voice/Text note saved", voiceNote);
 };
 
-module.exports = { createVoiceNote, attachVoiceNoteToUser, getAll };
+// Common Whisper hallucinations for silence/empty audio
+const isLikelyHallucination = (text, duration) => {
+  if (!text) return true;
+  
+  // Normalize text: lowercase, remove punctuation, trim
+  const normalizedText = text.trim().toLowerCase().replace(/[.,!?;:]/g, "").trim();
+  
+  // Common Whisper hallucinations (normalized, no punctuation)
+  const hallucinationPhrases = [
+    "thank you for watching",
+    "thanks for watching",
+    "thank you",
+    "thanks",
+    "you",
+    "",
+  ];
+  
+  // Check if transcript exactly matches common hallucinations
+  if (hallucinationPhrases.includes(normalizedText)) {
+    return true;
+  }
+  
+  // Check if transcript starts with or contains common hallucination phrases
+  const containsHallucination = hallucinationPhrases.some(phrase => {
+    if (!phrase) return false;
+    return normalizedText === phrase || 
+           normalizedText.startsWith(phrase + " ") ||
+           normalizedText === phrase;
+  });
+  
+  if (containsHallucination && normalizedText.length < 30) {
+    return true;
+  }
+  
+  // Check if duration is very short (likely silence)
+  if (duration && duration < 0.5) {
+    return true;
+  }
+  
+  // Check if transcript is suspiciously short (less than 3 words)
+  const wordCount = normalizedText.split(/\s+/).filter(w => w.length > 0).length;
+  if (wordCount <= 3 && containsHallucination) {
+    return true;
+  }
+  
+  // If metadata is empty/missing and text is very short, likely hallucination
+  if (!duration && normalizedText.length < 20 && wordCount <= 4) {
+    return true;
+  }
+  
+  return false;
+};
+
+const transcribeRecording = async (req, res) => {
+  try {
+    const audioFile = req.file;
+
+    if (!audioFile) {
+      return errorResponse(res, "No audio file provided. Please upload a recording.", 400);
+    }
+
+    // Validate file type
+    const allowedMimeTypes = [
+      "audio/mpeg",
+      "audio/mp3",
+      "audio/wav",
+      "audio/webm",
+      "audio/ogg",
+      "audio/m4a",
+      "audio/x-m4a",
+      "audio/mp4",
+      "audio/x-wav",
+      "audio/flac",
+      "audio/aac",
+    ];
+
+    if (!allowedMimeTypes.includes(audioFile.mimetype)) {
+      return errorResponse(
+        res,
+        `Unsupported file type: ${audioFile.mimetype}. Supported formats: MP3, WAV, WebM, OGG, M4A, FLAC, AAC`,
+        400
+      );
+    }
+
+    // Transcribe the audio
+    const transcription = await transcribeAudio(audioFile);
+
+    if (!transcription?.text) {
+      console.log("this is it");
+      
+      return errorResponse(
+        res,
+        "Unable to transcribe the audio file. Please ensure the file contains clear audio.",
+        502
+      );
+    }
+
+    // Check if transcription is likely a hallucination (silence detected)
+    const duration = transcription.meta?.duration;
+    const hasEmptyMetadata = !transcription.meta || Object.keys(transcription.meta).length === 0;
+    
+    // Empty metadata combined with common hallucination phrases is a strong indicator
+    // Always check for hallucinations
+    if (isLikelyHallucination(transcription.text, duration) || (hasEmptyMetadata && isLikelyHallucination(transcription.text, null))) {
+      console.log("HAHAH");
+      
+      return errorResponse(
+        res,
+        "No speech detected in the audio. Please ensure your recording contains clear speech.",
+        400
+      );
+    }
+
+    // Return only the transcript (no storage)
+    return successResponse(res, "Audio transcribed successfully", {
+      transcript: transcription.text,
+      metadata: {
+        language: transcription.meta?.language,
+        duration: transcription.meta?.duration,
+      },
+    });
+  } catch (error) {
+    console.log("error",error);
+    
+    return errorResponse(res, error, 500);
+  }
+};
+
+module.exports = { createVoiceNote, attachVoiceNoteToUser, getAll, transcribeRecording };

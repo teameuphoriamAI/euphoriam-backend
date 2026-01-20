@@ -42,5 +42,11 @@ router.post(
   asyncHandler(voiceController.attachVoiceNoteToUser)
 );
 router.get("/getAll", asyncHandler(voiceController.getAll));
+router.post(
+  "/transcribe",
+  upload.single("audio"),
+  handleMulterError,
+  asyncHandler(voiceController.transcribeRecording)
+);
 
 module.exports = router;

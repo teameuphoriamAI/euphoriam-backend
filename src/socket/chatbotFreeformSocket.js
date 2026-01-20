@@ -389,74 +389,23 @@ const wireChatbotFreeform = (io) => {
           hasExistingReport = true;
           session.existingDiagnostic = existing;
 
-          // Load latest discovery to get updated metrics (vortex, pmatrice)
-          let latestDiscovery = null;
-          let latestDiscoveryReport = null;
-          // Initialize with diagnostic metrics as base
-          let latestDiscoveryMetrics = existing?.data?.metrics || {};
-
-          if (existing?.userId) {
-            const discoveries = await Discovery.findAll({
-              where: { userId: existing.userId },
-              order: [["createdAt", "DESC"]],
-              limit: 1,
-            });
-            latestDiscovery = discoveries[0] || null;
-
-            if (latestDiscovery) {
-              // Get the latest discovery report (prioritize full report in data field)
-              latestDiscoveryReport =
-                latestDiscovery.data?.newReport ||
-                latestDiscovery.data?.previousReport ||
-                latestDiscovery.data?.newReportSnippet ||
-                null;
-
-              // Extract metrics from latest discovery report if available
-              if (latestDiscoveryReport) {
-                // Try to extract metrics from the discovery report text
-                const gravityMatch = latestDiscoveryReport.match(
-                  /Gravity[:\s]+(\d+(?:\.\d+)?)%?/i
-                );
-                const signalCoherenceMatch = latestDiscoveryReport.match(
-                  /Signal\s+Coherence[:\s]+(\d+(?:\.\d+)?)%?/i
-                );
-                const signalOutputMatch = latestDiscoveryReport.match(
-                  /Signal\s+Output[:\s]+(\d+(?:\.\d+)?)%?/i
-                );
-                const clMatch = latestDiscoveryReport.match(
-                  /Consciousness\s+Level[:\s]+(\d+(?:\.\d+)?)|CL[:\s]+(\d+(?:\.\d+)?)/i
-                );
-                const qgcMatch = latestDiscoveryReport.match(
-                  /QGC[:\s]+(\d+(?:\.\d+)?)%?|Quantum\s+Genius\s+Codes[:\s]+(\d+(?:\.\d+)?)%?/i
-                );
-
-                // Update metrics with values from latest discovery, keeping diagnostic values as fallback
-                latestDiscoveryMetrics = {
-                  ...(existing?.data?.metrics || {}), // Start with diagnostic metrics as base
-                  gravity: gravityMatch
-                    ? parseFloat(gravityMatch[1])
-                    : existing?.data?.metrics?.gravity,
-                  signalCoherence: signalCoherenceMatch
-                    ? parseFloat(signalCoherenceMatch[1])
-                    : existing?.data?.metrics?.signalCoherence,
-                  signalOutput: signalOutputMatch
-                    ? parseFloat(signalOutputMatch[1])
-                    : existing?.data?.metrics?.signalOutput,
-                  consciousnessLevel: clMatch
-                    ? parseFloat(clMatch[1] || clMatch[2])
-                    : existing?.data?.metrics?.consciousnessLevel,
-                  qgcActivation: qgcMatch
-                    ? parseFloat(qgcMatch[1] || qgcMatch[2])
-                    : existing?.data?.metrics?.qgcActivation,
-                };
-              }
-            }
-          }
+          // Load latest discovery to get updated metrics (vortex, pmatrice) and user session
+          const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
+          const discoveryRes = await loadLatestDiscoveryMetrics(
+            existing,
+            existing?.data?.metrics || {}
+          );
+          const latestDiscoveryMetrics = discoveryRes.latestDiscoveryMetrics;
+          const latestDiscoveryReport = discoveryRes.latestDiscoveryReport;
+          const latestUserSession = discoveryRes.latestUserSession; // Get latest user session
 
           // Use latest discovery report if available, otherwise use diagnostic report
           session.priorReportSnippet = latestDiscoveryReport
             ? truncateForContext(latestDiscoveryReport, 4000)
             : truncateForContext(existing.data.aiReport, 4000);
+          
+          // Store latest user session in session for discovery chat
+          session.latestUserSession = latestUserSession;
 
           // Store latest discovery metrics for use in chat prompts (always set, even if same as diagnostic)
           session.latestDiscoveryMetrics = latestDiscoveryMetrics;
@@ -584,6 +533,7 @@ const wireChatbotFreeform = (io) => {
                 day: "numeric",
               })
               : null,
+            userSession: session.latestUserSession || null, // Pass latest user session
           })
           : buildFreeformIntakePrompt({
             transcript: session.transcript,
@@ -596,10 +546,31 @@ const wireChatbotFreeform = (io) => {
             distinctQuestionNumbers: distinctQuestionNumbers, // Pass distinct question numbers
           });
 
+      const sessionSystemBlock = session.latestUserSession?.transcript
+        ? `\n\n🎯🎯🎯 USER'S 1:1 COACHING SESSION TRANSCRIPT (AVAILABLE TO YOU):
+🚨🚨🚨 THIS TRANSCRIPT IS PROVIDED TO YOU - YOU CAN ACCESS IT
+
+Session Date: ${session.latestUserSession.sessionDate ? new Date(session.latestUserSession.sessionDate).toLocaleDateString() : "Not specified"}
+
+FULL SESSION TRANSCRIPT:
+${JSON.stringify(session.latestUserSession.transcript, null, 2)}
+
+🚨🚨🚨🚨🚨 CRITICAL: When user asks about their "1:1 session", "session details", "do you have my session details", or asks to "summarize my session":
+- You HAVE this transcript - it's provided above in this system prompt
+- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to access" or "I don't have access"
+- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary"
+- ABSOLUTELY FORBIDDEN: NEVER talk about diagnostic reports when they ask about session details
+- START YOUR RESPONSE WITH: "Yes, I have your 1:1 session transcript. Here's a summary:" then provide the summary
+- Parse the JSON transcript and summarize/reference what was discussed
+- The transcript has role/content pairs - read them and provide a summary
+- DO NOT confuse session details with diagnostic report - they're asking about the 1:1 coaching session transcript above
+`
+        : "";
+
       const systemPrompt =
         session.mode === "discovery"
           ? `You are Euphoriam AI having a natural, flowing conversation. This is NOT a Q&A session or intake. 
-
+${sessionSystemBlock}
 CRITICAL RULES:
 - NEVER use numbered questions (Q1, Q2, etc.) - this is a conversation, not an interview
 - NEVER structure responses as "Q1: ..." or count questions

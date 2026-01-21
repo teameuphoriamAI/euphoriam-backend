@@ -2363,6 +2363,25 @@ const loadDiagnosticState = async (email) => {
 const extractMetricsFromReport = (reportText) => {
   if (!reportText) return {};
 
+  // Helper: try to get Consciousness Level as a direct numeric value (e.g. "Consciousness Level: 3.2")
+  const extractCLDirect = (text) => {
+    const m =
+      text &&
+      text.match(
+        /(?:Consciousness\s+Level|CL)[:\s]+(?:[█░\s]+)?([0-9]+(?:\.[0-9]+)?)/i
+      );
+    if (m) {
+      const val = parseFloat(m[1]);
+      if (!Number.isNaN(val)) {
+        console.log(
+          `[extractMetricsFromReport] Extracted CL as direct number: ${val}`
+        );
+        return val;
+      }
+    }
+    return undefined;
+  };
+
   // First, try to extract from METRICS GAUGE section specifically
   // Increase the match range to capture more of the section
   const metricsGaugeMatch = reportText.match(/METRICS\s+GAUGE[\s\S]{0,2000}/i);
@@ -2391,11 +2410,19 @@ const extractMetricsFromReport = (reportText) => {
     const signalOutput = simpleExtract('Signal\\s+Output');
     const qgcActivation = simpleExtract('QGC\\s+Activation');
 
-    // For Consciousness Level, extract percentage and convert to CL value
+    // For Consciousness Level, try to extract from METRICS GAUGE as a percentage and convert to CL value
     let consciousnessLevel = simpleExtract('Consciousness\\s+Level');
     if (consciousnessLevel !== undefined && consciousnessLevel > 5) {
       consciousnessLevel = consciousnessLevel / 20; // Convert percentage to CL (CL = percentage / 20)
-      console.log(`[extractMetricsFromReport] Converted CL from percentage to value: ${consciousnessLevel}`);
+      console.log(
+        `[extractMetricsFromReport] Converted CL from percentage to value: ${consciousnessLevel}`
+      );
+    }
+
+    // If CL isn't present in the METRICS GAUGE block, fall back to searching the whole report
+    // for a direct numeric value like "Consciousness Level: 3.2"
+    if (consciousnessLevel === undefined) {
+      consciousnessLevel = extractCLDirect(reportText);
     }
 
     // If we extracted at least some metrics from METRICS GAUGE, return them
@@ -2520,13 +2547,7 @@ const extractMetricsFromReport = (reportText) => {
 
   // If still not found, try extracting as a direct number (not percentage)
   if (consciousnessLevel === undefined) {
-    const clDirectMatch = searchText.match(
-      /(?:Consciousness\s+Level|CL)[:\s]+(?:[█░\s]+)?(\d+\.\d+)(?:\s*[~↑↓]|\s*$)/i
-    );
-    if (clDirectMatch) {
-      consciousnessLevel = parseFloat(clDirectMatch[1]);
-      console.log(`[extractMetricsFromReport] Extracted CL as direct number: ${consciousnessLevel}`);
-    }
+    consciousnessLevel = extractCLDirect(searchText);
   }
 
   const qgcActivation = extractMetric(

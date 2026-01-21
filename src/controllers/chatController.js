@@ -144,7 +144,8 @@ const saveChatIncrementally = async ({
 
       // Additional check: if the found chat's transcript doesn't match, it might be a different session
       // Only create new chat if current transcript is significantly shorter (user started over)
-      if (chat && chat.data?.transcript && transcript.length > 0) {
+      // BUT: If isChatEnded is true, always update existing chat (we're ending it, transcript might be shorter due to closing message)
+      if (chat && chat.data?.transcript && transcript.length > 0 && !isChatEnded) {
         const existingTranscript = chat.data.transcript || [];
         const existingLength = existingTranscript.length;
         const currentLength = transcript.length;
@@ -168,6 +169,11 @@ const saveChatIncrementally = async ({
             `[saveChatIncrementally] Transcript length compatible (existing=${existingLength}, current=${currentLength}) - updating existing chat`
           );
         }
+      } else if (chat && isChatEnded) {
+        // When ending chat, always update existing chat regardless of transcript length
+        console.log(
+          `[saveChatIncrementally] Ending chat - will update existing chat ${chat.id} regardless of transcript length`
+        );
       }
     }
 

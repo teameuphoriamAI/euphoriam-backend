@@ -766,6 +766,61 @@ Reply:`;
   }
 }
 
+// Discovery-mode intent detection: separate "end/pause chat" from "generate report"
+// so we can respect "I'm done for now" WITHOUT asking more questions, while still supporting explicit report requests.
+export async function detectDiscoveryEndIntents({
+  userMessage,
+  transcript = [],
+  lastAssistantMessage = "",
+}) {
+  if (!userMessage) {
+    return { endChat: false, generateReport: false };
+  }
+
+  const prompt = `
+You are an intent classifier for a discovery follow-up chat.
+
+User's latest message: "${userMessage}"
+Last assistant message: "${lastAssistantMessage || "N/A"}"
+
+Recent conversation context (last 5 messages):
+${JSON.stringify((Array.isArray(transcript) ? transcript : []).slice(-5), null, 2)}
+
+Return ONLY valid JSON in this exact format:
+{
+  "endChat": boolean,
+  "generateReport": boolean
+}
+
+Rules:
+- "endChat" is true if the user clearly wants to stop/pause/end for now (e.g., "end chat", "stop", "pause", "I'm done for now", "I'm done", "I'm finished").
+- "generateReport" is true ONLY if the user explicitly requests a report/email (e.g., "generate report", "email me the report", "send the report")
+  OR if the last assistant message clearly said they are ready to generate the discovery report AND the user confirms (e.g., "go ahead", "yes", "do it").
+- If the user says "I'm done for now" without mentioning report/email, set generateReport=false.
+- Be strict. When unsure, set generateReport=false.
+`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_completion_tokens: 80,
+      response_format: { type: "json_object" },
+    });
+    const raw = resp?.choices?.[0]?.message?.content || "{}";
+    const parsed = JSON.parse(raw);
+    return {
+      endChat: parsed.endChat === true,
+      generateReport: parsed.generateReport === true,
+    };
+  } catch (err) {
+    console.error("[detectDiscoveryEndIntents] ❌ LLM error", err);
+    // Fail safe: do not force report generation on error.
+    return { endChat: false, generateReport: false };
+  }
+}
+
 // LLM-based detection: Combined intent classifier to save calls
 export async function detectCombinedIntents({
   userMessage,
@@ -1028,6 +1083,85 @@ Reply:
   } catch (err) {
     console.error("[detectConversationComplete] ❌ LLM error", err);
     return false;
+  }
+}
+
+// LLM-based detection: Check if discovery transcript has enough information to generate a relevant report,
+// and infer the user's current stage (short label) for downstream use.
+export async function detectDiscoveryReportReadiness({ transcript = [] }) {
+  try {
+    const recent = Array.isArray(transcript) ? transcript.slice(-20) : [];
+    const prompt = `
+You are a strict readiness checker for a "discovery follow-up" conversation.
+
+Goal:
+- Decide if there is ENOUGH information in the transcript to generate a RELEVANT discovery report.
+- Infer the user's CURRENT STAGE (a short label) from what they shared.
+
+Transcript (latest messages last):
+${JSON.stringify(recent, null, 2)}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "ready": boolean,
+  "stageLabel": string,          // 3-7 words. If unclear, use "Unknown"
+  "stageEvidence": string,       // 1 sentence citing what in the transcript supports the stage
+  "missingInfo": string[],       // 0-5 short items
+  "nextQuestions": string[]      // 0-2 concise questions to ask next (ONLY if ready=false)
+}
+
+Strict rules:
+- "ready" is true ONLY if the transcript contains:
+  1) a clear description of what's happening in their life NOW (not just generic "good/bad"),
+  2) at least one concrete shift since their last diagnostic/discovery (what changed),
+  3) at least one current friction/loop/avoidance pattern (what still blocks),
+  4) at least one desired direction / what they want next.
+- If any of these 4 are missing, set ready=false and list the missing items.
+- If user answers are extremely short / non-substantive, treat as missing.
+- If ready=false, provide up to 2 best nextQuestions that would unlock readiness fastest.
+  * The questions MUST map directly to the missingInfo items.
+  * Ask for CONTEXT and PATTERN, not coaching/action-plans.
+  * Avoid: "what small step can you take", "what actionable step", "how will you do it".
+  * Prefer questions like:
+    - "Where is this showing up most right now (work/relationship/body)?"
+    - "What happens right before you do the pattern (trigger → response)?"
+    - "What do you want instead in the next 7–14 days?"
+- stageLabel must be grounded in the transcript; do not invent.
+`;
+
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_completion_tokens: 220,
+      response_format: { type: "json_object" },
+    });
+
+    const raw = resp?.choices?.[0]?.message?.content || "{}";
+    const parsed = JSON.parse(raw);
+
+    return {
+      ready: parsed.ready === true,
+      stageLabel: typeof parsed.stageLabel === "string" ? parsed.stageLabel : "Unknown",
+      stageEvidence:
+        typeof parsed.stageEvidence === "string" ? parsed.stageEvidence : "",
+      missingInfo: Array.isArray(parsed.missingInfo)
+        ? parsed.missingInfo.filter((x) => typeof x === "string").slice(0, 5)
+        : [],
+      nextQuestions: Array.isArray(parsed.nextQuestions)
+        ? parsed.nextQuestions.filter((x) => typeof x === "string").slice(0, 2)
+        : [],
+    };
+  } catch (err) {
+    console.error("[detectDiscoveryReportReadiness] ❌ LLM error", err);
+    // Fail safe: do NOT block report generation if the readiness check fails unexpectedly.
+    return {
+      ready: true,
+      stageLabel: "Unknown",
+      stageEvidence: "",
+      missingInfo: [],
+      nextQuestions: [],
+    };
   }
 }
 

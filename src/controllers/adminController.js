@@ -10,7 +10,9 @@ const validate = require("../helpers/validate");
 const { parseWebVTT } = require("../utils/webvttParser");
 const { extractTextFromPdf } = require("../utils/pdfParser");
 // const Joi = require("joi");
-
+const { createEmbeddings } = require("../config/Embedding");
+const { generateSessionSummary } = require("../config/sessionSummary");
+const{cleanTranscriptText}= require("../helpers/euphoriamChatbot")
 // Admin login (uses existing auth but ensures admin role)
 const adminLogin = async (req, res) => {
   // This will be handled by the existing auth/login endpoint
@@ -377,11 +379,32 @@ const getPromptHistory = async (req, res) => {
 // Get admin stats
 const getStats = async (req, res) => {
   try {
-    const totalUsers = await User.count({ where: { role: "user" } });
-    const totalDiagnostics = await Diagnostic.count();
-    const totalDiscoveries = await Discovery.count();
-    const totalPrompts = await Prompt.count();
-    const activePrompts = await Prompt.count({ where: { isActive: true } });
+    // Execute queries sequentially to avoid connection pool exhaustion
+    // With max: 1 connection pool, we need to ensure proper sequencing
+    const totalUsers = await User.count({ where: { role: "user" } }).catch((err) => {
+      console.error("[admin] Error counting users:", err);
+      return 0;
+    });
+    
+    const totalDiagnostics = await Diagnostic.count().catch((err) => {
+      console.error("[admin] Error counting diagnostics:", err);
+      return 0;
+    });
+    
+    const totalDiscoveries = await Discovery.count().catch((err) => {
+      console.error("[admin] Error counting discoveries:", err);
+      return 0;
+    });
+    
+    const totalPrompts = await Prompt.count().catch((err) => {
+      console.error("[admin] Error counting prompts:", err);
+      return 0;
+    });
+    
+    const activePrompts = await Prompt.count({ where: { isActive: true } }).catch((err) => {
+      console.error("[admin] Error counting active prompts:", err);
+      return 0;
+    });
 
     // Get diagnostics by date (last 30 days)
     const thirtyDaysAgo = new Date();
@@ -393,6 +416,9 @@ const getStats = async (req, res) => {
           [Op.gte]: thirtyDaysAgo,
         },
       },
+    }).catch((err) => {
+      console.error("[admin] Error counting recent diagnostics:", err);
+      return 0;
     });
 
     // Get users by date (last 30 days)
@@ -403,6 +429,9 @@ const getStats = async (req, res) => {
         },
         role: "user",
       },
+    }).catch((err) => {
+      console.error("[admin] Error counting recent users:", err);
+      return 0;
     });
 
     // Get diagnostics grouped by month (last 6 months)
@@ -417,6 +446,9 @@ const getStats = async (req, res) => {
       },
       attributes: ["createdAt"],
       raw: true,
+    }).catch((err) => {
+      console.error("[admin] Error fetching diagnostics for trends:", err);
+      return [];
     });
 
     const diagnosticsByMonth = {};
@@ -430,26 +462,36 @@ const getStats = async (req, res) => {
       attributes: ["id", "name", "email"],
       where: { role: "user" },
       limit: 10,
+    }).catch((err) => {
+      console.error("[admin] Error fetching users with reports:", err);
+      return [];
     });
 
-    const topUsers = await Promise.all(
-      usersWithReports.map(async (user) => {
+    // Process top users sequentially to avoid connection issues
+    const topUsers = [];
+    for (const user of usersWithReports) {
+      try {
         const diagCount = await Diagnostic.count({
           where: { email: user.email },
-        });
+        }).catch(() => 0);
+        
         const discCount = await Discovery.count({
           where: { userId: user.id },
-        });
-        return {
+        }).catch(() => 0);
+        
+        topUsers.push({
           id: user.id,
           name: user.name,
           email: user.email,
           totalReports: diagCount + discCount,
           diagnostics: diagCount,
           discoveries: discCount,
-        };
-      })
-    );
+        });
+      } catch (err) {
+        console.error(`[admin] Error processing user ${user.id}:`, err);
+        // Continue with next user
+      }
+    }
 
     topUsers.sort((a, b) => b.totalReports - a.totalReports);
 
@@ -483,16 +525,15 @@ const getStats = async (req, res) => {
 const uploadUserSession = async (req, res) => {
   try {
     const { transcript, webvtt, email, sessionDate, coachNames } = req.body;
-    const pdfFile = req.file; // PDF file from multer
+    const pdfFile = req.file; 
 
     let parsedTranscript = null;
     let extractedText = null;
 
-    // Handle PDF upload
     if (pdfFile) {
       try {
-        // Extract text from PDF
-        extractedText = await extractTextFromPdf(pdfFile.buffer);
+        const rawPdfText = await extractTextFromPdf(pdfFile.buffer);
+        extractedText = cleanTranscriptText(rawPdfText);
         
         if (!extractedText || extractedText.trim().length === 0) {
           return errorResponse(
@@ -502,7 +543,6 @@ const uploadUserSession = async (req, res) => {
           );
         }
 
-        // Try to parse as WEBVTT format (common for transcripts)
         try {
           parsedTranscript = parseWebVTT(extractedText, {
             coachNames: Array.isArray(coachNames)
@@ -512,8 +552,7 @@ const uploadUserSession = async (req, res) => {
               : [],
           });
         } catch (webvttError) {
-          // If WEBVTT parsing fails, try to parse as plain text transcript
-          // Split by lines and try to identify speakers
+          
           const lines = extractedText.split("\n").filter((l) => l.trim().length > 0);
           
           // Simple fallback: look for "Speaker: text" pattern
@@ -633,11 +672,37 @@ const uploadUserSession = async (req, res) => {
       }
     }
 
+    // Convert transcript array to string for embeddings
+    // Format: "role: content\nrole: content..."
+    const transcriptText = Array.isArray(parsedTranscript)
+      ? parsedTranscript
+          .map((msg) => `${msg.role || "user"}: ${msg.content || ""}`)
+          .join("\n")
+      : typeof parsedTranscript === "string"
+      ? parsedTranscript
+      : JSON.stringify(parsedTranscript);
+
+    // Generate embeddings and summary in parallel for efficiency
+    const [createEmbedding, summary] = await Promise.all([
+      createEmbeddings(transcriptText).catch((err) => {
+        console.error("[admin] Error creating embeddings:", err);
+        return null; // Continue even if embeddings fail
+      }),
+      generateSessionSummary(parsedTranscript, {
+        sessionDate: parsedDate,
+      }).catch((err) => {
+        console.error("[admin] Error generating summary:", err);
+        return null; // Continue even if summary generation fails
+      }),
+    ]);
+
     // Create user session
     const userSession = await UserSession.create({
       transcript: parsedTranscript,
       email: email || null,
       userId: userId || null,
+      embeddings: createEmbedding,
+      summery: summary,
       sessionDate: parsedDate,
     });
 

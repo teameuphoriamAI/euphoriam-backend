@@ -513,11 +513,6 @@ const getUserProfile = async (req, res) => {
       consciousnessLevel: currentMetrics.consciousnessLevel || 0,
       gravity: currentMetrics.gravity || 0,
       signalCoherence: currentMetrics.signalCoherence || 0,
-      gravityDepth: currentMetrics.gravityDepth || 2,
-      vortexSignature: currentMetrics.vortexSignature || null,
-      eo: currentMetrics.eo || null,
-      lack: currentMetrics.lack || null,
-      avoid: currentMetrics.avoid || null,
       lastUpdated:
         existingDiagnostic?.updatedAt || existingDiagnostic?.createdAt || null,
     };

@@ -2342,9 +2342,55 @@ const safeFindDiagnostic = async (options = {}) => {
 /**
  * Loads diagnostic state and existing report for a user
  * Excludes new columns (chatId, pdfUrl, report) that might not exist yet in database
+ * When a new diagnostic report is generated, it updates the existing diagnostic record,
+ * so we need to find the diagnostic with the most recent report generation.
+ * We check data.generatedAt (when report was generated) or updatedAt as fallback.
  */
 const loadDiagnosticState = async (email) => {
-  const existingDiagnostic = await safeFindDiagnostic({ where: { email } });
+  // Find all diagnostics for this email to compare report generation dates
+  const allDiagnostics = await Diagnostic.findAll({
+    where: { email },
+    attributes: [
+      "id",
+      "userId",
+      "email",
+      "title",
+      "data",
+      "createdAt",
+      "updatedAt",
+    ],
+    order: [["updatedAt", "DESC"]], // Start with most recently updated
+  });
+
+  // Find the diagnostic with the most recent report generation
+  // Prioritize diagnostics that have data.generatedAt (actual report generation time)
+  let existingDiagnostic = null;
+  let mostRecentGeneratedAt = null;
+
+  for (const diag of allDiagnostics) {
+    const generatedAt = diag.data?.generatedAt;
+    const hasReport = diag.data?.aiReport || diag.report;
+    
+    if (hasReport) {
+      // If this diagnostic has a generatedAt timestamp, use it
+      if (generatedAt) {
+        const genDate = new Date(generatedAt);
+        if (!mostRecentGeneratedAt || genDate > mostRecentGeneratedAt) {
+          mostRecentGeneratedAt = genDate;
+          existingDiagnostic = diag;
+        }
+      } else if (!existingDiagnostic) {
+        // Fallback: use first diagnostic with a report if no generatedAt found
+        existingDiagnostic = diag;
+      }
+    }
+  }
+
+  // If no diagnostic with report found, use the most recently updated one
+  if (!existingDiagnostic && allDiagnostics.length > 0) {
+    existingDiagnostic = allDiagnostics[0];
+  }
+
   const existingState = existingDiagnostic?.data?.intakeState || {};
   const existingReport = existingDiagnostic?.data?.aiReport;
   const diagnosticMetrics = existingDiagnostic?.data?.metrics || {};
@@ -2723,12 +2769,20 @@ const loadLatestDiscoveryMetrics = async (
   if (existingDiagnostic?.data?.aiReport) {
     const diagnosticReport = existingDiagnostic.data.aiReport;
     diagnosticReportMetrics = extractMetricsFromReport(diagnosticReport);
-    // Get diagnostic report date (use updatedAt if report was updated, otherwise createdAt)
-    diagnosticReportDate = existingDiagnostic.updatedAt || existingDiagnostic.createdAt;
+    // Get diagnostic report date (use data.generatedAt if available, which represents
+    // when the actual diagnostic report was generated. Fallback to updatedAt or createdAt)
+    diagnosticReportDate = existingDiagnostic.data?.generatedAt 
+      ? new Date(existingDiagnostic.data.generatedAt)
+      : (existingDiagnostic.updatedAt || existingDiagnostic.createdAt);
     console.log(
       "[loadLatestDiscoveryMetrics] Extracted metrics from diagnostic report:",
       diagnosticReportMetrics,
-      { date: diagnosticReportDate }
+      { 
+        date: diagnosticReportDate, 
+        generatedAt: existingDiagnostic.data?.generatedAt,
+        createdAt: existingDiagnostic.createdAt, 
+        updatedAt: existingDiagnostic.updatedAt 
+      }
     );
   }
 

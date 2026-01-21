@@ -3301,7 +3301,7 @@ const handleDiagnosticMode = async ({
   const assistantSaysComplete =
     nextMessage?.content &&
     typeof nextMessage.content === "string" &&
-    /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|let me generate)/i.test(
+    /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|let me generate|thank you for completing|completing the intake|will help map|guide the next steps)/i.test(
       nextMessage.content
     );
 
@@ -3342,7 +3342,13 @@ const handleDiagnosticMode = async ({
     (userWantsToGenerateReport && questionsAnswered >= 12) ||
     // PRIORITY 2: If assistant says ready with 12+ questions, finalize immediately (ignore wantsNewDiagnostic)
     assistantReadyAndQuestionsComplete ||
-    // PRIORITY 3: Normal auto-finalization (12 questions answered + normal conditions + not wanting new diagnostic)
+    // PRIORITY 3: If 12 questions are answered, always generate report (regardless of wantsNewDiagnostic)
+    // If they've answered 12 questions, they clearly want a report with those answers
+    (questionsAnswered >= 12 &&
+      !newQuestionJustAsked && // Q12 wasn't just asked (wait for answer)
+      (!pendingQuestion || userWantsToGenerateReport) && // User has answered the last question OR explicitly requested to generate
+      (aiAnswered || userWantsToGenerateReport)) || // The last user message was a valid answer OR user explicitly requested to generate
+    // PRIORITY 4: Normal auto-finalization (12 questions answered + normal conditions + not wanting new diagnostic)
     (!wantsNewDiagnostic && // Don't auto-finalize if user wants a NEW diagnostic (they want to start over, not generate current)
       questionsAnswered >= 12 && // ALWAYS require 12 questions
       (!hasExistingReport || wantsNewDiagnostic || questionsAnswered >= 12) && // Allow if new user, wants new diagnostic, OR answered 12 questions

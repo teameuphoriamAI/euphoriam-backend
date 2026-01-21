@@ -560,7 +560,6 @@ ${JSON.stringify(session.latestUserSession.transcript, null, 2)}
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to access" or "I don't have access"
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary"
 - ABSOLUTELY FORBIDDEN: NEVER talk about diagnostic reports when they ask about session details
-- START YOUR RESPONSE WITH: "Yes, I have your 1:1 session transcript. Here's a summary:" then provide the summary
 - Parse the JSON transcript and summarize/reference what was discussed
 - The transcript has role/content pairs - read them and provide a summary
 - DO NOT confuse session details with diagnostic report - they're asking about the 1:1 coaching session transcript above

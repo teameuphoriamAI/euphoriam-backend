@@ -32,8 +32,8 @@ const sequelize = new Sequelize(DATABASE_URL, {
   pool: {
     max: 1, // Absolute minimum for Session mode databases (Supabase/Neon free tier)
     min: 0, // Start with 0 connections, create as needed
-    acquire: 30000, // Maximum time (ms) to wait for a connection
-    idle: 5000, // Reduced: Maximum time (ms) a connection can be idle before being released
+    acquire: 60000, // Increased: Maximum time (ms) to wait for a connection (60 seconds)
+    idle: 10000, // Maximum time (ms) a connection can be idle before being released
     evict: 1000, // Interval (ms) to check for idle connections
     handleDisconnects: true, // Automatically reconnect if connection is lost
   },
@@ -250,6 +250,8 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
             "userId" INTEGER,
             "email" VARCHAR(255),
             "transcript" JSONB NOT NULL,
+            "embeddings" JSONB,
+            "summery" TEXT,
             "sessionDate" TIMESTAMP WITH TIME ZONE,
             "metadata" JSONB DEFAULT '{}',
             "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -268,6 +270,24 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
           
           -- Create index on sessionDate for sorting
           CREATE INDEX IF NOT EXISTS "user_sessions_sessionDate_idx" ON "user_sessions"("sessionDate" DESC);
+        ELSE
+          -- Add embeddings column if table exists but column doesn't
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'user_sessions' 
+            AND column_name = 'embeddings'
+          ) THEN
+            ALTER TABLE "user_sessions" ADD COLUMN "embeddings" JSONB;
+          END IF;
+          
+          -- Add summery column if table exists but column doesn't
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'user_sessions' 
+            AND column_name = 'summery'
+          ) THEN
+            ALTER TABLE "user_sessions" ADD COLUMN "summery" TEXT;
+          END IF;
         END IF;
       END $$;
     `);

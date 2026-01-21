@@ -25,6 +25,16 @@ const UserSession = sequelize.define(
       allowNull: false,
       comment: "1:1 coaching session transcript stored as JSON array of messages",
     },
+    embeddings: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+      comment: "Embedding vector for semantic search (array of numbers)",
+    },
+    summery:{
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: "Summery of the session",
+    },
     sessionDate: {
       type: DataTypes.DATE,
       allowNull: true,

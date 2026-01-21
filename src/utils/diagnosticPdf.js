@@ -236,12 +236,20 @@ const cleanText = (text) => {
   if (!text) return text;
   // Remove or replace problematic characters
   return String(text)
+    // Normalize bullets / icons into safe characters the PDF font can render cleanly
+    .replace(/%Ï/g, "• ") // Treat "%Ï" as a bullet
+    .replace(/●/g, "•") // Normalize filled circle to bullet
+    .replace(/•/g, "•") // Ensure bullet stays as a single consistent glyph
+    .replace(/✨/g, "✦") // Replace sparkle with a simpler star glyph
     .replace(/& þ/g, "") // Remove special characters
     .replace(/Ø=ÜÄ/g, "") // Remove special characters
     .replace(/!'/g, " → ") // Replace arrow-like characters
     .replace(/!"/g, " ↓ ") // Replace arrow-like characters
     .replace(/!`/g, " → ") // Replace arrow-like characters
     .replace(/!'/g, " → ") // Replace arrow-like characters
+    .replace(/& /g, "")
+    .replace(/1:1/g, " 1:1 session")
+    .replace(/& þ/g, "")
     .replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, ""); // Remove non-printable characters except common unicode
 };
 
@@ -323,7 +331,7 @@ const renderTextWithBold = (doc, text, options = {}) => {
   doc.font("Helvetica").fontSize(fontSize);
 };
 
-const renderStyledReport = (doc, text, metrics = {}) => {
+const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) => {
   const lines = String(text || "").split(/\r?\n/);
 
   doc.font("Helvetica").fontSize(11);
@@ -339,10 +347,17 @@ const renderStyledReport = (doc, text, metrics = {}) => {
   let inIntroSection = false;
   let introEnded = false;
   let introLines = [];
+  let summaryRendered = false;
+  let skipLinesUntil = -1; // Track line index to skip until (for summary/next step sections)
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     const line = rawLine.trimEnd();
+
+    // Skip any artifact lines that are just long runs of "%" (e.g. "%%%%%%%%%%%%")
+    if (/^%{6,}$/.test(line.trim())) {
+      continue;
+    }
 
     // Detect intro section start
     if (/BEFORE YOU READ THIS DIAGNOSTIC/i.test(line) || /✨\s*BEFORE YOU READ/i.test(line)) {
@@ -381,26 +396,114 @@ const renderStyledReport = (doc, text, metrics = {}) => {
           }
         });
         
-        // Add short summary section after intro
-        doc.moveDown(1);
-        doc.font("Helvetica-Bold").fontSize(14).text("SHORT SUMMARY", {
-          width: availableWidth,
-          lineGap: 2,
-        });
-        doc.moveDown(0.3);
-        
-        // Extract summary from report text (look for summary section or generate from first few sections)
+        // Look ahead to find summary section in the report
         const reportText = lines.join("\n");
-        let summaryText = "";
+        let summaryStartIdx = -1;
+        let summaryEndIdx = -1;
+        let nextStepStartIdx = -1;
+        let nextStepEndIdx = -1;
         
-        // Try to find a summary section in the report
-        const summaryMatch = reportText.match(/##\s*SHORT\s+SUMMARY[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i) ||
-                            reportText.match(/SUMMARY[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
+        // Find summary section
+        for (let j = i; j < lines.length; j++) {
+          const testLine = lines[j].trim();
+          if (/^##\s*SHORT\s+SUMMARY/i.test(testLine) || /^SHORT\s+SUMMARY/i.test(testLine.toUpperCase())) {
+            summaryStartIdx = j;
+            // Find where summary ends (next section header, divider, or NEXT STEP)
+            for (let k = j + 1; k < lines.length; k++) {
+              const endLine = lines[k].trim();
+              if (/^##\s+/.test(endLine) || 
+                  /^SECTION\s+\d+/i.test(endLine) ||
+                  /^NEXT\s+STEP/i.test(endLine.toUpperCase()) ||
+                  endLine === "----------------------------------------" ||
+                  endLine === "────────────────────────────────────────" ||
+                  /^---+$/.test(endLine)) {
+                summaryEndIdx = k;
+                // Check if next section is NEXT STEP
+                if (/^NEXT\s+STEP/i.test(endLine.toUpperCase())) {
+                  nextStepStartIdx = k;
+                  // Find where NEXT STEP ends
+                  for (let m = k + 1; m < lines.length; m++) {
+                    const nextEndLine = lines[m].trim();
+                    if (/^##\s+/.test(nextEndLine) || 
+                        /^SECTION\s+\d+/i.test(nextEndLine) ||
+                        nextEndLine === "----------------------------------------" ||
+                        nextEndLine === "────────────────────────────────────────" ||
+                        /^---+$/.test(nextEndLine)) {
+                      nextStepEndIdx = m;
+                      break;
+                    }
+                  }
+                }
+                break;
+              }
+            }
+            break;
+          }
+        }
         
-        if (summaryMatch && summaryMatch[1]) {
-          summaryText = summaryMatch[1].trim();
+        // Render summary section if found, otherwise generate one
+        if (summaryStartIdx >= 0 && summaryEndIdx > summaryStartIdx) {
+          // Skip the summary header line when rendering
+          doc.moveDown(1);
+          doc.font("Helvetica-Bold").fontSize(14).text("SHORT SUMMARY", {
+            width: availableWidth,
+            lineGap: 2,
+          });
+          doc.moveDown(0.3);
+          doc.font("Helvetica").fontSize(11);
+          
+          // Render summary content
+          for (let j = summaryStartIdx + 1; j < summaryEndIdx; j++) {
+            const summaryLine = lines[j].trim();
+            if (summaryLine && !/^NEXT\s+STEP/i.test(summaryLine.toUpperCase())) {
+              const cleanedLine = cleanText(summaryLine);
+              renderTextWithBold(doc, cleanedLine, {
+                width: availableWidth,
+                lineGap: 2,
+              });
+            }
+          }
+          
+          // Render NEXT STEP section if found
+          if (nextStepStartIdx >= 0 && nextStepEndIdx > nextStepStartIdx) {
+            doc.moveDown(0.5);
+            doc.font("Helvetica-Bold").fontSize(12).text("NEXT STEP", {
+              width: availableWidth,
+              lineGap: 2,
+            });
+            doc.moveDown(0.3);
+            doc.font("Helvetica").fontSize(11);
+            
+            for (let j = nextStepStartIdx + 1; j < nextStepEndIdx; j++) {
+              const nextStepLine = lines[j].trim();
+              if (nextStepLine) {
+                const cleanedLine = cleanText(nextStepLine);
+                renderTextWithBold(doc, cleanedLine, {
+                  width: availableWidth,
+                  lineGap: 2,
+                });
+              }
+            }
+          }
+          
+          // Skip these lines when processing the main loop
+          if (nextStepEndIdx > 0) {
+            skipLinesUntil = nextStepEndIdx;
+            i = nextStepEndIdx - 1; // Will be incremented by loop
+          } else {
+            skipLinesUntil = summaryEndIdx;
+            i = summaryEndIdx - 1; // Will be incremented by loop
+          }
         } else {
-          // Generate a brief summary from structure type and key patterns
+          // Generate a brief summary if not found in report
+          doc.moveDown(1);
+          doc.font("Helvetica-Bold").fontSize(14).text("SHORT SUMMARY", {
+            width: availableWidth,
+            lineGap: 2,
+          });
+          doc.moveDown(0.3);
+          
+          let summaryText = "";
           const structureMatch = reportText.match(/STRUCTURE\s+TYPE[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
           const avoidanceMatch = reportText.match(/AVOIDANCE[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
           
@@ -412,19 +515,32 @@ const renderStyledReport = (doc, text, metrics = {}) => {
                          "avoidance behaviors, and current state. Review each section to understand your unique structure " +
                          "and the recommended path forward.";
           }
+          
+          doc.font("Helvetica").fontSize(11);
+          const summaryLines = summaryText.split(/\n/).filter(l => l.trim());
+          summaryLines.forEach(summaryLine => {
+            const cleanedLine = cleanText(summaryLine.trim());
+            renderTextWithBold(doc, cleanedLine, {
+              width: availableWidth,
+              lineGap: 2,
+            });
+          });
         }
         
-        doc.font("Helvetica").fontSize(11);
-        const summaryLines = summaryText.split(/\n/).filter(l => l.trim());
-        summaryLines.forEach(summaryLine => {
-          const cleanedLine = cleanText(summaryLine.trim());
-          renderTextWithBold(doc, cleanedLine, {
-            width: availableWidth,
-            lineGap: 2,
-          });
-        });
-        
         doc.moveDown(0.8);
+        
+        // Render recommendations right after summary if available
+        if (ucRecommendations && !summaryRendered) {
+          summaryRendered = true;
+          if (
+            ucRecommendations.phase1.length > 0 ||
+            ucRecommendations.phase2.length > 0 ||
+            ucRecommendations.phase3.length > 0
+          ) {
+            renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
+            doc.moveDown(0.8);
+          }
+        }
         
         // Continue processing the current line (divider or header)
         // Don't skip it, let it be processed normally
@@ -434,6 +550,22 @@ const renderStyledReport = (doc, text, metrics = {}) => {
     // Skip intro lines that were already rendered
     if (inIntroSection && !introEnded) {
       continue;
+    }
+    
+    // Skip summary and next step lines that were already rendered
+    if (skipLinesUntil > 0 && i < skipLinesUntil) {
+      // Check if this is a summary or next step header line
+      if (/^##\s*SHORT\s+SUMMARY/i.test(line) || 
+          /^SHORT\s+SUMMARY/i.test(line.toUpperCase()) ||
+          /^NEXT\s+STEP/i.test(line.toUpperCase())) {
+        continue;
+      }
+      // If we're still within the skip range, continue
+      continue;
+    }
+    // Reset skip flag once we've passed it
+    if (skipLinesUntil > 0 && i >= skipLinesUntil) {
+      skipLinesUntil = -1;
     }
 
     // Check if we've found the METRICS GAUGE section
@@ -1108,7 +1240,7 @@ const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
   doc
     .font("Helvetica-Bold")
     .fontSize(14)
-    .text("UNLIMITED CREATED RECOMMENDATIONS", {
+    .text("UNLIMITED CREATOR RECOMMENDATION ENGINE", {
       width: sectionWidth,
       lineGap: 2,
     });
@@ -1251,9 +1383,37 @@ const generateDiagnosticPdf = (diagnostic) =>
         console.log("[diagnosticPdf] aiReport head:", aiReport.slice(0, 200));
         console.log("[diagnosticPdf] Metrics for PDF:", metrics);
 
+        // Strip any prefix messages like "I'm generating your discovery report now..." before validation
+        let cleanedReport = aiReport;
+        // Remove common prefix patterns that AI might add before the actual report
+        // Look for patterns like "I'm generating..." followed by "---" or "##" or "EUPHORIAM"
+        const prefixPatterns = [
+          /^I'm generating[.\s\S]*?Please hold on[.\s\S]*?(?=\n---|\n##|EUPHORIAM|✨|────────────────)/i,
+          /^I'm generating[.\s\S]*?(?=\n---|\n##|EUPHORIAM|✨|────────────────)/i,
+          /^Please hold on[.\s\S]*?(?=\n---|\n##|EUPHORIAM|✨|────────────────)/i,
+          /^Generating your report[.\s\S]*?(?=\n---|\n##|EUPHORIAM|✨|────────────────)/i,
+        ];
+        
+        for (const pattern of prefixPatterns) {
+          const match = cleanedReport.match(pattern);
+          if (match) {
+            // Find where the actual report starts (after the prefix)
+            const prefixEnd = match.index + match[0].length;
+            cleanedReport = cleanedReport.substring(prefixEnd).trimStart();
+            break; // Only remove one prefix
+          }
+        }
+        
+        // Also check if report starts with "---" after some text - extract everything from "---" onwards
+        const dividerIndex = cleanedReport.indexOf('\n---');
+        if (dividerIndex > 0 && dividerIndex < 200) {
+          // There's text before the divider, likely a prefix message
+          cleanedReport = cleanedReport.substring(dividerIndex + 1).trimStart();
+        }
+
         // Allow: legacy divider-led reports, intro-led reports, or title pages
         // that contain the intro within the first chunk.
-        const trimmed = aiReport.trimStart();
+        const trimmed = cleanedReport.trimStart();
         const startsWithDivider = trimmed.startsWith(
           "----------------------------------------"
         );
@@ -1290,7 +1450,7 @@ const generateDiagnosticPdf = (diagnostic) =>
           !startsWithMarkdownHeader &&
           !startsWithMarkdownDivider
         ) {
-          const head = aiReport.slice(0, 300);
+          const head = cleanedReport.slice(0, 300);
 
           // Check for typical AI refusal patterns
           const isRefusal = /i'm sorry|can't assist|cannot assist|policy|guidelines|unsafe/i.test(head);
@@ -1304,25 +1464,18 @@ const generateDiagnosticPdf = (diagnostic) =>
           throw err;
         }
 
-        renderStyledReport(doc, aiReport, metrics);
-
-        // Add Unlimited Created week-wise recommendations after the report
-        // Fetch course videos to get actual titles
+        // Generate recommendations BEFORE rendering report so they can be inserted after summary
         const weekTitles = await fetchCourseWeekTitles("2148785745").catch(
           () => ({})
         );
         const ucRecommendations = await generateUnlimitedCreatedRecommendations(
           metrics,
-          aiReport,
+          cleanedReport,
           weekTitles
         );
-        if (
-          ucRecommendations.phase1.length > 0 ||
-          ucRecommendations.phase2.length > 0 ||
-          ucRecommendations.phase3.length > 0
-        ) {
-          renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
-        }
+
+        // Render report with recommendations passed in (will be inserted after summary)
+        renderStyledReport(doc, cleanedReport, metrics, ucRecommendations);
 
         // Optional metadata on a new page (after the report)
         doc.addPage();

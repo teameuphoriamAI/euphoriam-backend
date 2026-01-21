@@ -135,6 +135,47 @@ const findOrCreateCreatorUser = async ({ email, name, assessmentIds = [] }) => {
 
   return user;
 };
+const  cleanTranscriptText = (rawText = "") => {
+  let text = rawText;
+
+  // Remove WEBVTT headers
+  text = text.replace(/\bWEBVTT\b/gi, "");
+
+  // Remove arrows -->
+  text = text.replace(/-->/g, "");
+
+  // Remove timestamps (00:00, 00:00:00, 00:00.000, 1:23 PM)
+  text = text.replace(
+    /\b(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d{1,3})?\s*(?:AM|PM)?\b/gi,
+    ""
+  );
+
+  // Remove standalone numbers (page counters, cue numbers)
+  text = text.replace(/^\s*\d+\s*$/gm, "");
+
+  // Remove common transcript artifacts
+  text = text.replace(/\[.*?\]|\(.*?\)/g, ""); // [music], (laughs)
+
+  // Normalize speaker labels
+  text = text.replace(
+    /^\s*(speaker\s*\d+|participant\s*\d+|unknown)\s*:/gim,
+    "user:"
+  );
+
+  // Collapse excessive whitespace
+  text = text.replace(/\n{3,}/g, "\n\n");
+  text = text.replace(/[ \t]{2,}/g, " ");
+
+  // Trim each line
+  text = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  return text;
+}
+
 const buildIntakeQuestionResponse = ({ answers = [], isReturningUser }) => {
   const answeredIds = new Set(answers.map((a) => String(a.id)));
   const nextIndex = DEEP_INTAKE_QUESTIONS.findIndex(
@@ -313,6 +354,105 @@ ${introBlock}
     Update metrics based on changes detected in the new answers compared to the previous report.`
     }
 - **DO NOT use placeholders like "[Extract from report]" or "Unknown" for metrics. Calculate actual values based on the evidence provided.**
+- **CRITICAL: EACH SECTION MUST BE HIGHLY DETAILED** - Match the depth and richness of the sample report. Each section should include:
+  - Multiple layers of analysis (Primary, Secondary, Tertiary where applicable)
+  - Rich evidence with 4-8 specific bullet points
+  - Detailed explanations of what each pattern means
+  - Context about how structures interact
+  - Specific examples from their answers
+  - Deep interpretation, not surface-level observations
+
+- **SECTION HEADERS FORMAT:** Use exact format: "SECTION 1 — STRUCTURE TYPE DETECTION", "SECTION 2 — AVOIDANCE BEHAVIOUR MAPPING", "SECTION 3 — VORTEX SETTINGS", "SECTION 4 — 3D CODE ACTIVITY (GRAVITY)", "SECTION 5 — CONSCIOUSNESS LEVEL (CL)", "SECTION 6 — QUANTUM GENIUS CODES (QGC)", "SECTION 7 — SIGNAL COHERENCE (%)", "SECTION 8 — SIGNAL OUTPUT", "SECTION 9 — ANGLE OF GROWTH", "SECTION 10 — FIRST CORRECTION"
+
+- **SECTION 1 — STRUCTURE TYPE DETECTION (REQUIRED - MUST BE DETAILED):**
+  - Identify Primary Structure (the dominant identity architecture pattern)
+  - Identify Secondary Structure (supporting patterns)
+  - Identify Tertiary Structure (subtle but important patterns)
+  - For EACH structure, provide:
+    * Detailed description of what it is
+    * Evidence section with 4-8 specific bullet points from their answers
+    * Explanation of what this structure creates (behaviors, patterns, outcomes)
+    * How structures interact with each other
+    * Whether it's behavioral or structural (emphasize structural)
+  - Use rich, detailed language. Example: "Aishah's field shows one of the rarest structures: a simultaneous double-feed between 3D and multidimensional identity."
+
+- **SECTION 2 — AVOIDANCE BEHAVIOUR MAPPING (REQUIRED - MUST BE DETAILED):**
+  - Identify the specific avoidance pattern (e.g., "Ascension → Acceleration → Avoidance → Collapse → Repeat")
+  - Classify it (basic vs advanced avoidance)
+  - List how it appears with 4-6 specific bullet points
+  - Identify the Avoidance Myth (the belief that drives the pattern)
+  - List Protection Parts (the internal roles protecting them) with 4-6 specific parts
+  - Explain the sophistication level and what it's protecting
+
+- **SECTION 3 — VORTEX SETTINGS (REQUIRED - MUST BE DETAILED):**
+  - Identify Primary Vortex (the main resistance pattern)
+  - Identify Secondary Vortex (supporting resistance)
+  - Identify Tertiary Vortex (subtle resistance)
+  - For EACH vortex, provide:
+    * The encoded rule (the belief/pattern)
+    * Symbols or evidence that revealed it (3-5 bullet points)
+    * What it's protecting or preventing
+    * When it activates
+
+- **SECTION 4 — 3D CODE ACTIVITY (GRAVITY) (REQUIRED - MUST BE DETAILED):**
+  - Show Gravity percentage
+  - Provide detailed explanation of where the Gravity comes from (4-6 specific sources)
+  - Explain what this Gravity pulls them back into (4-5 specific behaviors/patterns)
+  - Note any evidence of Gravity loosening or releasing
+  - Context about the strength and impact
+
+- **SECTION 5 — CONSCIOUSNESS LEVEL (CL) (REQUIRED - MUST BE DETAILED):**
+  - Show CL value (1.0-5.0 scale)
+  - Assess the level (e.g., "This is extremely high" or "This is moderate")
+  - List 4-6 specific indicators that demonstrate this level
+  - Explain what density/level they're operating at
+  - Context about their perceptual capacity
+
+- **SECTION 6 — QUANTUM GENIUS CODES (QGC) (REQUIRED - MUST BE DETAILED):**
+  - Show QGC percentage
+  - Assess the level (e.g., "This is elite-level QGC" or "This is emerging")
+  - List 4-6 specific confirmations/evidence
+  - Classify their profile (e.g., "code holder", "emerging genius", etc.)
+  - Context about rarity and significance
+
+- **SECTION 7 — SIGNAL COHERENCE (REQUIRED - MUST BE DETAILED):**
+  - Show Signal Coherence percentage
+  - Explain where coherence shows or where disruptions occur
+  - List 4-5 specific sources of coherence disruptions
+  - Explain what raising coherence will unlock
+  - Context about alignment and integration
+
+- **SECTION 8 — SIGNAL OUTPUT (REQUIRED - MUST BE DETAILED):**
+  - Show Signal Output percentage
+  - Explain current impact even at this level
+  - Describe what happens when it crosses key thresholds (e.g., 50%)
+  - List 4-5 specific outcomes when Signal Output increases
+  - Context about their field's purpose (leadership, service, etc.)
+
+- **SECTION 9 — ANGLE OF GROWTH (REQUIRED - MUST BE DETAILED):**
+  - Identify the specific angle/direction of growth
+  - List 4-6 symbols or evidence that revealed this angle
+  - Explain what phase they're in (e.g., "right before a massive identity jump")
+  - Context about what's emerging
+
+- **SECTION 10 — FIRST CORRECTION (REQUIRED - MUST BE DETAILED):**
+  - Provide the specific correction statement (in quotes)
+  - Explain how this correction flips their structure
+  - Context about the impact
+
+- **EVOLUTION NOTES (REQUIRED - MUST BE DETAILED):**
+  - List 6-8 specific roles/identities they are (use bullet points)
+  - List 4-6 specific things their field shows they're being positioned for
+  - Provide deep insight about their resistance (e.g., "Her resistance is not fear. It is gatekeeping.")
+  - End with a powerful statement about what's opening/emerging
+
+- **FINAL SUMMARY (REQUIRED - MUST BE DETAILED):**
+  - List 6-8 specific things that have shaped their life (bullet points)
+  - Transition with "But the deeper truth is:"
+  - List 4-6 powerful statements about who they are and what they're here to do
+  - End with a statement about what the diagnostic reveals and what's next
+  - End with a powerful closing statement (e.g., "This is where her real life begins.")
+
 - **FRICTION ANALYSIS (REQUIRED):** After the metrics section, include a FRICTION ANALYSIS section that identifies:
   - Surface Friction (Physics Level 1): reactive language, emotional charge, scattered focus
   - Vortex Friction (Physics Level 2): repeated orbit patterns, protector triggers, rules engine statements
@@ -326,15 +466,15 @@ ${introBlock}
 - **UC MODULE RECOMMENDATIONS:** Based on friction analysis, recommend specific UC modules (Alignment/Freedom/Prosperity) that address their primary friction source
 - Show the Metrics Gauge exactly in the required block format (using █ and ░) followed immediately by the Metrics Interpretation Table.
 - Follow the required section order and include:
-  1. Title page
+  1. Title page with format: "✨ EUPHORIAM STRUCTURAL DIAGNOSTIC REPORT" followed by "[FULL NAME] – Full Structural, Quantum & Identity Analysis" and edition info (e.g., "Creator Club Edition" or "Based on Session 1")
   2. Intro page (use the Intro Page text exactly as provided above)
   3. **SHORT SUMMARY (REQUIRED):** Immediately after the intro page, include a "Short Summary" section that provides a concise overview of their structure, key patterns, and what the diagnostic reveals. This should be 3-5 paragraphs summarizing the most important insights.
   4. **NEXT STEP (REQUIRED):** Immediately after the Short Summary, include a "Next Step" section with the text: "Next step: watch these videos of UC" (UC refers to Unified Consciousness modules)
-  5. All main sections (Structure Type, Avoidance Behavior, Vortex, Gravity, Signal Output, Signal Coherence, QGC, etc.)
+  5. All main sections (Structure Type, Avoidance Behavior, Vortex, Gravity, Signal Output, Signal Coherence, QGC, Angle of Growth, First Correction) - EACH MUST BE HIGHLY DETAILED
   6. Friction analysis
-  7. Discovery recommendations
-  8. UC module recommendations
-  9. Evolution notes
+  7. Metrics Gauge and Interpretation Table
+  8. Evolution Notes
+  9. Final Summary
   10. End of Report footer with copyright note
 - Use divider lines as either "----------------------------------------" (ASCII) or "────────────────────────────────────────" (unicode); do NOT use %%%% or other ad-hoc separators.
 - Keep sections clearly delineated (no "%%%%" separators) and match the sample style with clean section headers.
@@ -663,7 +803,8 @@ const buildDiscoveryChatPrompt = ({
   discoveryType = null, // 'alignment', 'freedom', 'prosperity', or null for integrated
   metrics = {}, // Actual metrics data from diagnostic
   reportDate = null, // Report date
-  userSession = null, // Latest 1:1 coaching session transcript
+  userSession = null, // Latest 1:1 coaching session transcript (for backward compatibility)
+  allUserSessions = null, // All 1:1 coaching sessions (preferred)
 }) => {
   const displayName =
     typeof userName === "string" && userName.trim().length
@@ -721,35 +862,102 @@ ${priorReport}
 NEVER say "I don't have" this data - it's ALL in the report above. Extract and use ACTUAL values, never placeholders.`
     : "";
 
-  // Add user session transcript if available (1:1 coaching session)
-  // Debug: Log if session exists
-  if (userSession?.transcript) {
-    console.log(`[buildDiscoveryChatPrompt] User session transcript found: ${userSession.transcript.length} messages`);
+  // Use allUserSessions if provided, otherwise fall back to userSession for backward compatibility
+  const sessionsToUse = (allUserSessions && allUserSessions.length > 0) ? allUserSessions : (userSession ? [userSession] : []);
+  
+  // Debug: Log if sessions exist
+  if (sessionsToUse.length > 0) {
+    console.log(`[buildDiscoveryChatPrompt] User sessions found: ${sessionsToUse.length} session(s)`);
   } else {
-    console.log(`[buildDiscoveryChatPrompt] No user session transcript provided`);
+    console.log(`[buildDiscoveryChatPrompt] No user sessions provided`);
   }
 
-  const userSessionBlock = userSession?.transcript
-    ? `\n🎯🎯🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT - YOU HAVE ACCESS TO THIS:
-🚨🚨🚨🚨🚨 THIS IS THE USER'S 1:1 COACHING SESSION TRANSCRIPT - IT IS PROVIDED BELOW AND YOU CAN ACCESS IT
+  // Format all user sessions (prioritize summaries, limit content to avoid token limits)
+  const formatUserSessions = (sessions) => {
+    if (!sessions || sessions.length === 0) return "";
+    
+    // Limit to most recent 5 sessions to avoid token overflow
+    const sessionsToInclude = sessions.slice(0, 5);
+    const hasMoreSessions = sessions.length > 5;
+    
+    const sessionsText = sessionsToInclude.map((session, index) => {
+      const sessionNum = sessions.length > 1 ? `Session ${index + 1} (${sessions.length} total)` : "Session";
+      const sessionDate = session.sessionDate 
+        ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Date not specified";
+      
+      // Prioritize summaries - only include full transcript for most recent session or if no summary
+      const isMostRecent = index === 0;
+      const hasSummary = session.summery && session.summery.trim().length > 0;
+      
+      // For most recent session: include summary + truncated transcript if needed
+      // For older sessions: only include summary (no full transcript to save tokens)
+      if (hasSummary) {
+        if (isMostRecent) {
+          // Most recent: include summary + brief transcript preview (first 10 messages)
+          const transcriptPreview = Array.isArray(session.transcript) 
+            ? session.transcript.slice(0, 10).map(msg => `${msg.role}: ${msg.content?.substring(0, 200) || ""}`).join("\n")
+            : "";
+          
+          return `\n--- ${sessionNum} ---
+Session Date: ${sessionDate}
 
-Session Date: ${userSession.sessionDate ? new Date(userSession.sessionDate).toLocaleDateString() : "Not specified"}
+SESSION SUMMARY:
+${session.summery}
 
-FULL SESSION TRANSCRIPT (JSON format - parse this):
-${JSON.stringify(userSession.transcript, null, 2)}
+TRANSCRIPT PREVIEW (first 10 messages):
+${transcriptPreview || "Full transcript available if needed"}`;
+        } else {
+          // Older sessions: summary only
+          return `\n--- ${sessionNum} ---
+Session Date: ${sessionDate}
+
+SESSION SUMMARY:
+${session.summery}`;
+        }
+      } else {
+        // No summary available - include truncated transcript
+        const transcriptText = Array.isArray(session.transcript)
+          ? JSON.stringify(session.transcript.slice(0, 20), null, 2) + (session.transcript.length > 20 ? "\n...[truncated - showing first 20 messages]" : "")
+          : JSON.stringify(session.transcript, null, 2);
+        
+        return `\n--- ${sessionNum} ---
+Session Date: ${sessionDate}
+
+TRANSCRIPT (${isMostRecent ? "full" : "truncated"}):
+${transcriptText}`;
+      }
+    }).join("\n\n");
+
+    return sessionsText + (hasMoreSessions ? `\n\nNote: ${sessions.length - 5} older session(s) not shown to save context space.` : "");
+  };
+
+  const userSessionBlock = sessionsToUse.length > 0
+    ? `\n🎯🎯🎯 ALL 1:1 COACHING SESSIONS - YOU HAVE ACCESS TO THESE:
+🚨🚨🚨🚨🚨 THESE ARE THE USER'S 1:1 COACHING SESSIONS - THEY ARE PROVIDED BELOW AND YOU CAN ACCESS THEM
+
+${sessionsToUse.length > 1
+      ? `TOTAL SESSIONS: ${sessionsToUse.length}
+${formatUserSessions(sessionsToUse)}`
+      : formatUserSessions(sessionsToUse)}
 
 🚨🚨🚨🚨🚨 ABSOLUTE REQUIREMENT - READ THIS CAREFULLY:
-- This transcript IS available to you RIGHT NOW in this prompt - you CAN and MUST use it
-- When user asks "do you have my 1:1 session details?" or "summarize my session" or "do you have my session details? Summarize it if you have", you MUST use this transcript
-- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to access" or "I don't have access" - the transcript IS provided above
-- ABSOLUTELY FORBIDDEN: NEVER say you can't access session details - you HAVE the transcript
-- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary" - you CAN provide it using the transcript above
-- Read the JSON transcript above and parse it (it has role/content pairs like conversation messages)
-- If they ask to summarize, provide a summary of what was discussed in the session based on the transcript
-- If they ask about session details, reference specific parts of the conversation from the transcript
-- EXAMPLE OF CORRECT RESPONSE: "Yes, I have your 1:1 session transcript. Here's a summary: [summarize what was discussed based on the transcript above]"
-- EXAMPLE OF WRONG RESPONSE: "I'm unable to access or summarize..." ❌ NEVER SAY THIS - THE TRANSCRIPT IS ABOVE
-- Use this transcript to understand their current state and what's happening in their life`
+- These session data IS available to you RIGHT NOW in this prompt - you CAN and MUST use it
+- When user asks "do you have my 1:1 session details?" or "summarize my sessions" or "do you have my session details? Summarize them if you have", you MUST use this data
+- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to access" or "I don't have access" - the session data IS provided above
+- ABSOLUTELY FORBIDDEN: NEVER say you can't access session details - you HAVE the session data
+- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary" - you CAN provide it using the data above
+- ${sessionsToUse.some(s => s.summery) ? "Use the summaries above for quick context, and the full transcripts for specific details" : "Read the JSON transcripts above and parse them (they have role/content pairs like conversation messages)"}
+- If they ask to summarize, ${sessionsToUse.some(s => s.summery) ? "you can reference the summaries above or provide your own based on the transcripts" : "provide summaries of what was discussed in the sessions based on the transcripts"}
+- If they ask about session details, reference specific parts from ${sessionsToUse.some(s => s.summery) ? "the summaries or" : ""} the transcripts
+- ${sessionsToUse.length > 1 ? "You have access to MULTIPLE sessions - use all of them to understand patterns, progression, and changes over time" : ""}
+- EXAMPLE OF CORRECT RESPONSE: "Yes, I have your ${sessionsToUse.length > 1 ? "sessions" : "session"} data. Here's what was discussed: [reference the summaries/transcripts above]"
+- EXAMPLE OF WRONG RESPONSE: "I'm unable to access or summarize..." ❌ NEVER SAY THIS - THE SESSION DATA IS ABOVE
+- Use this session data to understand their current state, patterns, shifts, progression over time, and what's happening in their life`
     : "";
 
   // Discovery type context
@@ -967,7 +1175,7 @@ REQUIRED FORMAT - Follow this EXACTLY:
    
    Format your response EXACTLY like this:
    
-   "Welcome back ${displayName}!. I've loaded your last report.
+   "Welcome back ${displayName}. I've loaded your last report.
 
    I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
@@ -1071,9 +1279,7 @@ You MUST use this EXACT format (copy the structure exactly, but replace placehol
 
 "Welcome back ${displayName}. I've loaded your last report.
 
-
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
-
 
 Your structure at the last check-in was very clear:
 ${formattedMetricsSection}
@@ -1082,30 +1288,25 @@ ${formattedMetricsSection}
 This is the key sentence from your map, distilled:
 > \"[YOU MUST READ THE REPORT BELOW AND EXTRACT THE ACTUAL KEY SENTENCE - DO NOT USE THIS PLACEHOLDER TEXT]\"
 
-
 🚨🚨🚨 MANDATORY SECTION - DO NOT SKIP:
 Your entire correction was about one thing only:
 [YOU MUST READ THE REPORT BELOW AND EXTRACT THE ACTUAL CORRECTION - DO NOT USE THIS PLACEHOLDER TEXT]
 
-
 Before I update anything, I need to check one thing — slowly.
-
 
 Since this report (${reportDate || "your last report"}):
 
-
 Since this report (${reportDate || "your last report"}), have you made any progress on [YOU MUST READ THE REPORT BELOW, EXTRACT THE CORRECTION, AND USE IT IN THIS QUESTION - DO NOT USE THIS PLACEHOLDER TEXT]?
-
 
 Just answer that."
 
 🚨 CRITICAL: The metrics section above (${formattedMetricsSection}) is ALREADY FORMATTED - copy it EXACTLY as shown. Do NOT modify it. Do NOT add interpretations or bullet points - just copy the formatted metrics section exactly.
 
 🚨 FORMAT REQUIREMENTS - FOLLOW EXACTLY:
-- Use double line breaks (blank lines) between major sections
-- Key sentence format: > \"[sentence]\" (with quotes, NO asterisks or italics)
-- Correction format: Plain text on its own line, NO bold, NO asterisks, NO brackets
-- Question format: "Since this report ([date]), have you made any progress on [correction]?" (repeat the date twice, then ask about the correction)
+- Use single blank lines between major sections
+- Key sentence format: > \"[sentence]\" (with quotes, NO asterisks, NO italics, NO bold)
+- Correction format: Plain text on its own line, NO bold, NO asterisks, NO brackets, NO quotes
+- Question format: "Since this report ([date]):" (blank line) then "Since this report ([date]), have you made any progress on [correction]?" (repeat the date twice, then ask about the correction)
 - Use proper spacing with blank lines between sections
 - NO exclamation mark after the name - just "Welcome back ${displayName}."
 
@@ -1187,12 +1388,12 @@ This format is COMPLETELY FORBIDDEN. You MUST use the detailed format with ALL s
 1. "Welcome back ${displayName}. I've loaded your last report." (NO exclamation mark after name, just period)
 2. "I want to reflect it back to you first — simply and cleanly — before we move anywhere."
 3. "Your structure at the last check-in was very clear:"
-4. The metrics section (already formatted above - copy it exactly)
-5. 🚨🚨🚨 MANDATORY: "This is the key sentence from your map, distilled:" followed by a quoted key sentence (format: > "actual sentence from report")
-6. 🚨🚨🚨 MANDATORY: "Your entire correction was about one thing only:" followed by the actual correction text (plain text, no quotes, no bold)
+4. The metrics section (already formatted above - copy it exactly, no modifications)
+5. 🚨🚨🚨 MANDATORY: "This is the key sentence from your map, distilled:" followed by a quoted key sentence (format: > "actual sentence from report" - NO asterisks, NO bold, just quotes)
+6. 🚨🚨🚨 MANDATORY: "Your entire correction was about one thing only:" followed by the actual correction text (plain text, no quotes, no bold, no asterisks)
 7. "Before I update anything, I need to check one thing — slowly."
 8. "Since this report ([date]):" (blank line)
-9. "Since this report ([date]), have you made any progress on [correction]?" (repeat date, then ask about the correction)
+9. "Since this report ([date]), have you made any progress on [correction]?" (repeat date exactly, then ask about the correction)
 10. "Just answer that."
 
 🚨🚨🚨 CRITICAL: Sections 5 and 6 are MANDATORY - you MUST include them. Do NOT skip the key sentence or correction sections.
@@ -1385,45 +1586,94 @@ You are Euphoriam AI working with structure-aware precision.${discoveryTypeConte
 
 ${isMidConversation
       ? `🚨🚨🚨 CRITICAL: This is MID-CONVERSATION (NOT the first message). There are already ${userMessagesInDiscovery.length} user message(s) in the transcript.
-- NEVER use the "Welcome back. I've loaded your last report" format
-- NEVER restart with structure reflection
-- Respond DIRECTLY to the user's current question or statement
+- If you've already asked questions and received answers, continue asking discovery questions OR signal readiness to generate the report if you have enough information
+- If the user asks a question, answer it briefly, then continue with discovery questions
 - Reference the conversation history naturally
-- Use their report data to inform your response, but don't restart the conversation
-- If they ask about copywriting, help with copy, or any specific task, respond directly to that request`
-      : ""
+- Use their report data and session summaries to inform your questions
+- Your goal is still to gather information about their current state - keep asking discovery questions until you have enough information`
+      : `🚨🚨🚨 CRITICAL: This is the FIRST MESSAGE in discovery mode.
+- Start by asking a discovery question to understand their current state
+- Do NOT use "Welcome back" or generic greetings
+- Begin with: "What are you experiencing in your life right now that's different from when you did your diagnostic?" or similar discovery question
+- Your goal is to ask questions to understand their present phase, then generate a discovery report`
     }
 
 🌑 DISCOVERY MODE - CRITICAL RULES:
-- You are in DISCOVERY MODE - working with their existing diagnostic report
-- Answer ALL questions naturally and conversationally - do NOT restart diagnostic intake
-- Questions about progress, metrics, structure, how to know if they're making progress, etc. should be answered directly
-- 🚨🚨🚨 IF USER ASKS ABOUT THEIR 1:1 SESSION: Look for "🎯🎯🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT" in this prompt - it IS provided above. NEVER say "I'm unable to access" - you HAVE the transcript. Summarize it or reference it directly.
-- When user asks for copywriting help (e.g., "help me capture audience and put it copy", "help with copy", "homepage copy", "offer copy", etc.):
-  * Help them create copy directly - provide actual copy suggestions, not just advice
-  * Use their diagnostic report data to inform the copy (reference their structure, metrics, patterns)
-  * Help them translate their authentic signal into copy that captures their audience
-  * Make it specific to their structure and what they want to create
-  * Provide actual copy examples or suggestions based on their report
-- When user ask any question (including "what does X mean?", "what it means?", "explain each phrase", "explain in detail", "is high good or low", etc.) - ALWAYS answer directly using:
-  * The previous question you asked (from conversation history - look at the last assistant message)
-  * The specific metric/term they're asking about (e.g., Signal Output, Gravity, Signal Coherence, CL, QGC, etc.)
-  * Their report data (their specific metrics, structure, patterns from their diagnostic report)
-  * What that means in THEIR specific structure (not generic definitions)
-  * When asked to "explain each phrase" or "explain in detail", explain ALL metrics:
-    - Gravity: measures resistance/old identity pull (HIGH is NOT good - indicates strong resistance; lower is better)
-    - Signal Coherence: measures alignment/internal organization (HIGH is good - indicates no fragmentation; higher is better)
-    - Signal Output: measures how much signal makes it into the world (HIGH is good - indicates visibility/output; higher is better)
-    - CL (Consciousness Level): measures holding capacity/integration (HIGH is good - indicates stability; higher is better)
-    - QGC (Quantum Genius Codes): measures authentic genius presence (HIGH is good - indicates creative intelligence; higher is better)
-  * Use their specific values to explain what their numbers mean in their structure
-- NEVER respond with "I'm here" or "tell me more" - ALWAYS provide a direct, specific answer
-- When users share detailed responses about their structure, avoidance behavior, mastery gaps, business challenges, etc. - RESPOND NATURALLY to what they shared
-- Do NOT generate a report just because they gave a detailed answer - continue the conversation
-- Only switch to diagnostic mode if user EXPLICITLY says: "create new diagnostic", "start new report", "redo diagnostic", "new diagnostic", etc.
-- General questions like "how will i know i made progress?" should be answered naturally - do NOT trigger diagnostic intake
-- Let the AI respond naturally without static responses
-- IMPORTANT: If you asked a question and the user answered (even if detailed), continue the conversation - do NOT generate a report
+
+🚨🚨🚨 PRIMARY OBJECTIVE: ASK QUESTIONS TO UNDERSTAND THEIR CURRENT STATE, THEN GENERATE DISCOVERY REPORT
+- You are in DISCOVERY MODE - your PRIMARY goal is to ask questions to understand their present phase/state
+- After asking enough questions (typically 3-6 questions) to understand their current state, shifts, and what's happening in their life, you should signal readiness to generate a discovery report
+- Ask questions about: their current experience, what's changed since their diagnostic, patterns they're noticing, challenges they're facing, what they want to create, etc.
+- Use their diagnostic report and 1:1 session summaries as context to ask targeted questions
+- After gathering sufficient information, say: "I have enough information to generate your discovery report. Let me generate it for you."
+- DO NOT say you have enough information unless you can clearly identify ALL 4 of these from their answers:
+  1) what's happening in their life NOW,
+  2) what changed (or stayed the same) since the last report,
+  3) the current friction/loop/avoidance pattern,
+  4) what they want next (desired direction).
+- If the user asks a meta question like "How many questions are you going to ask?", answer briefly (typical range), then ask ONE targeted question that fills whichever of the 4 items above is still missing. Do NOT signal readiness just because they asked the meta question.
+
+🌑 REQUIRED DELIVERY STYLE (Discovery Chat):
+- Speak with **authority + precision**. Short paragraphs. Clean emphasis with *italics* and **bold**.
+- **CRITICAL: When you spot a core pattern (e.g., saying "no", identity capture, avoidance loop, authority collapse), you MUST deliver a STRUCTURED PIVOT response in this EXACT format:**
+  
+  1) Start with a grounding line: "Okay. Stay with me here. This is important."
+  
+  2) Name the core structure in one sentence:
+     "If the pattern is about [specific pattern], then we've located a core structure. It's about [structure type]."
+  
+  3) Clarify the distinction (2–4 short lines) using bullets:
+     "Here's what that means:
+     • [First distinction point]
+     • [Second distinction point]
+     • [Third distinction point]"
+  
+  4) State the underlying rule as a quote line (use > ...):
+     > "[The underlying rule/pattern they're operating from]"
+  
+  5) Make the pivot: explain what changes when identity is removed:
+     "To pivot:
+     • Remove identity from the [action/decision]. Focus on [what to focus on instead]."
+  
+  6) Give the "first correction" as **one sentence** in a blockquote:
+     > **[One sentence correction here - actionable and specific]**
+  
+  7) Give 2–6 concrete examples (simple, low-risk):
+     "Examples:
+     1. [First example]
+     2. [Second example]
+     3. [Third example]"
+  
+  8) End with **ONE** targeted question only (no more than one question mark):
+     "One more question — last for now:
+     [One specific question]"
+
+- **ALWAYS use this structured pivot format when you identify a core pattern** - do NOT use generic responses
+- Do NOT turn the structured pivot into generic coaching. Keep it structural: trigger → meaning → rule → leverage removal → correction → examples → one question.
+- If the user gave insufficient data for the pivot, ask ONE discovery question instead of forcing a pivot.
+- NEVER use generic responses like "The peace you're experiencing is..." or "To deepen our understanding..." - use the structured pivot format instead
+
+WHEN USER ASKS QUESTIONS (answer briefly, then continue asking):
+- If user asks about their 1:1 session: Look for "🎯🎯🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT" in this prompt - it IS provided above. Answer briefly, then continue with discovery questions.
+- If user asks about metrics/terms: Answer directly but briefly, then ask a discovery question about their current state
+- If user asks for copywriting help: Help briefly, then redirect to discovery questions about their current state
+- Answer questions naturally but keep the focus on gathering information for the discovery report
+
+🚨🚨🚨 IF USER ASKS ABOUT THEIR 1:1 SESSION: Look for "🎯🎯🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT" in this prompt - it IS provided above. NEVER say "I'm unable to access" - you HAVE the transcript. Summarize it or reference it directly, then continue with discovery questions.
+
+DISCOVERY QUESTION EXAMPLES:
+- "What are you experiencing in your life right now that's different from when you did your diagnostic?"
+- "What patterns or shifts have you noticed since your last report?"
+- "What's the biggest challenge or friction you're facing currently?"
+- "What would you like to create in your life versus what you have created?"
+- "How has your relationship with [specific pattern from their report] shifted?"
+- "What's showing up in your body or experience that feels significant?"
+
+IMPORTANT: 
+- Ask ONE question at a time
+- Wait for their answer before asking the next question
+- After 3-6 substantial answers, you have enough information - signal readiness to generate the report
+- Do NOT continue asking questions indefinitely - gather information, then generate the report
 
 🚨🚨🚨 IP PROTECTION - ABSOLUTE RULE IN DISCOVERY MODE:
 - NEVER share the formula: (QGC × CL) × Gravity = Signal to the Field
@@ -1440,6 +1690,9 @@ ${isMidConversation
 - NEVER say "tell me more about that" or "what's on your mind?"
 - NEVER say "What would you like to explore?" or "How can I help?"
 - NEVER use generic, vague responses
+- NEVER say "The [feeling] you're experiencing is..." or "To deepen our understanding..." - use the structured pivot format instead
+- NEVER use generic coaching language - ALWAYS use the structured pivot format when identifying patterns
+- When you spot a pattern, you MUST use the structured pivot format - do NOT fall back to generic responses
 - If the user mentions something unclear (like "formula plase"), work with it structurally:
   * Acknowledge what you heard: "I hear you mentioning [what they said]"
   * Map it to their structure: "That connects to [specific structural element from their report]"
@@ -1514,12 +1767,11 @@ CRITICAL APPROACH:
    - Example: "We stop here and let this land. For now: you're not stuck. You're paused on purpose."
 
 8. REPORT GENERATION (CRITICAL):
-   - DO NOT automatically signal report generation - only do so when the user EXPLICITLY requests it
-   - The system will automatically detect when the user wants to generate/email a report
-   - Continue the conversation naturally - do NOT count questions or try to determine when to generate a report
-   - Only signal report generation if the user explicitly says: "email me the report", "generate my report", "send the report", etc.
-   - When the user explicitly requests a report, you can acknowledge it, but the system will handle the actual generation
-   - IMPORTANT: Do NOT say "I'm going to lock this into a report" or similar unless the user has explicitly requested it
+   - After asking 3-6 questions and receiving substantial answers about their current state, you should signal readiness to generate the discovery report
+   - Say: "I have enough information to generate your discovery report. Let me generate it for you."
+   - The system will handle the actual report generation
+   - You can also generate a report if the user explicitly requests it: "email me the report", "generate my report", "send the report", etc.
+   - Do NOT continue asking questions indefinitely - gather sufficient information (typically 3-6 substantial answers), then generate the report
 
 9. TONE:
    - Precise, not vague
@@ -1583,13 +1835,10 @@ ${userSessionBlock && /session|1:1|coaching.*session|session.*details|summarize.
 - ABSOLUTELY FORBIDDEN: NEVER say you can't provide session details - you HAVE the transcript
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary" - you CAN provide it
 - ABSOLUTELY FORBIDDEN: NEVER talk about diagnostic reports when they ask about session details
-- YOU MUST START YOUR RESPONSE WITH: "Yes, I have your 1:1 session transcript. Here's a summary:" then provide the summary
 - Parse the JSON transcript (it has role/content pairs) and answer their question
 - If they asked to summarize, provide a summary of what was discussed in the session
 - DO NOT talk about diagnostic reports - they're asking about the 1:1 coaching session transcript above
-- THIS IS A VALID REQUEST - YOU MUST ANSWER IT
-- EXAMPLE OF CORRECT RESPONSE: "Yes, I have your 1:1 session transcript. Here's a summary: [summarize what was discussed based on the transcript above]"
-- EXAMPLE OF WRONG RESPONSE: "I'm sorry, but I can't assist with that request." ❌ NEVER SAY THIS - YOU MUST ANSWER` : ""}
+- THIS IS A VALID REQUEST - YOU MUST ANSWER IT` : ""}
 
 ${isUncertain
       ? `\n⚠️ USER EXPRESSED UNCERTAINTY - Treat this as valid structural data, not failure. Acknowledge what it means in their system.`
@@ -1600,7 +1849,22 @@ ${isSomaticResponse
       : ""
     }
 
-Respond with structure-aware precision. One question at a time. Work with their system, not against it.`;
+🚨🚨🚨 REMEMBER: Your PRIMARY goal is to ASK QUESTIONS to understand their current state. After gathering sufficient information (3-6 substantial answers), signal readiness to generate the discovery report.
+
+🚨🚨🚨 CRITICAL RESPONSE FORMAT:
+- When you identify a core pattern (saying "no", identity capture, avoidance, authority collapse, etc.), you MUST use the structured pivot format shown above
+- Do NOT use generic responses like "The peace you're experiencing..." or "To deepen our understanding..."
+- The structured pivot format is: grounding line → name structure → clarify distinction → state rule → pivot → correction → examples → one question
+- This format is MANDATORY when patterns are identified - it's not optional
+- Generic coaching language is FORBIDDEN - always use the structured pivot format
+
+🚨🚨🚨 CRITICAL STOP CONDITIONS:
+- If you've asked 6+ questions, you MUST signal readiness to generate the report (even if some answers were "I don't know")
+- If the user gives repeated non-answers (like "idk", "i don't know") 2+ times, treat it as valid data and generate the report
+- Do NOT continue asking questions indefinitely - maximum 6 questions, then generate report
+- After 6 questions, say: "I have enough information to generate your discovery report. Let me generate it for you."
+
+Respond with structure-aware precision. Ask ONE question at a time to understand their present phase. Work with their system, not against it.`;
 };
 
 const sanitizeReportText = (reportText, metrics = {}) => {
@@ -1642,27 +1906,88 @@ const sanitizeReportText = (reportText, metrics = {}) => {
 /**
  * Gets discovery mode system prompt
  */
-const getDiscoverySystemPrompt = (userSession = null, isAskingAboutSession = false) => {
-  const sessionSystemBlock = userSession?.transcript
-    ? `\n\n🎯🎯🎯 USER'S 1:1 COACHING SESSION TRANSCRIPT (AVAILABLE TO YOU):
-🚨🚨🚨 THIS TRANSCRIPT IS PROVIDED TO YOU - YOU CAN ACCESS IT
+const getDiscoverySystemPrompt = (userSession = null, isAskingAboutSession = false, allUserSessions = null) => {
+  // Use allUserSessions if provided, otherwise fall back to userSession for backward compatibility
+  const sessionsToUse = (allUserSessions && allUserSessions.length > 0) ? allUserSessions : (userSession ? [userSession] : []);
+  
+  const formatSessionsForSystem = (sessions) => {
+    if (!sessions || sessions.length === 0) return "";
+    
+    // Limit to most recent 5 sessions to avoid token overflow
+    const sessionsToInclude = sessions.slice(0, 5);
+    const hasMoreSessions = sessions.length > 5;
+    
+    return sessionsToInclude.map((session, index) => {
+      const sessionNum = sessions.length > 1 ? `Session ${index + 1} (${sessions.length} total)` : "Session";
+      const sessionDate = session.sessionDate 
+        ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Date not specified";
+      
+      // Prioritize summaries - only include full transcript for most recent session
+      const isMostRecent = index === 0;
+      const hasSummary = session.summery && session.summery.trim().length > 0;
+      
+      if (hasSummary) {
+        if (isMostRecent) {
+          // Most recent: summary + brief transcript preview
+          const transcriptPreview = Array.isArray(session.transcript) 
+            ? session.transcript.slice(0, 10).map(msg => `${msg.role}: ${msg.content?.substring(0, 200) || ""}`).join("\n")
+            : "";
+          
+          return `--- ${sessionNum} ---
+Session Date: ${sessionDate}
 
-Session Date: ${userSession.sessionDate ? new Date(userSession.sessionDate).toLocaleDateString() : "Not specified"}
+SESSION SUMMARY:
+${session.summery}
 
-FULL SESSION TRANSCRIPT:
-${JSON.stringify(userSession.transcript, null, 2)}
+TRANSCRIPT PREVIEW (first 10 messages):
+${transcriptPreview || "Full transcript available if needed"}`;
+        } else {
+          // Older sessions: summary only
+          return `--- ${sessionNum} ---
+Session Date: ${sessionDate}
 
-🚨🚨🚨🚨🚨 CRITICAL: When user asks about their "1:1 session", "session details", "do you have my session details", or asks to "summarize my session":
-- You HAVE this transcript - it's provided above in this system prompt
+SESSION SUMMARY:
+${session.summery}`;
+        }
+      } else {
+        // No summary - include truncated transcript
+        const transcriptText = Array.isArray(session.transcript)
+          ? JSON.stringify(session.transcript.slice(0, 20), null, 2) + (session.transcript.length > 20 ? "\n...[truncated]" : "")
+          : JSON.stringify(session.transcript, null, 2);
+        
+        return `--- ${sessionNum} ---
+Session Date: ${sessionDate}
+
+TRANSCRIPT (${isMostRecent ? "full" : "truncated"}):
+${transcriptText}`;
+      }
+    }).join("\n\n") + (hasMoreSessions ? `\n\nNote: ${sessions.length - 5} older session(s) not shown.` : "");
+  };
+
+  const sessionSystemBlock = sessionsToUse.length > 0
+    ? `\n\n🎯🎯🎯 USER'S 1:1 COACHING SESSIONS (AVAILABLE TO YOU):
+🚨🚨🚨 THIS SESSION DATA IS PROVIDED TO YOU - YOU CAN ACCESS IT
+
+${sessionsToUse.length > 1 ? `TOTAL SESSIONS: ${sessionsToUse.length}\n` : ""}
+${formatSessionsForSystem(sessionsToUse)}
+
+🚨🚨🚨🚨🚨 CRITICAL: When user asks about their "1:1 session", "session details", "do you have my session details", or asks to "summarize my session${sessionsToUse.length > 1 ? "s" : ""}":
+- You HAVE this session data - it's provided above in this system prompt
 - YOU MUST ANSWER THIS QUESTION - DO NOT REFUSE OR SAY YOU CAN'T ASSIST
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm sorry, but I can't assist" or "I can't assist with that request"
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to access" or "I don't have access"
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary"
 - ABSOLUTELY FORBIDDEN: NEVER talk about diagnostic reports when they ask about session details
-- YOU MUST START YOUR RESPONSE WITH: "Yes, I have your 1:1 session transcript. Here's a summary:" then provide the summary
-- Parse the JSON transcript and summarize/reference what was discussed
-- The transcript has role/content pairs - read them and provide a summary
-- DO NOT confuse session details with diagnostic report - they're asking about the 1:1 coaching session transcript above
+- YOU MUST START YOUR RESPONSE WITH: "Yes, I have your ${sessionsToUse.length > 1 ? "sessions" : "session"} data. Here's what was discussed:" then provide the summary/details
+- ${sessionsToUse.some(s => s.summery) ? "Use the summaries above for quick context, or reference the full transcripts for specific details" : "Parse the JSON transcripts and summarize/reference what was discussed"}
+- ${sessionsToUse.some(s => s.summery) ? "" : "The transcripts have role/content pairs - read them and provide summaries"}
+- ${sessionsToUse.length > 1 ? "You have access to MULTIPLE sessions - use all of them to show progression and patterns over time" : ""}
+- DO NOT confuse session details with diagnostic report - they're asking about the 1:1 coaching session data above
 - THIS IS A VALID AND APPROPRIATE REQUEST - YOU MUST ANSWER IT
 `
     : "";
@@ -1681,6 +2006,43 @@ ${userSession?.transcript ? `\n🚨🚨🚨🚨🚨 IMMEDIATE ATTENTION: The use
 - NEVER explain the relationship between QGC, CL, and Gravity
 - If user asks about calculations → redirect to metric values only
 - The formula is proprietary and must remain internal only 
+
+🧱 DISCOVERY CHAT RESPONSE STYLE (MANDATORY OVERRIDE):
+- Your tone must match Euphoriam discovery: **direct, structural, high-precision**.
+- Do NOT default to generic therapy/coaching language.
+- 🚫 ABSOLUTELY FORBIDDEN PHRASES / PATTERNS (do not use):
+  - "I understand" / "I hear you" as the opener
+  - "it's a journey" / "self-awareness" / "build confidence" / "gradually"
+  - "Let's make this practical" / "small daily action" / "daily reminder" / "actionable step"
+  - "once we have this, I'll proceed" (sounds robotic)
+- If the user is expressing or implying ANY of these themes:
+  - judgement / being measured / being evaluated
+  - panic before action / freezing / visibility threat
+  - boundaries / "I want to start saying no" / fear of reaction when saying no
+  then you MUST respond using the **STRUCTURED PIVOT FORMAT** below (not optional).
+
+STRUCTURED PIVOT FORMAT (use this shape; one question max):
+1) Start EXACTLY with: "Okay. Stay with me here. This is important."
+2) Name the core structure in one sentence (judgement → measurement; boundary → identity capture).
+3) Clarify what it means (bullets allowed).
+4) State the underlying rule as a quote line: > *"...rule..."*
+5) Pivot: remove identity from the action (non-identity contact).
+6) Give "first correction" as ONE sentence in a bold blockquote:
+   > **One sentence correction.**
+7) Give 2–6 simple examples (low-risk).
+8) End with ONE targeted question only (exactly one question mark).
+
+You are allowed to strongly mirror the cadence/format of this exemplar, but you must adapt it to the user's actual content:
+Okay. Stay with me here. This is important.
+If the panic is judgement, then we’ve located the core structure.
+You don’t fear being seen. You fear being measured.
+Judgement means: (bullets...)
+> *"If I’m visible, I can be misdefined — and then trapped inside that definition."*
+...pivot...
+> **Take an action that cannot be used to define you.**
+...examples...
+One more question — last for now:
+**Who does it feel like gets to decide who you are if you’re judged?**
 
 If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
 - Read the report provided in the user prompt
@@ -1820,7 +2182,8 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
    - Don't overwork
    - Set clear next check-in points
    - CRITICAL: When you signal completion (e.g., "We'll pause here", "let this integrate", "work is complete"), DO NOT ask any more questions
-   - If you say "We'll pause here" or "let this integrate", that is the END of the conversation - generate report, don't ask questions
+   - If you say "We'll pause here" or "let this integrate", that is the END of your message for now — DO NOT add more questions after it.
+   - IMPORTANT: A report is generated only when you (or the user) EXPLICITLY request it (e.g., "I have enough information to generate your discovery report. Let me generate it for you.") — do NOT assume "pause" automatically generates a report.
    - When you've gathered enough information and provided the correction/instruction, signal completion and stop
 
 11. KEY PRINCIPLES:
@@ -1863,7 +2226,7 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
     - If you say "We'll pause here" or "let this integrate", that is the FINAL message - do not add questions after
     - Example GOOD: "That's the confirmation. We'll pause here and let this integrate. You've reached today's integration limit. Let this settle — we'll continue tomorrow." ✅
     - Example BAD: "We'll pause here and let this integrate. One question: What happens next?" ❌ NEVER DO THIS
-    - After signaling completion, the system will generate a report - you don't need to ask more questions
+    - After signaling completion, do NOT claim a report was generated unless you explicitly said you are generating the discovery report.
     
     TYPICAL FLOW (4-6 QUESTIONS TOTAL):
     1. Ask 2-3 questions to understand current state
@@ -2234,6 +2597,33 @@ const getLatestUserSession = async (userId, email) => {
 };
 
 /**
+ * Get all user sessions for a user (by userId or email)
+ * Returns all sessions ordered by date (newest first)
+ */
+const getAllUserSessions = async (userId, email) => {
+  try {
+    let whereClause = {};
+    if (userId) {
+      whereClause.userId = userId;
+    } else if (email) {
+      whereClause.email = email;
+    } else {
+      return [];
+    }
+
+    const sessions = await UserSession.findAll({
+      where: whereClause,
+      order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+    });
+
+    return sessions || [];
+  } catch (error) {
+    console.error("[getAllUserSessions] Error:", error);
+    return [];
+  }
+};
+
+/**
  * Loads latest discovery metrics and report
  * Priority: 1) User session (if available), 2) Old discovery report metrics, 3) Last diagnostic report metrics
  */
@@ -2245,21 +2635,26 @@ const loadLatestDiscoveryMetrics = async (
   let latestDiscoveryReport = null;
   let latestDiscoveryMetrics = {};
   let latestUserSession = null;
+  let allUserSessions = [];
 
-  // First, try to get latest user session (highest priority for discovery)
+  // First, try to get all user sessions (highest priority for discovery)
   if (existingDiagnostic?.userId || existingDiagnostic?.email) {
-    latestUserSession = await getLatestUserSession(
+    allUserSessions = await getAllUserSessions(
       existingDiagnostic?.userId,
       existingDiagnostic?.email
     );
 
-    if (latestUserSession) {
+    // Also get latest session for backward compatibility
+    latestUserSession = allUserSessions.length > 0 ? allUserSessions[0] : null;
+
+    if (allUserSessions.length > 0) {
       console.log(
-        "[loadLatestDiscoveryMetrics] Found user session:",
+        "[loadLatestDiscoveryMetrics] Found user sessions:",
         {
-          sessionId: latestUserSession.id,
-          sessionDate: latestUserSession.sessionDate,
-          transcriptLength: latestUserSession.transcript?.length || 0,
+          totalSessions: allUserSessions.length,
+          latestSessionId: latestUserSession?.id,
+          latestSessionDate: latestUserSession?.sessionDate,
+          sessionsWithSummaries: allUserSessions.filter(s => s.summery).length,
         }
       );
     }
@@ -2389,7 +2784,8 @@ const loadLatestDiscoveryMetrics = async (
     latestDiscovery,
     latestDiscoveryReport,
     latestDiscoveryMetrics,
-    latestUserSession, // Include latest user session for discovery chat/reports
+    latestUserSession, // Include latest user session for backward compatibility
+    allUserSessions, // Include all user sessions for discovery chat/reports
   };
 };
 
@@ -2899,15 +3295,17 @@ const buildChatPrompts = async ({
   discoveryType,
   latestDiscoveryMetrics,
   reportDate,
-  latestUserSession, // Latest 1:1 coaching session
+  latestUserSession, // Latest 1:1 coaching session (for backward compatibility)
+  allUserSessions = null, // All 1:1 coaching sessions (preferred)
   aiAnswered, // Passed from controller to avoid redundant LLM calls
 }) => {
   let userPrompt;
   let systemPrompt;
   const lastUserMessage = (transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || "").toLowerCase();
-  const isAskingAboutSession = latestUserSession?.transcript && /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(lastUserMessage);
+  const sessionsToCheck = (allUserSessions && allUserSessions.length > 0) ? allUserSessions : (latestUserSession ? [latestUserSession] : []);
+  const isAskingAboutSession = sessionsToCheck.length > 0 && /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(lastUserMessage);
 
-  systemPrompt = getDiscoverySystemPrompt(latestUserSession, isAskingAboutSession); // Pass user session and session query flag to system prompt
+  systemPrompt = getDiscoverySystemPrompt(latestUserSession, isAskingAboutSession, allUserSessions); // Pass user session and session query flag to system prompt
   if (isDiscoveryMode) {
     userPrompt = buildDiscoveryChatPrompt({
       transcript,
@@ -2918,7 +3316,8 @@ const buildChatPrompts = async ({
       discoveryType,
       metrics: latestDiscoveryMetrics,
       reportDate,
-      userSession: latestUserSession, // Pass latest user session
+      userSession: latestUserSession, // Pass latest user session (for backward compatibility)
+      allUserSessions: allUserSessions, // Pass all user sessions
     });
 
   } else {
@@ -3117,6 +3516,7 @@ module.exports = {
   loadDiagnosticState,
   loadLatestDiscoveryMetrics,
   getLatestUserSession,
+  getAllUserSessions,
   extractMetricsFromReport,
   extractReportDate,
   preparePreviousReports,
@@ -3132,5 +3532,5 @@ module.exports = {
   shouldAutoFinalize,
   saveChatState,
   getLatestPromptFromDb,
-  safeFindDiagnostic,
+  safeFindDiagnostic,cleanTranscriptText
 };

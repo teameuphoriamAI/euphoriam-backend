@@ -4269,32 +4269,52 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       const consciousnessLevel = metricsToUse.consciousnessLevel;
       const qgcActivation = metricsToUse.qgcActivation;
 
-      const metricsSection =
-        gravity !== undefined &&
-          signalCoherence !== undefined &&
-          signalOutput !== undefined &&
-          consciousnessLevel !== undefined &&
-          qgcActivation !== undefined
-          ? `QGC Activation:
+      // Build a metrics section that degrades gracefully when some metrics are missing.
+      // Only show the "metrics loading failed" fallback if *all* metrics are missing.
+      const anyMetricPresent = [
+        gravity,
+        signalCoherence,
+        signalOutput,
+        consciousnessLevel,
+        qgcActivation,
+      ].some((v) => v !== undefined && v !== null && !Number.isNaN(v));
+
+      const formatPercentage = (value) => {
+        if (value === undefined || value === null || Number.isNaN(value)) {
+          return "Unknown";
+        }
+        return `${Math.round(value)}%`;
+      };
+
+      const formatConsciousness = (cl) => {
+        if (cl === undefined || cl === null || Number.isNaN(cl)) {
+          return "Unknown";
+        }
+        const pct = (cl / 5) * 100;
+        return `${Math.round(pct)}%`;
+      };
+
+      const metricsSection = anyMetricPresent
+        ? `QGC Activation:
 ${createProgressBar(qgcActivation)}
-${qgcActivation}%
+${formatPercentage(qgcActivation)}
 
 Consciousness Level:
 ${createProgressBar((consciousnessLevel / 5) * 100)}
-${Math.round((consciousnessLevel / 5) * 100)}%
+${formatConsciousness(consciousnessLevel)}
 
 Gravity:
 ${createProgressBar(gravity)}
-${gravity}%
+${formatPercentage(gravity)}
 
 Signal Coherence:
 ${createProgressBar(signalCoherence)}
-${signalCoherence}%
+${formatPercentage(signalCoherence)}
 
 Signal Output:
 ${createProgressBar(signalOutput)}
-${signalOutput}%`
-          : `(Metrics loading failed. Please refer to your report dashboard.)`;
+${formatPercentage(signalOutput)}`
+        : `(Metrics loading failed. Please refer to your report dashboard.)`;
 
       let keySentence = "",
         correction = "";

@@ -32,7 +32,7 @@ router.get(
 );
 router.post(
   "/profile",
-  // auth,
+  auth,
   asyncHandler(userController.getUserProfile)
 );router.post(
   "/verifyOTP",

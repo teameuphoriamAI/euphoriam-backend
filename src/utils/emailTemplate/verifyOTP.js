@@ -10,7 +10,7 @@ const otpEmailTemplate = (userName, otp, purpose = "verification", expiresIn = "
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Your One-Time Password (OTP)</title>
+   <title>Your One-Time Passcode (OTP)</title>
     <style>
       @media only screen and (max-width: 600px) {
         .email-container {
@@ -63,7 +63,7 @@ const otpEmailTemplate = (userName, otp, purpose = "verification", expiresIn = "
             <!-- Message -->
             <tr>
               <td style="font-size: 16px; color: #333333; text-align: center; line-height: 1.6; padding-bottom: 20px;">
-                Use the following One-Time Password (OTP) to complete your
+                Use the following Secure Login Code to complete your
                 <strong>${purpose}</strong>.
               </td>
             </tr>

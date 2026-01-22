@@ -2295,8 +2295,8 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
 /**
  * Validates the chatbot request input
  */
-const validateChatbotRequest = (req) => {
-  const { email, name } = req.body || {};
+const validateChatbotRequest = (name,email) => {
+  
 
   if (!email) {
     return { error: "Email is required", statusCode: 400 };

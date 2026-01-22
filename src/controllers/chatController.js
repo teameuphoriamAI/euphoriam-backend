@@ -242,7 +242,9 @@ const saveChatIncrementally = async ({
 };
 const getChatHistory = async (req, res) => {
   try {
-    const { email, chatType } = req.body || req.query || {};
+        const { email } = req.user||{};
+
+    const {  chatType } = req.body || req.query || {};
     console.log("data is", req.params, req.query);
 
     if (!email) {

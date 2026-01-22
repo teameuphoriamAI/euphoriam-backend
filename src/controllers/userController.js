@@ -17,6 +17,9 @@ const {
   loadDiagnosticState,
   loadLatestDiscoveryMetrics,
 } = require("../helpers/euphoriamChatbot");
+const { sendEmailBasic } = require("../utils/email");
+const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
+const{generateOTP,findOrCreateCreatorUser,}=require("./diagnosticController")
 const listUsers = async (_req, res) => {
   try {
     // First, get users without heavy includes to avoid timeout
@@ -161,6 +164,8 @@ const createUser = async (req, res) => {
   if (findUser) {
     return errorResponse(res, "User with this email already exists", 401);
   }
+  //  const salt = await bcrypt.genSalt(10);
+  //       const hashedPassword = await bcrypt.hash(payload.password, salt);
   const user = await userModel.create(payload);
   return successResponse(res, "User created", user, 201);
 };
@@ -247,18 +252,6 @@ const isCreatorClubMember = (context = {}) => {
     (o.title || "").toLowerCase().includes("creator club")
   );
   return hasProduct || hasOffer;
-};
-const findOrCreateCreatorUser = async ({ email, name }) => {
-  let user = await User.findOne({ where: { email } });
-
-  if (!user) {
-    user = await User.create({
-      email,
-      name,
-    });
-  }
-
-  return user;
 };
 
 /**
@@ -530,11 +523,160 @@ const getUserProfile = async (req, res) => {
   }
 };
 
+
+const formatMsToMinSec = (ms) => {
+  const min = Math.floor(ms / 60000);
+  const sec = Math.floor((ms % 60000) / 1000);
+  return `${min} min ${sec} sec`;
+};
+
+const verifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return errorResponse(res, "Email and OTP are required", 400);
+
+    const user = await User.findOne({ where: { email: email.toLowerCase().trim() } });
+    if (!user) return errorResponse(res, "User not found", 404);
+
+    const now = new Date();
+
+    // Cooldown check due to failed attempts
+    if (user.otpCooldown && user.otpCooldown > now) {
+      const diffMs = user.otpCooldown - now;
+      return errorResponse(
+        res,
+        `Too many failed attempts. Try again in ${formatMsToMinSec(diffMs)}.`,
+        429
+      );
+    }
+
+    // Expired OTP
+    if (!user.otp || !user.otpExpiry || user.otpExpiry < now) {
+      return errorResponse(res, "OTP has expired. Please request a new one.", 400);
+    }
+
+    // Invalid OTP
+    if (otp !== user.otp) {
+      user.otpAttempts = (user.otpAttempts || 0) + 1;
+
+      if (user.otpAttempts >= 3) {
+        // Lock user for 5 min
+        user.otpCooldown = new Date(Date.now() + 10 * 60 * 1000);
+        user.otpAttempts = 0;
+        user.otp = null;
+        user.otpExpiry = null;
+        await user.save();
+
+        return errorResponse(
+          res,
+          "Maximum attempts reached. Please wait 5 min before trying again.",
+          429
+        );
+      }
+
+      await user.save();
+      return errorResponse(
+        res,
+        `Invalid OTP. ${3 - user.otpAttempts} attempts remaining.`,
+        400
+      );
+    }
+
+    // ✅ OTP verified successfully
+    user.otp = null;
+    user.otpExpiry = null;
+    user.otpAttempts = 0;
+    user.otpCooldown = null;
+    user.resendOTPCount = 0;
+    user.resendOTPCooldown = null;
+    await user.save();
+
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || "30d" }
+    );
+
+    return successResponse(res, "OTP verified successfully", {
+      token,
+      expiresIn: process.env.JWT_EXPIRES_IN || "30 days",
+    });
+
+  } catch (error) {
+    console.error("[verifyOTP] Error:", error);
+    return errorResponse(res, "Failed to verify OTP", 500);
+  }
+};
+
+const resendOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return errorResponse(res, "Email is required", 400);
+
+    const user = await User.findOne({ where: { email: email.toLowerCase().trim() } });
+    if (!user) return errorResponse(res, "User not found", 404);
+
+    const now = new Date();
+
+    // Check if cooldown exists
+    if (user.resendOTPCooldown && user.resendOTPCooldown > now) {
+      const diffMs = user.resendOTPCooldown - now;
+      const min = Math.floor(diffMs / 60000);
+      const sec = Math.floor((diffMs % 60000) / 1000);
+
+      return errorResponse(
+        res,
+        `Please wait ${min} min ${sec} sec before requesting a new OTP.`,
+        429
+      );
+    }
+
+    // Reset cooldown if expired
+    if (user.resendOTPCooldown && user.resendOTPCooldown <= now) {
+      user.resendOTPCooldown = null;
+      user.resendOTPCount = 0;
+    }
+
+    // Check resend limit
+    if (user.resendOTPCount >= 3) {
+      user.resendOTPCooldown = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+      user.resendOTPCount = 0;
+      await user.save();
+
+      return errorResponse(res, "Resend limit reached. Please wait 5 minutes.", 429);
+    }
+
+    // Generate new OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    user.otpAttempts = 0;
+    user.resendOTPCount += 1;
+
+    await user.save();
+    await sendEmailBasic(
+      user.email,
+      "Your OTP Code",
+      otpEmailTemplate(user.name, otp, "login verification", "10 minutes")
+    );
+
+    return successResponse(res, "OTP resent successfully", {
+      expiresIn: "10 minutes",
+      remainingResends: 3 - user.resendOTPCount,
+    });
+  } catch (error) {
+    console.error("[resendOTP] Error:", error);
+    return errorResponse(res, "Failed to resend OTP", 500);
+  }
+};
+
 module.exports = {
   listUsers,
   createUser,
   getMe,
   userReport,
   updateUserClubMembership,
-  getUserProfile,
+  getUserProfile, 
+  verifyOTP, 
+  resendOTP 
 };

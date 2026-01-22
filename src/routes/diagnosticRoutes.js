@@ -16,6 +16,7 @@ router.get(
 
 router.post(
   "/chatbot-freeform",
+  auth,
   asyncHandler(diagnosticController.chatbotDiagnosticFreeform)
 );
 
@@ -24,22 +25,23 @@ router.post(
   asyncHandler(diagnosticController.findOrCreateCreatorUser)
 );
 
-router.get("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
+router.get("/pdf-urls", auth, asyncHandler(diagnosticController.getAllPdfUrls));
 
-router.post("/pdf-urls", asyncHandler(diagnosticController.getAllPdfUrls));
+router.post("/pdf-urls", auth, asyncHandler(diagnosticController.getAllPdfUrls));
 
 // User metrics endpoint (for dashboard)
 router.get("/metrics/user", asyncHandler(diagnosticController.getUserMetrics));
 
 // Parameterized routes come last
-router.get("/:id/metrics", asyncHandler(diagnosticController.getMetrics));
-router.get("/:id", asyncHandler(diagnosticController.getById));
+router.get("/:id/metrics", auth, asyncHandler(diagnosticController.getMetrics));
+router.get("/:id", auth, asyncHandler(diagnosticController.getById));
 router.get(
   "/:id/dignostic",
+  auth,
   asyncHandler(diagnosticController.getDignosticById)
 );
 
 // Root routes
-router.get("/", asyncHandler(diagnosticController.listMine));
+router.get("/", auth, asyncHandler(diagnosticController.listMine));
 
 module.exports = router;

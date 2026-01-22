@@ -6,8 +6,7 @@ const requireRole = require("../middleware/requireRole");
 const router = express.Router();
 router.post(
   "/getHistory",
-  //   auth,
-  //   requireRole(["admin"]),
+  auth,
   asyncHandler(chatController.getChatHistory)
 );
 

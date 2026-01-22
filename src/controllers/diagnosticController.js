@@ -3866,15 +3866,15 @@ const handleDiagnosticMode = async ({
 
 const chatbotDiagnosticFreeform = async (req, res) => {
   let {
-    email,
-    name,
+
     messages = [],
     assessmentIds = [],
     finalize = false,
     introPageText,
     targetCount = 12,
   } = req.body || {};
-
+let name=req.user.name;
+let email=req.user.email;
   // 1. Declare all variables at the top to avoid ReferenceErrors across different logic paths
   let transcript = [],
     lastUser = null,
@@ -3906,7 +3906,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     targetCountForRun = targetCount;
 
   // Validate request
-  const validation = validateChatbotRequest(req);
+  const validation = validateChatbotRequest(name,email);
   if (!validation.valid) {
     return errorResponse(res, validation.error, validation.statusCode);
   }
@@ -4732,7 +4732,7 @@ const getDignosticById = async (req, res) => {
   return successResponse(res, "Diagnostic fetched", diagnostic);
 };
 const getAllPdfUrls = async (req, res) => {
-  const { email } = req.body || req.query || {};
+  const { email } = req.user;
 
   if (!email) {
     return errorResponse(res, "Email is required", 400);

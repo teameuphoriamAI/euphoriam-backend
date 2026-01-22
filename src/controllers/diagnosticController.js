@@ -3511,7 +3511,7 @@ const handleDiagnosticMode = async ({
     const userName = name || email?.split("@")[0] || "User";
 
     const diagnosticPayload = {
-      userId: appUser.id || null,
+      userId: appUser?.id || null,
       email: email.trim(),
       title: `Euphoriam Diagnostic v3 (Freeform) – ${userName}`,
       data: {

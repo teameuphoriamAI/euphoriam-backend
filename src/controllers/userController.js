@@ -11,15 +11,15 @@ const { CoachingSession } = require("../models/coachingSessionModel");
 const { buildKajabiDiagnosticContext } = require("./kajabi");
 const { sequelize } = require("../config/sequelize");
 const { Op } = require("sequelize");
-const { supabase } = require("../config/supabase");
-const pdfParse = require("pdf-parse");
 const {
   loadDiagnosticState,
   loadLatestDiscoveryMetrics,
 } = require("../helpers/euphoriamChatbot");
 const { sendEmailBasic } = require("../utils/email");
 const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
-const{generateOTP,findOrCreateCreatorUser,}=require("./diagnosticController")
+const{findOrCreateCreatorUser,}=require("./diagnosticController")
+const jwt = require("jsonwebtoken");
+
 const listUsers = async (_req, res) => {
   try {
     // First, get users without heavy includes to avoid timeout

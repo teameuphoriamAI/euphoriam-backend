@@ -197,6 +197,80 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
     console.log("Membership column migration:", err.message);
   }
 
+  // Add OTP-related columns to users table if they don't exist
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        -- Add otp column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'otp'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "otp" VARCHAR(255);
+        END IF;
+
+        -- Add otpExpiry column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'otpExpiry'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "otpExpiry" TIMESTAMP WITH TIME ZONE;
+        END IF;
+
+        -- Add otpAttempts column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'otpAttempts'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "otpAttempts" INTEGER NOT NULL DEFAULT 0;
+        END IF;
+
+        -- Add otpCooldown column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'otpCooldown'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "otpCooldown" TIMESTAMP WITH TIME ZONE;
+        END IF;
+
+        -- Add resendOTPCount column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'resendOTPCount'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "resendOTPCount" INTEGER NOT NULL DEFAULT 0;
+        END IF;
+
+        -- Add resendOTPExpiry column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'resendOTPExpiry'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "resendOTPExpiry" TIMESTAMP WITH TIME ZONE;
+        END IF;
+
+        -- Add resendOTPCooldown column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'resendOTPCooldown'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "resendOTPCooldown" TIMESTAMP WITH TIME ZONE;
+        END IF;
+      END $$;
+    `);
+    console.log("Users table OTP columns migration completed");
+  } catch (err) {
+    console.log("Users OTP columns migration:", err.message);
+  }
+
   // Add missing columns to diagnostics table if they don't exist
   try {
     await sequelize.query(`

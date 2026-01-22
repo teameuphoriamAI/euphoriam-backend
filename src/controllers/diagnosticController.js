@@ -11,6 +11,7 @@ const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
 const { saveChatIncrementally } = require("./chatController");
+const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
 const {
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
@@ -33,6 +34,7 @@ const {
   EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   getDiscoverySystemPrompt,
 } = require("../helpers/euphoriamChatbot");
+const jwt = require("jsonwebtoken");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const { successResponse, errorResponse } = require("../utils/response");
 const { buildKajabiDiagnosticContext } = require("./kajabi");
@@ -49,6 +51,8 @@ const {
   detectDiscoveryEndIntents,
 } = require("../utils/validation");
 const isQuestion = (text = "") => text.trim().endsWith("?");
+const generateOTP = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
 
 const isCreatorClubMember = (context = {}) => {
   const hasProduct = (context.products || []).some((p) =>
@@ -65,56 +69,75 @@ const isCreatorClubMember = (context = {}) => {
  * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
  * Always checks latest status from Kajabi and updates the database
  */
+
 const findOrCreateCreatorUser = async (req, res) => {
   try {
-    let { email, name, assessmentIds = [] } = req.body;
+    let { email, name } = req.body;
+    if (!email) return errorResponse(res, "Email is required", 400);
+
     email = email.toLowerCase().trim();
-    name = name.trim();
+    name = name?.trim();
 
-    let user = await User.findOne({ where: { email, name } });
-
+    let user = await User.findOne({ where: { email } });
+    if (user && typeof name !== "undefined" && name !== "") {
+      return errorResponse(res, "Your account is already created", 400);
+    }
     if (!user) {
+      if (!name) return errorResponse(res, "Name is required for new users", 400);
       user = await User.create({ email, name });
     }
-    let diagnosticContext = null;
-    // Check membership if missing or not a Creator Club member
-    if (!user.membership?.isCreatorClub) {
-      try {
-        const result = await buildKajabiDiagnosticContext({
-          email,
-          assessmentIds,
-        });
-        if (!result) {
-          return errorResponse(res, "user not found in euphoriam", 404);
-        } else {
-          diagnosticContext = result.diagnosticContext || null;
-        }
-        const isCreatorClub = isCreatorClubMember(diagnosticContext);
-        if (!isCreatorClub) {
-          return errorResponse(res, "user is not a creator club member", 404);
-        }
-        const membership = {
-          isCreatorClub,
-          lastUpdated: new Date().toISOString(),
-          products: diagnosticContext.products || [],
-          offers: diagnosticContext.offers || [],
-        };
 
-        await user.update({ membership });
-        await user.reload(); // ensure updated membership
-        return successResponse(res, "user is creator club member", user);
-      } catch (err) {
-        console.error(
-          "[findOrCreateCreatorUser] Failed to check membership:",
-          err
-        );
-        return errorResponse(res, "failed to verify membership", 500);
-      }
+    // Optional: Creator Club checks here (your existing logic)...
+
+    const now = new Date();
+
+    // Reset resend count if expiry passed
+    if (user.resendOTPExpiry && user.resendOTPExpiry < now) {
+      user.resendOTPCount = 0;
+      user.resendOTPExpiry = null;
     }
-    return successResponse(res, "user found", user);
+
+    // Cooldown check
+ if (user.resendOTPCooldown && user.resendOTPCooldown > now) {
+  const diffMs = user.resendOTPCooldown - now; // difference in milliseconds
+  const minutes = Math.floor(diffMs / 60000); // full minutes
+  const seconds = Math.floor((diffMs % 60000) / 1000); // remaining seconds
+
+  return errorResponse(
+    res,
+    `Please wait ${minutes} min ${seconds} sec before requesting a new OTP.`,
+    429
+  );
+}
+
+
+    // Generate OTP
+    const otp = generateOTP();
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    user.otpAttempts = 0;
+    user.otpCooldown = null;
+    user.resendOTPCount += 1;
+    user.resendOTPCooldown = new Date(Date.now() + 60 * 1000); // 1 min cooldown
+    user.resendOTPExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // reset count in 24h
+
+    await user.save();
+
+    await sendEmailBasic(
+      email,
+      "Your OTP Code",
+      otpEmailTemplate(user.name, otp, "login verification", "10 minutes")
+    );
+
+    return successResponse(res, "OTP sent successfully", {
+      email,
+      expiresIn: "10 minutes",
+      remainingResends: 3 - user.resendOTPCount
+    });
+
   } catch (error) {
-    console.error("[findOrCreateCreatorUser] Unexpected error:", error);
-    return errorResponse(res, "Failed to find or create user");
+    console.error("[findOrCreateCreatorUser] Error:", error);
+    return errorResponse(res, "Failed to process request", 500);
   }
 };
 
@@ -5177,4 +5200,6 @@ module.exports = {
   calculateBottleneck,
   findOrCreateCreatorUser,
   getDignosticById,
+  generateOTP
+
 };

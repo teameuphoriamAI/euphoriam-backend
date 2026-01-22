@@ -1,6 +1,7 @@
 require("dotenv").config();
 const axios = require("axios");
 const fs = require("fs");
+const path = require("path");
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const sender_email = process.env.SENDER_EMAIL;
@@ -66,15 +67,21 @@ const sendEmail = async (email, subject, content, pdfPath) => {
  */
 const sendEmailBasic = async (email, subject, content) => {
   try {
+
     const payload = {
       sender: {
         email: sender_email,
         name: sender_name,
       },
-      to: [{ email }],
+      to: [
+        {
+          email,
+        },
+      ],
       subject,
       htmlContent: content,
     };
+
 
     await axios.post("https://api.brevo.com/v3/smtp/email", payload, {
       headers: {
@@ -86,10 +93,7 @@ const sendEmailBasic = async (email, subject, content) => {
 
     console.log("✅ Email sent (no attachment) via Brevo API!");
   } catch (error) {
-    console.error(
-      "❌ Failed to send email (no attachment):",
-      error.response?.data || error.message
-    );
+    console.error("email error", error.response?.data || error.message);
   }
 };
 

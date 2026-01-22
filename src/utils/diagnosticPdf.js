@@ -230,27 +230,55 @@ const isAllCapsHeader = (line) => {
 };
 
 /**
- * Cleans text by removing problematic special characters
+ * Cleans text by removing problematic special characters while preserving important formatting
  */
 const cleanText = (text) => {
   if (!text) return text;
-  // Remove or replace problematic characters
-  return String(text)
-    // Normalize bullets / icons into safe characters the PDF font can render cleanly
-    .replace(/%Ï/g, "• ") // Treat "%Ï" as a bullet
-    .replace(/●/g, "•") // Normalize filled circle to bullet
-    .replace(/•/g, "•") // Ensure bullet stays as a single consistent glyph
-    .replace(/✨/g, "✦") // Replace sparkle with a simpler star glyph
-    .replace(/& þ/g, "") // Remove special characters
-    .replace(/Ø=ÜÄ/g, "") // Remove special characters
+  let cleaned = String(text);
+  
+  // First, preserve important Unicode characters by temporarily replacing them
+  const placeholders = {
+    sparkle: "___SPARKLE___",
+    bullet: "___BULLET___",
+    filledBullet: "___FILLED_BULLET___",
+    divider: "___DIVIDER___",
+    arrowRight: "___ARROW_RIGHT___",
+    arrowDown: "___ARROW_DOWN___"
+  };
+  
+  // Replace important characters with placeholders
+  cleaned = cleaned
+    .replace(/✨/g, placeholders.sparkle)
+    .replace(/●/g, placeholders.filledBullet)
+    .replace(/•/g, placeholders.bullet)
+    .replace(/─/g, placeholders.divider)
+    .replace(/→/g, placeholders.arrowRight)
+    .replace(/↓/g, placeholders.arrowDown);
+  
+  // Remove truly problematic characters (but keep common printable characters)
+  // Only remove control characters and truly problematic Unicode, but keep common symbols
+  cleaned = cleaned
+    .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, "") // Remove control characters
+    .replace(/& þ/g, "") // Remove specific problematic sequences
+    .replace(/Ø=ÜÄ/g, "") // Remove specific problematic sequences
     .replace(/!'/g, " → ") // Replace arrow-like characters
     .replace(/!"/g, " ↓ ") // Replace arrow-like characters
     .replace(/!`/g, " → ") // Replace arrow-like characters
-    .replace(/!'/g, " → ") // Replace arrow-like characters
-    .replace(/& /g, "")
+    .replace(/& /g, " ")
+    .replace(/'& /g, " ")
     .replace(/1:1/g, " 1:1 session")
-    .replace(/& þ/g, "")
-    .replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, ""); // Remove non-printable characters except common unicode
+    .replace(/%Ï/g, "•"); // Treat "%Ï" as a bullet (corrupted bullet)
+  
+  // Restore important characters with PDF-safe alternatives
+  cleaned = cleaned
+    .replace(new RegExp(placeholders.sparkle, "g"), "✦") // Use star instead of sparkle for PDF compatibility
+    .replace(new RegExp(placeholders.filledBullet, "g"), "•") // Use standard bullet
+    .replace(new RegExp(placeholders.bullet, "g"), "•") // Keep standard bullet
+    .replace(new RegExp(placeholders.divider, "g"), "-") // Use dash for dividers
+    .replace(new RegExp(placeholders.arrowRight, "g"), "→")
+    .replace(new RegExp(placeholders.arrowDown, "g"), "↓");
+  
+  return cleaned;
 };
 
 /**
@@ -354,13 +382,31 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
     const rawLine = lines[i];
     const line = rawLine.trimEnd();
 
-    // Skip any artifact lines that are just long runs of "%" (e.g. "%%%%%%%%%%%%")
-    if (/^%{6,}$/.test(line.trim())) {
+    // Skip or handle corrupted divider lines (lines with many "%" characters, possibly with numbers)
+    // These are corrupted Unicode box-drawing characters (────────────────)
+    if (/^%{10,}/.test(line.trim())) {
+      // This is a corrupted divider - render it as a proper divider
+      drawDivider(doc);
+      continue;
+    }
+
+    // Detect and handle title line with sparkle emoji (preserve it properly)
+    if (/^[✨'\(]?\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC).*REPORT/i.test(line)) {
+      // This is the title line - render it specially without aggressive cleaning
+      const titleText = line.replace(/^[✨'\(]\s*/, "").trim(); // Remove corrupted prefix
+      doc.moveDown(1);
+      doc.font("Helvetica-Bold").fontSize(18).text(titleText, {
+        width: availableWidth,
+        align: "center",
+        lineGap: 2,
+      });
+      doc.font("Helvetica").fontSize(11);
+      doc.moveDown(0.5);
       continue;
     }
 
     // Detect intro section start
-    if (/BEFORE YOU READ THIS DIAGNOSTIC/i.test(line) || /✨\s*BEFORE YOU READ/i.test(line)) {
+    if (/BEFORE YOU READ THIS DIAGNOSTIC/i.test(line) || /✨\s*BEFORE YOU READ/i.test(line) || /'&\s*BEFORE YOU READ/i.test(line)) {
       inIntroSection = true;
       introLines = [];
     }
@@ -374,7 +420,8 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
     if (inIntroSection && !introEnded) {
       const isDivider = line === "----------------------------------------" || 
                        line === "────────────────────────────────────────" ||
-                       /^---+$/.test(line);
+                       /^---+$/.test(line) ||
+                       /^%{10,}/.test(line.trim()); // Corrupted divider
       const isMajorHeader = /^##\s+EUPHORIAM/i.test(line) ||
                            /^EUPHORIAM.*DIAGNOSTIC REPORT/i.test(line.toUpperCase()) ||
                            /^EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(line.toUpperCase());
@@ -416,7 +463,8 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
                   /^NEXT\s+STEP/i.test(endLine.toUpperCase()) ||
                   endLine === "----------------------------------------" ||
                   endLine === "────────────────────────────────────────" ||
-                  /^---+$/.test(endLine)) {
+                  /^---+$/.test(endLine) ||
+                  /^%{10,}/.test(endLine.trim())) { // Corrupted divider
                 summaryEndIdx = k;
                 // Check if next section is NEXT STEP
                 if (/^NEXT\s+STEP/i.test(endLine.toUpperCase())) {
@@ -428,7 +476,8 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
                         /^SECTION\s+\d+/i.test(nextEndLine) ||
                         nextEndLine === "----------------------------------------" ||
                         nextEndLine === "────────────────────────────────────────" ||
-                        /^---+$/.test(nextEndLine)) {
+                        /^---+$/.test(nextEndLine) ||
+                        /^%{10,}/.test(nextEndLine.trim())) { // Corrupted divider
                       nextStepEndIdx = m;
                       break;
                     }
@@ -853,9 +902,11 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
       continue;
     }
 
+    // Handle dividers (both proper and corrupted)
     if (
       line === "----------------------------------------" ||
-      line === "────────────────────────────────────────"
+      line === "────────────────────────────────────────" ||
+      /^%{10,}/.test(line.trim()) // Corrupted divider (many % characters, possibly with numbers)
     ) {
       drawDivider(doc);
       continue;

@@ -16,7 +16,7 @@ const auth = (req, _res, next) => {
     req.user = decoded;
     next();
   } catch (err) {
-    err.status = err.status || 401;
+    err.status = err.status || 403;
     next(err);
   }
 };

@@ -34,5 +34,12 @@ router.post(
   "/profile",
   // auth,
   asyncHandler(userController.getUserProfile)
+);router.post(
+  "/verifyOTP",
+  asyncHandler(userController.verifyOTP)
+);
+router.post(
+  "/resendOTP",
+  asyncHandler(userController.resendOTP)
 );
 module.exports = router;

@@ -21,6 +21,39 @@ const User = sequelize.define(
       allowNull: false,
       unique: true,
     },
+     otp: {
+      type: DataTypes.STRING, 
+      allowNull: true,
+    },
+    otpExpiry: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    otpAttempts: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    otpCooldown: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    //Resend OTP Tracking
+    resendOTPCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    resendOTPExpiry: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    resendOTPCooldown: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     name: {
       type: DataTypes.STRING,
       allowNull: false,

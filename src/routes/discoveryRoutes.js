@@ -15,7 +15,7 @@ router.get(
 router.post("/", auth, asyncHandler(discoveryController.listMine));
 router.post(
   "/findByEmail",
-  // requireRole(["admin"]),
+  auth,
   asyncHandler(discoveryController.getById)
 );
 

@@ -19,6 +19,7 @@ const { sendEmailBasic } = require("../utils/email");
 const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
 const{findOrCreateCreatorUser,}=require("./diagnosticController")
 const jwt = require("jsonwebtoken");
+const { signAccessToken } = require("../utils/tokens");
 
 const listUsers = async (_req, res) => {
   try {
@@ -259,7 +260,7 @@ const isCreatorClubMember = (context = {}) => {
  */
 const getUserProfile = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email } = req.user;
 
     if (!email) {
       return errorResponse(res, " email is required", 400);
@@ -503,7 +504,7 @@ const getUserProfile = async (req, res) => {
     const formattedMetrics = {
       signalOutput: currentMetrics.signalOutput || 0,
       qgcActivation: currentMetrics.qgcActivation || 0,
-      consciousnessLevel: currentMetrics.consciousnessLevel || 0,
+      consciousnessLevel:Number(currentMetrics.consciousnessLevel)<=5?( (currentMetrics.consciousnessLevel/5)*100 ):currentMetrics.consciousnessLevel|| 0,
       gravity: currentMetrics.gravity || 0,
       signalCoherence: currentMetrics.signalCoherence || 0,
       lastUpdated:
@@ -591,15 +592,16 @@ const verifyOTP = async (req, res) => {
     user.resendOTPCooldown = null;
     await user.save();
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "30d" }
-    );
+    const token = signAccessToken({
+      sub: user.id,
+      userId: user.id,
+      name:user.name,
+      email: user.email,
+    });
 
     return successResponse(res, "OTP verified successfully", {
       token,
-      expiresIn: process.env.JWT_EXPIRES_IN || "30 days",
+      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     });
 
   } catch (error) {

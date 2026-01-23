@@ -17,7 +17,10 @@ const {
 } = require("../helpers/euphoriamChatbot");
 const { sendEmailBasic } = require("../utils/email");
 const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
-const{findOrCreateCreatorUser,}=require("./diagnosticController")
+const {
+  unauthorizedAccessEmailTemplate,
+} = require("../utils/emailTemplate/unauthorizedAccessEmailTemplate");
+const { findOrCreateCreatorUser } = require("./diagnosticController");
 const jwt = require("jsonwebtoken");
 const { signAccessToken } = require("../utils/tokens");
 
@@ -133,9 +136,9 @@ const userReport = async (_req, res) => {
     // Check if Diagnostics exists and has items, and if data.pdfUrls exists
     const diagnosticCount =
       userJson.Diagnostics &&
-        userJson.Diagnostics.length > 0 &&
-        userJson.Diagnostics[0].data &&
-        Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+      userJson.Diagnostics.length > 0 &&
+      userJson.Diagnostics[0].data &&
+      Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
         ? userJson.Diagnostics[0].data.pdfUrls.length
         : 0;
     const discoveryCount =
@@ -145,9 +148,9 @@ const userReport = async (_req, res) => {
 
     let pdf =
       userJson.Diagnostics &&
-        userJson.Diagnostics.length > 0 &&
-        userJson.Diagnostics[0].data &&
-        Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
+      userJson.Diagnostics.length > 0 &&
+      userJson.Diagnostics[0].data &&
+      Array.isArray(userJson.Diagnostics[0].data.pdfUrls)
         ? userJson.Diagnostics[0].data.pdfUrls
         : null;
     return successResponse(res, "Users fetched", {
@@ -247,10 +250,10 @@ const updateUserClubMembership = async ({
 };
 const isCreatorClubMember = (context = {}) => {
   const hasProduct = (context.products || []).some((p) =>
-    (p.title || "").toLowerCase().includes("creator club")
+    (p.title || "").toLowerCase().includes("creator club"),
   );
   const hasOffer = (context.offers || []).some((o) =>
-    (o.title || "").toLowerCase().includes("creator club")
+    (o.title || "").toLowerCase().includes("creator club"),
   );
   return hasProduct || hasOffer;
 };
@@ -279,11 +282,11 @@ const getUserProfile = async (req, res) => {
     // Get current metrics
 
     const { existingDiagnostic, diagnosticMetrics } = await loadDiagnosticState(
-      user.email
+      user.email,
     );
     const { latestDiscoveryMetrics } = await loadLatestDiscoveryMetrics(
       existingDiagnostic,
-      diagnosticMetrics
+      diagnosticMetrics,
     );
 
     // Use latest discovery metrics if available, otherwise use diagnostic metrics
@@ -335,22 +338,32 @@ const getUserProfile = async (req, res) => {
         const diagDate = new Date(latestDiagnostic.updatedAt);
         const discDate = new Date(latestDiscovery.updatedAt);
         if (diagDate > discDate) {
-          latestReportText = latestDiagnostic.data?.aiReport || latestDiagnostic.report || null;
+          latestReportText =
+            latestDiagnostic.data?.aiReport || latestDiagnostic.report || null;
           reportSource = "diagnostic";
         } else {
-          latestReportText = latestDiscovery.data?.newReport || latestDiscovery.data?.previousReport || null;
+          latestReportText =
+            latestDiscovery.data?.newReport ||
+            latestDiscovery.data?.previousReport ||
+            null;
           reportSource = "discovery";
         }
       } else if (latestDiagnostic) {
-        latestReportText = latestDiagnostic.data?.aiReport || latestDiagnostic.report || null;
+        latestReportText =
+          latestDiagnostic.data?.aiReport || latestDiagnostic.report || null;
         reportSource = "diagnostic";
       } else if (latestDiscovery) {
-        latestReportText = latestDiscovery.data?.newReport || latestDiscovery.data?.previousReport || null;
+        latestReportText =
+          latestDiscovery.data?.newReport ||
+          latestDiscovery.data?.previousReport ||
+          null;
         reportSource = "discovery";
       }
 
       if (latestReportText && typeof latestReportText === "string") {
-        console.log(`[getUserProfile] Extracting goals from ${reportSource} report (${latestReportText.length} chars)`);
+        console.log(
+          `[getUserProfile] Extracting goals from ${reportSource} report (${latestReportText.length} chars)`,
+        );
 
         // Extract FIRST CORRECTION (the main goal)
         // Pattern 1: ### 10. FIRST CORRECTION or SECTION 10 — First Correction
@@ -365,18 +378,36 @@ const getUserProfile = async (req, res) => {
           if (match && match[1]) {
             let correctionText = match[1].trim();
             // Extract the bolded/quoted part which is the actual correction
-            const quotedMatch = correctionText.match(/>\s*\*\*([^*]+)\*\*|>\s*\*([^*]+)\*|>\s*"([^"]+)"|>\s*'([^']+)'|"([^"]{20,300})"|'([^']{20,300})'|\*\*([^*\n]{20,300})\*\*/);
+            const quotedMatch = correctionText.match(
+              />\s*\*\*([^*]+)\*\*|>\s*\*([^*]+)\*|>\s*"([^"]+)"|>\s*'([^']+)'|"([^"]{20,300})"|'([^']{20,300})'|\*\*([^*\n]{20,300})\*\*/,
+            );
             if (quotedMatch) {
-              firstCorrection = (quotedMatch[1] || quotedMatch[2] || quotedMatch[3] || quotedMatch[4] || quotedMatch[5] || quotedMatch[6] || quotedMatch[7]).trim();
+              firstCorrection = (
+                quotedMatch[1] ||
+                quotedMatch[2] ||
+                quotedMatch[3] ||
+                quotedMatch[4] ||
+                quotedMatch[5] ||
+                quotedMatch[6] ||
+                quotedMatch[7]
+              ).trim();
             } else {
               // Take the first meaningful sentence
-              const sentences = correctionText.split(/[.!?]/).filter(s => s.trim().length > 20);
+              const sentences = correctionText
+                .split(/[.!?]/)
+                .filter((s) => s.trim().length > 20);
               if (sentences.length > 0) {
-                firstCorrection = sentences[0].trim().replace(/^[>\s*]+/, "").trim();
+                firstCorrection = sentences[0]
+                  .trim()
+                  .replace(/^[>\s*]+/, "")
+                  .trim();
               }
             }
             if (firstCorrection) {
-              console.log("[getUserProfile] Extracted First Correction:", firstCorrection.substring(0, 100));
+              console.log(
+                "[getUserProfile] Extracted First Correction:",
+                firstCorrection.substring(0, 100),
+              );
               break;
             }
           }
@@ -393,24 +424,38 @@ const getUserProfile = async (req, res) => {
           if (match && match[1]) {
             let angleText = match[1].trim();
             // Look for "From X → to Y" pattern
-            const fromToMatch = angleText.match(/(?:From|from)\s*["']?([^"'\n→–-]+)["']?\s*[→–-]+\s*(?:to)?\s*["']?([^"'\n]+?)["']?(?:\.|$|\n)/i);
+            const fromToMatch = angleText.match(
+              /(?:From|from)\s*["']?([^"'\n→–-]+)["']?\s*[→–-]+\s*(?:to)?\s*["']?([^"'\n]+?)["']?(?:\.|$|\n)/i,
+            );
             if (fromToMatch) {
               angleOfGrowth = `From "${fromToMatch[1].trim()}" to "${fromToMatch[2].trim()}"`;
             } else {
               // Extract the current angle or growth direction
-              const currentAngleMatch = angleText.match(/\*\*Current\s+Angle:\*\*\s*\n?([^\n*]+)|Current\s+Angle[:\s]+([^\n]+)/i);
+              const currentAngleMatch = angleText.match(
+                /\*\*Current\s+Angle:\*\*\s*\n?([^\n*]+)|Current\s+Angle[:\s]+([^\n]+)/i,
+              );
               if (currentAngleMatch) {
-                angleOfGrowth = (currentAngleMatch[1] || currentAngleMatch[2]).trim();
+                angleOfGrowth = (
+                  currentAngleMatch[1] || currentAngleMatch[2]
+                ).trim();
               } else {
                 // Take first meaningful line
-                const lines = angleText.split("\n").filter(l => l.trim().length > 20 && !l.match(/^Not:|^Why:|^\*\*/));
+                const lines = angleText
+                  .split("\n")
+                  .filter(
+                    (l) =>
+                      l.trim().length > 20 && !l.match(/^Not:|^Why:|^\*\*/),
+                  );
                 if (lines.length > 0) {
                   angleOfGrowth = lines[0].trim();
                 }
               }
             }
             if (angleOfGrowth) {
-              console.log("[getUserProfile] Extracted Angle of Growth:", angleOfGrowth.substring(0, 100));
+              console.log(
+                "[getUserProfile] Extracted Angle of Growth:",
+                angleOfGrowth.substring(0, 100),
+              );
               break;
             }
           }
@@ -433,12 +478,16 @@ const getUserProfile = async (req, res) => {
         }
 
         // Also try to extract Discovery Recommendations if present
-        const discoveryRecsMatch = latestReportText.match(/DISCOVERY\s+RECOMMENDATIONS[^\n]*\n([\s\S]{0,2000}?)(?=\n---|\n###|\nUNLIMITED\s+CREATOR)/i);
+        const discoveryRecsMatch = latestReportText.match(
+          /DISCOVERY\s+RECOMMENDATIONS[^\n]*\n([\s\S]{0,2000}?)(?=\n---|\n###|\nUNLIMITED\s+CREATOR)/i,
+        );
         if (discoveryRecsMatch && discoveryRecsMatch[1]) {
           const recsText = discoveryRecsMatch[1];
 
           // Extract Alignment Discoveries count
-          const alignmentMatch = recsText.match(/(\d+)\s*Alignment\s+Discover(?:y|ies)/i);
+          const alignmentMatch = recsText.match(
+            /(\d+)\s*Alignment\s+Discover(?:y|ies)/i,
+          );
           if (alignmentMatch) {
             goals.push({
               type: "discovery_recommendation",
@@ -448,7 +497,9 @@ const getUserProfile = async (req, res) => {
           }
 
           // Extract Freedom Discoveries count
-          const freedomMatch = recsText.match(/(\d+)\s*Freedom\s+Discover(?:y|ies)/i);
+          const freedomMatch = recsText.match(
+            /(\d+)\s*Freedom\s+Discover(?:y|ies)/i,
+          );
           if (freedomMatch) {
             goals.push({
               type: "discovery_recommendation",
@@ -458,7 +509,9 @@ const getUserProfile = async (req, res) => {
           }
 
           // Extract Prosperity Discoveries count
-          const prosperityMatch = recsText.match(/(\d+)\s*Prosperity\s+Discover(?:y|ies)/i);
+          const prosperityMatch = recsText.match(
+            /(\d+)\s*Prosperity\s+Discover(?:y|ies)/i,
+          );
           if (prosperityMatch) {
             goals.push({
               type: "discovery_recommendation",
@@ -468,12 +521,17 @@ const getUserProfile = async (req, res) => {
           }
         }
 
-        console.log(`[getUserProfile] Extracted ${goals.length} goals from ${reportSource} report`);
+        console.log(
+          `[getUserProfile] Extracted ${goals.length} goals from ${reportSource} report`,
+        );
       } else {
         console.log("[getUserProfile] No report text found for user");
       }
     } catch (error) {
-      console.error("[getUserProfile] Error extracting goals from report:", error);
+      console.error(
+        "[getUserProfile] Error extracting goals from report:",
+        error,
+      );
       // Fallback to metadata goals
       goals = user.metadata?.goals || [];
     }
@@ -504,7 +562,10 @@ const getUserProfile = async (req, res) => {
     const formattedMetrics = {
       signalOutput: currentMetrics.signalOutput || 0,
       qgcActivation: currentMetrics.qgcActivation || 0,
-      consciousnessLevel:Number(currentMetrics.consciousnessLevel)<=5?( (currentMetrics.consciousnessLevel/5)*100 ):currentMetrics.consciousnessLevel|| 0,
+      consciousnessLevel:
+        Number(currentMetrics.consciousnessLevel) <= 5
+          ? (currentMetrics.consciousnessLevel / 5) * 100
+          : currentMetrics.consciousnessLevel || 0,
       gravity: currentMetrics.gravity || 0,
       signalCoherence: currentMetrics.signalCoherence || 0,
       lastUpdated:
@@ -524,7 +585,6 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-
 const formatMsToMinSec = (ms) => {
   const min = Math.floor(ms / 60000);
   const sec = Math.floor((ms % 60000) / 1000);
@@ -534,11 +594,22 @@ const formatMsToMinSec = (ms) => {
 const verifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
-    if (!email || !otp) return errorResponse(res, "Email and OTP are required", 400);
+    if (!email || !otp)
+      return errorResponse(res, "Email and OTP are required", 400);
 
-    const user = await User.findOne({ where: { email: email.toLowerCase().trim() } });
+    const user = await User.findOne({
+      where: { email: email.toLowerCase().trim() },
+    });
     if (!user) return errorResponse(res, "User not found", 404);
+    if (!user.requestedOTP) {
+      await sendEmailBasic(
+        user.email,
+        "⚠️ Alert: Suspicious Account Activity",
+        unauthorizedAccessEmailTemplate(user.name),
+      );
 
+      return errorResponse(res, "No OTP requested for this user", 400);
+    }
     const now = new Date();
 
     // Cooldown check due to failed attempts
@@ -547,13 +618,17 @@ const verifyOTP = async (req, res) => {
       return errorResponse(
         res,
         `Too many failed attempts. Try again in ${formatMsToMinSec(diffMs)}.`,
-        429
+        429,
       );
     }
 
     // Expired OTP
     if (!user.otp || !user.otpExpiry || user.otpExpiry < now) {
-      return errorResponse(res, "OTP has expired. Please request a new one.", 400);
+      return errorResponse(
+        res,
+        "OTP has expired. Please request a new one.",
+        400,
+      );
     }
 
     // Invalid OTP
@@ -571,7 +646,7 @@ const verifyOTP = async (req, res) => {
         return errorResponse(
           res,
           "Maximum attempts reached. Please wait 5 min before trying again.",
-          429
+          429,
         );
       }
 
@@ -579,7 +654,7 @@ const verifyOTP = async (req, res) => {
       return errorResponse(
         res,
         `Invalid OTP. ${3 - user.otpAttempts} attempts remaining.`,
-        400
+        400,
       );
     }
 
@@ -590,12 +665,13 @@ const verifyOTP = async (req, res) => {
     user.otpCooldown = null;
     user.resendOTPCount = 0;
     user.resendOTPCooldown = null;
+    user.requestedOTP = false;
     await user.save();
 
     const token = signAccessToken({
       sub: user.id,
       userId: user.id,
-      name:user.name,
+      name: user.name,
       email: user.email,
     });
 
@@ -603,7 +679,6 @@ const verifyOTP = async (req, res) => {
       token,
       expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     });
-
   } catch (error) {
     console.error("[verifyOTP] Error:", error);
     return errorResponse(res, "Failed to verify OTP", 500);
@@ -615,9 +690,13 @@ const resendOTP = async (req, res) => {
     const { email } = req.body;
     if (!email) return errorResponse(res, "Email is required", 400);
 
-    const user = await User.findOne({ where: { email: email.toLowerCase().trim() } });
+    const user = await User.findOne({
+      where: { email: email.toLowerCase().trim() },
+    });
     if (!user) return errorResponse(res, "User not found", 404);
-
+    if (user.requestedOTP === false) {
+      return errorResponse(res, "No OTP requested for this user", 400);
+    }
     const now = new Date();
 
     // Check if cooldown exists
@@ -629,7 +708,7 @@ const resendOTP = async (req, res) => {
       return errorResponse(
         res,
         `Please wait ${min} min ${sec} sec before requesting a new OTP.`,
-        429
+        429,
       );
     }
 
@@ -645,7 +724,11 @@ const resendOTP = async (req, res) => {
       user.resendOTPCount = 0;
       await user.save();
 
-      return errorResponse(res, "Resend limit reached. Please wait 5 minutes.", 429);
+      return errorResponse(
+        res,
+        "Resend limit reached. Please wait 5 minutes.",
+        429,
+      );
     }
 
     // Generate new OTP
@@ -659,7 +742,7 @@ const resendOTP = async (req, res) => {
     await sendEmailBasic(
       user.email,
       "Your OTP Code",
-      otpEmailTemplate(user.name, otp, "login verification", "10 minutes")
+      otpEmailTemplate(user.name, otp, "login verification", "10 minutes"),
     );
 
     return successResponse(res, "OTP resent successfully", {
@@ -678,7 +761,7 @@ module.exports = {
   getMe,
   userReport,
   updateUserClubMembership,
-  getUserProfile, 
-  verifyOTP, 
-  resendOTP 
+  getUserProfile,
+  verifyOTP,
+  resendOTP,
 };

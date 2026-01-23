@@ -21,8 +21,8 @@ const User = sequelize.define(
       allowNull: false,
       unique: true,
     },
-     otp: {
-      type: DataTypes.STRING, 
+    otp: {
+      type: DataTypes.STRING,
       allowNull: true,
     },
     otpExpiry: {
@@ -53,7 +53,7 @@ const User = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
-
+    requestedOTP: { type: DataTypes.BOOLEAN, defaultValue: false },
     name: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -102,7 +102,7 @@ const User = sequelize.define(
       beforeCreate: hashPassword,
       beforeUpdate: hashPassword,
     },
-  }
+  },
 );
 
 User.prototype.toJSON = function () {

@@ -12,7 +12,8 @@ const { extractTextFromPdf } = require("../utils/pdfParser");
 // const Joi = require("joi");
 const { createEmbeddings } = require("../config/Embedding");
 const { generateSessionSummary } = require("../config/sessionSummary");
-const{cleanTranscriptText}= require("../helpers/euphoriamChatbot")
+const { cleanTranscriptText } = require("../helpers/euphoriamChatbot");
+const { PromptType } = require("../utils/types");
 // Admin login (uses existing auth but ensures admin role)
 const adminLogin = async (req, res) => {
   // This will be handled by the existing auth/login endpoint
@@ -51,7 +52,7 @@ const getAllUsers = async (req, res) => {
           diagnosticCount: diagnostics,
           discoveryCount: discoveries,
         };
-      })
+      }),
     );
 
     return successResponse(res, "Users fetched", usersWithReports);
@@ -164,9 +165,16 @@ const createPrompt = async (req, res) => {
 
     const { name, type, content, isActive } = validate(
       createPromptSchemaValidator,
-      req.body
+      req.body,
     );
 
+    if (!Object.values(PromptType).includes(type)) {
+      return errorResponse(
+        res,
+        `Type should be one of: ${Object.values(PromptType).join(", ")}`,
+        400,
+      );
+    }
     console.log("✅ Validation passed:", {
       name,
       type,
@@ -292,7 +300,7 @@ const updatePrompt = async (req, res) => {
             id: { [Op.ne]: prompt.id },
             isActive: true,
           },
-        }
+        },
       );
     }
 
@@ -381,27 +389,31 @@ const getStats = async (req, res) => {
   try {
     // Execute queries sequentially to avoid connection pool exhaustion
     // With max: 1 connection pool, we need to ensure proper sequencing
-    const totalUsers = await User.count({ where: { role: "user" } }).catch((err) => {
-      console.error("[admin] Error counting users:", err);
-      return 0;
-    });
-    
+    const totalUsers = await User.count({ where: { role: "user" } }).catch(
+      (err) => {
+        console.error("[admin] Error counting users:", err);
+        return 0;
+      },
+    );
+
     const totalDiagnostics = await Diagnostic.count().catch((err) => {
       console.error("[admin] Error counting diagnostics:", err);
       return 0;
     });
-    
+
     const totalDiscoveries = await Discovery.count().catch((err) => {
       console.error("[admin] Error counting discoveries:", err);
       return 0;
     });
-    
+
     const totalPrompts = await Prompt.count().catch((err) => {
       console.error("[admin] Error counting prompts:", err);
       return 0;
     });
-    
-    const activePrompts = await Prompt.count({ where: { isActive: true } }).catch((err) => {
+
+    const activePrompts = await Prompt.count({
+      where: { isActive: true },
+    }).catch((err) => {
       console.error("[admin] Error counting active prompts:", err);
       return 0;
     });
@@ -474,11 +486,11 @@ const getStats = async (req, res) => {
         const diagCount = await Diagnostic.count({
           where: { email: user.email },
         }).catch(() => 0);
-        
+
         const discCount = await Discovery.count({
           where: { userId: user.id },
         }).catch(() => 0);
-        
+
         topUsers.push({
           id: user.id,
           name: user.name,
@@ -525,7 +537,7 @@ const getStats = async (req, res) => {
 const uploadUserSession = async (req, res) => {
   try {
     const { transcript, webvtt, email, sessionDate, coachNames } = req.body;
-    const pdfFile = req.file; 
+    const pdfFile = req.file;
 
     let parsedTranscript = null;
     let extractedText = null;
@@ -534,12 +546,12 @@ const uploadUserSession = async (req, res) => {
       try {
         const rawPdfText = await extractTextFromPdf(pdfFile.buffer);
         extractedText = cleanTranscriptText(rawPdfText);
-        
+
         if (!extractedText || extractedText.trim().length === 0) {
           return errorResponse(
             res,
             "PDF appears to be empty or could not extract text",
-            400
+            400,
           );
         }
 
@@ -548,13 +560,14 @@ const uploadUserSession = async (req, res) => {
             coachNames: Array.isArray(coachNames)
               ? coachNames
               : coachNames
-              ? [coachNames]
-              : [],
+                ? [coachNames]
+                : [],
           });
         } catch (webvttError) {
-          
-          const lines = extractedText.split("\n").filter((l) => l.trim().length > 0);
-          
+          const lines = extractedText
+            .split("\n")
+            .filter((l) => l.trim().length > 0);
+
           // Simple fallback: look for "Speaker: text" pattern
           parsedTranscript = lines
             .map((line) => {
@@ -566,10 +579,10 @@ const uploadUserSession = async (req, res) => {
                   (Array.isArray(coachNames)
                     ? coachNames
                     : coachNames
-                    ? [coachNames]
-                    : []
+                      ? [coachNames]
+                      : []
                   ).some((name) =>
-                    speakerName.toLowerCase().includes(name.toLowerCase())
+                    speakerName.toLowerCase().includes(name.toLowerCase()),
                   ) || /nathan|coach|therapist|counselor/i.test(speakerName);
 
                 return {
@@ -586,7 +599,7 @@ const uploadUserSession = async (req, res) => {
             return errorResponse(
               res,
               "Could not parse transcript from PDF. Please ensure the PDF contains a transcript with speaker names (e.g., 'Speaker: text').",
-              400
+              400,
             );
           }
         }
@@ -594,7 +607,7 @@ const uploadUserSession = async (req, res) => {
         return errorResponse(
           res,
           `Failed to process PDF: ${pdfError.message}`,
-          400
+          400,
         );
       }
     }
@@ -611,14 +624,14 @@ const uploadUserSession = async (req, res) => {
           coachNames: Array.isArray(coachNames)
             ? coachNames
             : coachNames
-            ? [coachNames]
-            : [],
+              ? [coachNames]
+              : [],
         });
       } catch (parseError) {
         return errorResponse(
           res,
           `Failed to parse WEBVTT: ${parseError.message}`,
-          400
+          400,
         );
       }
     }
@@ -629,19 +642,19 @@ const uploadUserSession = async (req, res) => {
         return errorResponse(
           res,
           "Transcript must be an array of message objects",
-          400
+          400,
         );
       }
 
       // Validate transcript format (should have role and content)
       const isValidTranscript = transcript.every(
-        (msg) => msg.role && msg.content
+        (msg) => msg.role && msg.content,
       );
       if (!isValidTranscript) {
         return errorResponse(
           res,
           "Transcript must contain messages with 'role' and 'content' fields",
-          400
+          400,
         );
       }
 
@@ -650,7 +663,7 @@ const uploadUserSession = async (req, res) => {
       return errorResponse(
         res,
         "Either 'pdf' (file upload), 'transcript' (JSON array), or 'webvtt' (WEBVTT string) is required",
-        400
+        400,
       );
     }
 
@@ -679,8 +692,8 @@ const uploadUserSession = async (req, res) => {
           .map((msg) => `${msg.role || "user"}: ${msg.content || ""}`)
           .join("\n")
       : typeof parsedTranscript === "string"
-      ? parsedTranscript
-      : JSON.stringify(parsedTranscript);
+        ? parsedTranscript
+        : JSON.stringify(parsedTranscript);
 
     // Generate embeddings and summary in parallel for efficiency
     const [createEmbedding, summary] = await Promise.all([
@@ -747,7 +760,7 @@ const attachUserSessionToUser = async (req, res) => {
       return errorResponse(
         res,
         "Session is already attached to another user",
-        400
+        400,
       );
     }
 
@@ -757,7 +770,11 @@ const attachUserSessionToUser = async (req, res) => {
       email: user.email,
     });
 
-    return successResponse(res, "Session attached to user successfully", session);
+    return successResponse(
+      res,
+      "Session attached to user successfully",
+      session,
+    );
   } catch (error) {
     console.error("[admin] Error attaching session to user:", error);
     return errorResponse(res, error.message || "Failed to attach session", 500);
@@ -803,7 +820,10 @@ const getUserSessions = async (req, res) => {
 
     const sessions = await UserSession.findAll({
       where: whereClause,
-      order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+      order: [
+        ["sessionDate", "DESC"],
+        ["createdAt", "DESC"],
+      ],
       include: [
         {
           model: User,
@@ -831,7 +851,10 @@ const getUserLatestSession = async (req, res) => {
 
     const latestSession = await UserSession.findOne({
       where: whereClause,
-      order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+      order: [
+        ["sessionDate", "DESC"],
+        ["createdAt", "DESC"],
+      ],
       include: [
         {
           model: User,
@@ -874,8 +897,6 @@ const singleUserSessionToUser = async (req, res) => {
       return errorResponse(res, "User session not found", 404);
     }
 
-   
-
     return successResponse(res, "Session fetched successfully", session);
   } catch (error) {
     console.error("[admin] Error fetching single session to user:", error);
@@ -897,5 +918,7 @@ module.exports = {
   uploadUserSession,
   attachUserSessionToUser,
   getAllUserSessions,
-  getUserSessions,getUserLatestSession,singleUserSessionToUser
+  getUserSessions,
+  getUserLatestSession,
+  singleUserSessionToUser,
 };

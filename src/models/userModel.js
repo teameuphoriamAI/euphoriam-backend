@@ -1,6 +1,7 @@
 const { DataTypes } = require("sequelize");
 const bcrypt = require("bcryptjs");
 const { sequelize } = require("../config/sequelize");
+const { UserStatus, UserRole } = require("../utils/types");
 
 const hashPassword = async (user) => {
   if (!user.changed("password") || !user.password) return;
@@ -63,17 +64,16 @@ const User = sequelize.define(
       allowNull: true,
     },
     role: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      defaultValue: "user",
+      type: DataTypes.ENUM(...Object.values(UserRole)),
+      defaultValue: UserRole.USER,
     },
     password: {
       type: DataTypes.STRING,
       allowNull: true,
     },
     status: {
-      type: DataTypes.ENUM("active", "block"),
-      defaultValue: "active",
+      type: DataTypes.ENUM(...Object.values(UserStatus)),
+      defaultValue: UserStatus.ACTIVE,
     },
     metadata: {
       type: DataTypes.JSONB,

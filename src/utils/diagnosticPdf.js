@@ -1,6 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const PDFDocument = require("pdfkit");
+require("dotenv").config();
+const axios = require("axios");
+
+const logoImage = process.env.LOGO_URL;
 
 const ensureDir = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
@@ -23,7 +27,7 @@ const addSection = (doc, title, bodyLines) => {
     doc.fontSize(11).text(line, {
       width: sectionWidth,
       lineGap: 2,
-    })
+    }),
   );
 };
 
@@ -42,19 +46,234 @@ const addList = (doc, title, items) => {
     doc.fontSize(11).text(`• ${item}`, {
       width: listWidth,
       lineGap: 2,
-    })
+    }),
   );
 };
 
-const renderGauge = (value) => {
-  const v = Math.max(0, Math.min(100, Number(value || 0)));
-  const totalBlocks = 12;
-  const filled = Math.round((v / 100) * totalBlocks);
-  const empty = totalBlocks - filled;
+// Helper to draw the segmented gauge (10 blocks) - matches image exactly
+const renderVisualGauge = (doc, metrics) => {
+  if (!metrics) return;
 
-  const filledBlock = "█".repeat(filled);
-  const emptyBlock = "░".repeat(empty); // lighter block
-  return `${filledBlock}${emptyBlock} ${v}%`;
+  const gaugeMetrics = [
+    { label: "QGC Activation", val: metrics.qgcActivation },
+    {
+      label: "Consciousness Level",
+      val: metrics.consciousnessLevel,
+    },
+    { label: "Gravity (Load)", val: metrics.gravity },
+    { label: "Signal Coherence", val: metrics.signalCoherence },
+    { label: "Signal Output", val: metrics.signalOutput },
+  ];
+
+  // Title - bold, left-aligned, matching image
+  doc.moveDown(1);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(16)
+    .fillColor("#000000")
+    .text("METRICS GAUGE (Current Snapshot)", {
+      align: "left",
+      width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+    });
+  doc.moveDown(1);
+
+  const startY = doc.y;
+  let currentY = startY;
+
+  gaugeMetrics.forEach((m) => {
+    if (m.val === undefined || m.val === null) return;
+
+    // Calculate value and percentage
+    let pct = 0;
+    let displayVal = "";
+
+    if (m.label.includes("Consciousness")) {
+      const val = parseFloat(m.val);
+      // Convert 1-5 scale to percentage for visual display (1 = 0%, 5 = 100%)
+      pct = ((val - 1) / 4) * 100; // Map 1-5 to 0-100%
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      displayVal = val.toFixed(1);
+    } else {
+      const val = parseFloat(m.val);
+      pct = Math.max(0, Math.min(100, val));
+      displayVal = `${Math.round(val)}%`;
+    }
+
+    // Draw label - regular font, matching image style
+    doc
+      .font("Helvetica")
+      .fontSize(11)
+      .fillColor("#000000")
+      .text(m.label + ":", doc.page.margins.left, currentY + 1, { width: 180 });
+
+    // Draw visual blocks (10 blocks total, matching image)
+    const blockCount = 10;
+    const blockWidth = 14; // Slightly wider blocks for better visibility
+    const blockHeight = 14; // Square-ish blocks
+    const blockSpacing = 3; // Space between blocks
+    const blocksStartX = doc.page.margins.left + 190;
+    const blocksY = currentY;
+
+    // Calculate filled blocks based on percentage
+    const filledBlocks = Math.max(
+      0,
+      Math.min(blockCount, Math.round((pct / 100) * blockCount)),
+    );
+
+    // Draw each block
+    for (let i = 0; i < blockCount; i++) {
+      const blockX = blocksStartX + i * (blockWidth + blockSpacing);
+      const isFilled = i < filledBlocks;
+
+      // Draw block rectangle
+      if (isFilled) {
+        // Filled block: black fill with black border
+        doc
+          .rect(blockX, blocksY, blockWidth, blockHeight)
+          .lineWidth(0.5)
+          .fillColor("#000000")
+          .fill()
+          .strokeColor("#000000")
+          .stroke();
+      } else {
+        // Empty block: white fill with black border
+        doc
+          .rect(blockX, blocksY, blockWidth, blockHeight)
+          .lineWidth(0.5)
+          .fillColor("#FFFFFF")
+          .fill()
+          .strokeColor("#000000")
+          .stroke();
+      }
+    }
+
+    // Draw value text on the right
+    const totalBlocksWidth =
+      blockCount * blockWidth + (blockCount - 1) * blockSpacing;
+    const valueX = blocksStartX + totalBlocksWidth + 15;
+    doc
+      .font("Helvetica")
+      .fontSize(11)
+      .fillColor("#000000")
+      .text(displayVal, valueX, currentY + 2);
+
+    // Move to next row
+    currentY += 20; // Spacing between metric rows
+  });
+
+  doc.y = currentY;
+  doc.moveDown(1);
+};
+
+// Helper to draw a visual gauge bar using rectangles (12 blocks - matches old code)
+const drawGaugeBar = (doc, startX, startY, value, totalBlocks = 12) => {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  const filled = Math.round((v / 100) * totalBlocks);
+  const blockWidth = 8; // Width of each block in points
+  const blockHeight = 10; // Height of each block in points
+  const blockGap = 1; // Gap between blocks
+
+  // Save current fill color
+  const savedFillColor = doc._fillColor;
+
+  let currentX = startX;
+
+  // Draw filled blocks (black)
+  for (let i = 0; i < filled; i++) {
+    doc
+      .rect(currentX, startY, blockWidth, blockHeight)
+      .fillColor("#000000")
+      .fill();
+    currentX += blockWidth + blockGap;
+  }
+
+  // Draw empty blocks (white with gray border)
+  for (let i = filled; i < totalBlocks; i++) {
+    doc
+      .rect(currentX, startY, blockWidth, blockHeight)
+      .strokeColor("#CCCCCC")
+      .lineWidth(0.8)
+      .stroke();
+
+    currentX += blockWidth + blockGap;
+  }
+
+  // Restore fill color for text
+  doc.fillColor(savedFillColor || "#111111");
+
+  return currentX; // Return the end X position
+};
+
+// Helper to render a single line metric with proper spacing (matches old code)
+const renderMetricLine = (doc, label, value, isPercentage = true) => {
+  // Check if value is actually defined (not undefined, null, or NaN)
+  const hasValue = value !== undefined && value !== null && !isNaN(value);
+
+  // Set font for label
+  doc.font("Helvetica").fontSize(11);
+
+  // Calculate positions - everything on the same line
+  const labelStartX = doc.page.margins.left;
+  const currentY = doc.y;
+  const labelWidth = 160; // Fixed width for label column
+  const gaugeStartX = labelStartX + labelWidth; // Start gauge right after label
+  const blockHeight = 10; // Height of gauge blocks
+  // Align gauge bar vertically with text baseline
+  const textBaselineOffset = 8; // Approximate offset for text baseline
+  const gaugeStartY = currentY + textBaselineOffset - blockHeight / 2;
+  const totalBlockWidth = 12 * 8 + 11 * 1; // 12 blocks * 8pt + 11 gaps * 1pt = 107pt
+  const valueStartX = gaugeStartX + totalBlockWidth + 8; // 8pt gap after gauge
+
+  // Draw label on the same line - use absolute positioning to prevent wrapping
+  const labelText = label.replace(/:/g, ":"); // Ensure colon is included
+  doc.text(labelText, labelStartX, currentY, {
+    width: labelWidth,
+    lineGap: 0,
+  });
+
+  if (!hasValue) {
+    // Draw empty gauge
+    drawGaugeBar(doc, gaugeStartX, gaugeStartY, 0);
+    doc.text("Unknown", valueStartX, currentY, {
+      width: 80,
+      lineGap: 0,
+    });
+    // Minimal spacing between metrics
+    doc.moveDown(0.2);
+    return;
+  }
+
+  const displayValue = Number(value);
+  // For gauge visualization: convert to percentage
+  // For Consciousness Level (0-5), convert to percentage for visual bar
+  const percentageForGauge = isPercentage
+    ? displayValue
+    : (displayValue / 5) * 100;
+  // For display text: show percentage for percentage metrics, raw value for Consciousness Level
+  const valueText = isPercentage
+    ? `${Math.round(displayValue)}%`
+    : `${displayValue}`;
+
+  // Draw gauge bar
+  drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);
+
+  // Draw value text (percentage) - on the same line
+  doc.font("Helvetica").fontSize(11).fillColor("#111111");
+  doc.text(valueText, valueStartX, currentY, {
+    width: 80, // Fixed width for percentage text area
+    align: "left",
+    lineGap: 0,
+  });
+
+  // Move to next line for next metric
+  doc.moveDown(0.2);
+};
+
+const renderGauge = (value) => {
+  // Deprecated but kept for compatibility if needed elsewhere
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  return `${v}%`;
 };
 
 const drawDivider = (doc) => {
@@ -70,7 +289,7 @@ const drawDivider = (doc) => {
   doc.moveDown(1);
 };
 const drawMetricsTable = (doc, metrics) => {
-  const startX = doc.x;
+  const startX = doc.page.margins.left;
   let y = doc.y;
   const rowHeight = 20;
   const colWidths = [150, 150]; // Adjust as needed
@@ -158,7 +377,7 @@ const drawMetricsInterpretationTable = (doc) => {
 };
 
 const renderTableData = (doc, tableData, colWidths) => {
-  const startX = doc.x;
+  const startX = doc.page.margins.left;
   let y = doc.y;
   const padding = 5;
   const headerRowHeight = 25;
@@ -232,53 +451,46 @@ const isAllCapsHeader = (line) => {
 /**
  * Cleans text by removing problematic special characters while preserving important formatting
  */
+/**
+ * Cleans text by removing problematic special characters while preserving important formatting
+ */
 const cleanText = (text) => {
   if (!text) return text;
   let cleaned = String(text);
-  
-  // First, preserve important Unicode characters by temporarily replacing them
-  const placeholders = {
-    sparkle: "___SPARKLE___",
-    bullet: "___BULLET___",
-    filledBullet: "___FILLED_BULLET___",
-    divider: "___DIVIDER___",
-    arrowRight: "___ARROW_RIGHT___",
-    arrowDown: "___ARROW_DOWN___"
-  };
-  
-  // Replace important characters with placeholders
+
+  // Remove known decoration emojis/chars
   cleaned = cleaned
-    .replace(/✨/g, placeholders.sparkle)
-    .replace(/●/g, placeholders.filledBullet)
-    .replace(/•/g, placeholders.bullet)
-    .replace(/─/g, placeholders.divider)
-    .replace(/→/g, placeholders.arrowRight)
-    .replace(/↓/g, placeholders.arrowDown);
-  
-  // Remove truly problematic characters (but keep common printable characters)
-  // Only remove control characters and truly problematic Unicode, but keep common symbols
+    .replace(/✨/g, "")
+    .replace(/⚠️/g, "")
+    .replace(/●/g, "•")
+    .replace(/•/g, "•")
+    .replace(/─/g, "")
+    .replace(/→/g, "->")
+    .replace(/↓/g, "");
+
+  // Remove ** (asterisks) entirely if used purely as formatting noise in this context,
+  // OR handle them. The user says "alot of steric", likely meaning "**" in "Client: ** Yashal".
+  // We can strip all "**" globally here since we handle bolding differently now or if the text is plain.
+  // Ideally we only strip them if they are noise. But given the request "remove that", let's strip them
+  // unless captured by specific bold logic which we might skip if we just want clean text.
+  // Actually, 'renderTextWithBold' relies on them.
+  // But the user complained about "Client: ** Yashal".
+  // We should fix the Metadata rendering to specifically strip them there,
+  // AND in general body text, cleaner to just strip them if they are causing issues or ensure renderTextWithBold handles them nicely.
+  // Let's improve the metadata regex instead.
+
+  // NOTE: We used to remove all asterisks here, but that broke renderTextWithBold.
+  // We only remove them here if they are standalone noise.
+  // Bold markers (**) are preserved for renderTextWithBold to process.
+
+  // Remove common encoding artifacts
   cleaned = cleaned
-    .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, "") // Remove control characters
-    .replace(/& þ/g, "") // Remove specific problematic sequences
-    .replace(/Ø=ÜÄ/g, "") // Remove specific problematic sequences
-    .replace(/!'/g, " → ") // Replace arrow-like characters
-    .replace(/!"/g, " ↓ ") // Replace arrow-like characters
-    .replace(/!`/g, " → ") // Replace arrow-like characters
-    .replace(/& /g, " ")
-    .replace(/'& /g, " ")
+    .replace(/[^\x20-\x7E\n\r\t•\*]/g, "") // Preserve asterisks
+    .replace(/&nbsp;/g, " ")
     .replace(/1:1/g, " 1:1 session")
-    .replace(/%Ï/g, "•"); // Treat "%Ï" as a bullet (corrupted bullet)
-  
-  // Restore important characters with PDF-safe alternatives
-  cleaned = cleaned
-    .replace(new RegExp(placeholders.sparkle, "g"), "✦") // Use star instead of sparkle for PDF compatibility
-    .replace(new RegExp(placeholders.filledBullet, "g"), "•") // Use standard bullet
-    .replace(new RegExp(placeholders.bullet, "g"), "•") // Keep standard bullet
-    .replace(new RegExp(placeholders.divider, "g"), "-") // Use dash for dividers
-    .replace(new RegExp(placeholders.arrowRight, "g"), "→")
-    .replace(new RegExp(placeholders.arrowDown, "g"), "↓");
-  
-  return cleaned;
+    .replace(/\s+/g, " ");
+
+  return cleaned.trim();
 };
 
 /**
@@ -286,16 +498,19 @@ const cleanText = (text) => {
  * Uses a simpler approach: process line and render with proper fonts
  */
 const renderTextWithBold = (doc, text, options = {}) => {
-  const { width, lineGap = 2, indent = 0 } = options;
+  const { width, lineGap = 2, indent = 0, oblique = false } = options;
   const fontSize = doc._fontSize || 11;
+  const normalFont = oblique ? "Helvetica-Oblique" : "Helvetica";
+  const boldFont = oblique ? "Helvetica-BoldOblique" : "Helvetica-Bold";
 
   // Clean text first
   let cleanTextValue = cleanText(text);
 
   // Check if text contains bold markers
-  if (!cleanTextValue.includes("**")) {
-    // No bold formatting, render normally
-    doc.text(cleanTextValue, { width, lineGap, indent });
+  // We check for the pattern **text**
+  if (!cleanTextValue.match(/\*\*([^*]+)\*\*/)) {
+    // No bold formatting, render normally (but strip any single asterisks if they are noise)
+    doc.font(normalFont).text(cleanTextValue.replace(/\*\*/g, "").replace(/\*/g, ""), { width, lineGap, indent });
     return;
   }
 
@@ -338,9 +553,9 @@ const renderTextWithBold = (doc, text, options = {}) => {
   segments.forEach((segment, index) => {
     // Set appropriate font
     if (segment.bold) {
-      doc.font("Helvetica-Bold").fontSize(fontSize);
+      doc.font(boldFont).fontSize(fontSize);
     } else {
-      doc.font("Helvetica").fontSize(fontSize);
+      doc.font(normalFont).fontSize(fontSize);
     }
 
     const isLast = index === segments.length - 1;
@@ -359,13 +574,19 @@ const renderTextWithBold = (doc, text, options = {}) => {
   doc.font("Helvetica").fontSize(fontSize);
 };
 
-const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) => {
+const renderStyledReport = (
+  doc,
+  text,
+  metrics = {},
+  ucRecommendations = null,
+  isDiscoveryReport = false, // Flag to indicate if this is a discovery report
+) => {
   const lines = String(text || "").split(/\r?\n/);
 
   doc.font("Helvetica").fontSize(11);
   doc.fillColor("#111111");
 
-  // Calculate available width for text (page width minus margins)
+  // Calculate available width
   const availableWidth =
     doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
@@ -375,252 +596,279 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
   let inIntroSection = false;
   let introEnded = false;
   let introLines = [];
-  let summaryRendered = false;
-  let skipLinesUntil = -1; // Track line index to skip until (for summary/next step sections)
+  let metricsGaugeRendered = false; // Track if metrics gauge was rendered
+  let metricsInterpretationRendered = false; // Track if interpretation table was rendered
+  let metadataRendered = false; // Track if metadata block has been rendered
+  let firstContentSectionStarted = false; // Track if we've started rendering main content
+
+  // Text buffer for paragraph rendering
+  let textBuffer = [];
+
+  // Helper to flush buffer
+  const flushTextBuffer = () => {
+    if (textBuffer.length > 0) {
+      const paragraph = textBuffer.join(" ");
+      doc.moveDown(0.2);
+      renderTextWithBold(doc, cleanText(paragraph), {
+        width: availableWidth,
+        lineGap: 4,
+      });
+      textBuffer = [];
+      doc.moveDown(0.3); // Small gap after paragraph
+    }
+  };
+
+  // Check if this is a discovery report and has metrics - render at top
+  const hasMetrics =
+    metrics &&
+    (metrics.gravity !== undefined ||
+      metrics.signalCoherence !== undefined ||
+      metrics.signalOutput !== undefined ||
+      metrics.consciousnessLevel !== undefined ||
+      metrics.qgcActivation !== undefined);
+
+  const isDiscovery =
+    isDiscoveryReport ||
+    text.toLowerCase().includes("structural update report") ||
+    text.toLowerCase().includes("discovery report");
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
-    const line = rawLine.trimEnd();
+    let line = rawLine.trimEnd();
 
-    // Skip or handle corrupted divider lines (lines with many "%" characters, possibly with numbers)
-    // These are corrupted Unicode box-drawing characters (────────────────)
+    // Skip problematic lines
     if (/^%{10,}/.test(line.trim())) {
-      // This is a corrupted divider - render it as a proper divider
+      flushTextBuffer();
       drawDivider(doc);
       continue;
     }
 
-    // Detect and handle title line with sparkle emoji (preserve it properly)
-    if (/^[✨'\(]?\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC).*REPORT/i.test(line)) {
-      // This is the title line - render it specially without aggressive cleaning
-      const titleText = line.replace(/^[✨'\(]\s*/, "").trim(); // Remove corrupted prefix
+    // Title Handling - IMPROVED
+    // Matches standard headers OR typically formatted title lines appearing early
+    if (
+      /^[✨'\(]?\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC|ANALYSIS).*REPORT/i.test(line) ||
+      /^##\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC|ANALYSIS).*REPORT/i.test(line) ||
+      (!firstContentSectionStarted && i < 10 && /(?:analysis|diagnostic|structural|quantum)/i.test(line) && line.length < 100 && line.length > 15 && !line.includes(":"))
+    ) {
+      flushTextBuffer();
+      const titleText = line
+        .replace(/^[#✨'\(]\s*/, "")
+        .replace(/\*\*/g, "")
+        .trim();
+
       doc.moveDown(1);
-      doc.font("Helvetica-Bold").fontSize(18).text(titleText, {
+      doc.font("Helvetica-Bold").fontSize(22).text(titleText, {
         width: availableWidth,
         align: "center",
-        lineGap: 2,
+        lineGap: 4,
       });
       doc.font("Helvetica").fontSize(11);
-      doc.moveDown(0.5);
+      doc.moveDown(1);
+
+      // Mark that we've rendered the title
+      firstContentSectionStarted = true;
       continue;
     }
 
-    // Detect intro section start
-    if (/BEFORE YOU READ THIS DIAGNOSTIC/i.test(line) || /✨\s*BEFORE YOU READ/i.test(line) || /'&\s*BEFORE YOU READ/i.test(line)) {
+    // Capture Metadata Block (e.g., "**Client:** Name" or "Client:  Yashal")
+    // If we see a sequence of these, render them as a grid/block
+    if (
+      (/^\*\*.*:\*\*/.test(line) && line.includes(":")) ||
+      (/^(Client|Report Type|Version|Date|Tone):\s+/.test(line) &&
+        !metadataRendered)
+    ) {
+      flushTextBuffer();
+      // Check next few lines to see if they are also metadata
+      let metadataLines = [line];
+      let tempI = i + 1;
+      while (tempI < lines.length) {
+        const nextL = lines[tempI].trim();
+        // Check for both markdown format and plain format metadata
+        if (
+          (/^\*\*.*:\*\*/.test(nextL) && nextL.includes(":")) ||
+          /^(Client|Report Type|Version|Date|Tone):\s+/.test(nextL)
+        ) {
+          metadataLines.push(nextL);
+          tempI++;
+        } else if (!nextL) {
+          tempI++; // allow one empty line gap if needed, or just stop
+          // Actually, standard markdown might just have newlines.
+          // If it's a tight block, they usually follow immediately.
+        } else {
+          break;
+        }
+      }
+
+      // Check if we have metadata lines (either markdown format or plain format)
+      const hasMetadata = metadataLines.length >= 1;
+
+      if (hasMetadata) {
+        // It's a metadata block. Render it nicely.
+        doc.moveDown(0.5);
+        // Draw a light gray box? Or just formatted text.
+        // Let's do a key-value layout.
+
+        metadataLines.forEach((metaLine) => {
+          // Clean asterisks if present in the data line itself (e.g. "Client: ** Yashal" -> "Client: Yashal")
+          let cleanLine = metaLine.replace(/:\s*\*\*\s*/g, ": ");
+          const cleanMeta = cleanText(cleanLine).replace(/\*\*/g, ""); // Strip any remaining asterisks
+
+          // parts expected: "Client: Yashal"
+          const colonIdx = cleanMeta.indexOf(":");
+          if (colonIdx > -1) {
+            const key = cleanMeta.substring(0, colonIdx + 1).trim();
+            const val = cleanMeta.substring(colonIdx + 1).trim();
+
+            doc.font("Helvetica-Bold").text(key, { continued: true });
+            doc.font("Helvetica").text(`  ${val}`);
+          } else {
+            renderTextWithBold(doc, cleanMeta);
+          }
+        });
+
+        doc.moveDown(1);
+        metadataRendered = true;
+
+        // Advance loop
+        i = tempI - 1;
+        continue;
+      }
+    }
+
+    // Intro Section Detection
+    if (
+      /BEFORE YOU READ THIS DIAGNOSTIC/i.test(line) ||
+      /✨\s*BEFORE YOU READ/i.test(line)
+    ) {
+      flushTextBuffer();
       inIntroSection = true;
       introLines = [];
     }
 
-    // Collect intro lines
     if (inIntroSection && !introEnded) {
-      introLines.push(line);
-    }
+      // actually, let's keep it simple: just detect end of intro
+      const isDivider = /^[\-─_]{3,}/.test(line);
+      const isHeader = /^##/.test(line) || /SHORT SUMMARY/i.test(line);
 
-    // Detect intro section end (divider, major header, or report title)
-    if (inIntroSection && !introEnded) {
-      const isDivider = line === "----------------------------------------" || 
-                       line === "────────────────────────────────────────" ||
-                       /^---+$/.test(line) ||
-                       /^%{10,}/.test(line.trim()); // Corrupted divider
-      const isMajorHeader = /^##\s+EUPHORIAM/i.test(line) ||
-                           /^EUPHORIAM.*DIAGNOSTIC REPORT/i.test(line.toUpperCase()) ||
-                           /^EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(line.toUpperCase());
-      
-      if (isDivider || isMajorHeader) {
+      if (isDivider || isHeader) {
         introEnded = true;
         inIntroSection = false;
-        
-        // Render intro lines
-        introLines.forEach(introLine => {
-          if (introLine.trim()) {
-            const cleanedLine = cleanText(introLine);
-            renderTextWithBold(doc, cleanedLine, {
-              width: availableWidth,
-              lineGap: 2,
-            });
-          } else {
-            doc.moveDown(0.5);
-          }
-        });
-        
-        // Look ahead to find summary section in the report
-        const reportText = lines.join("\n");
-        let summaryStartIdx = -1;
-        let summaryEndIdx = -1;
-        let nextStepStartIdx = -1;
-        let nextStepEndIdx = -1;
-        
-        // Find summary section
-        for (let j = i; j < lines.length; j++) {
-          const testLine = lines[j].trim();
-          if (/^##\s*SHORT\s+SUMMARY/i.test(testLine) || /^SHORT\s+SUMMARY/i.test(testLine.toUpperCase())) {
-            summaryStartIdx = j;
-            // Find where summary ends (next section header, divider, or NEXT STEP)
-            for (let k = j + 1; k < lines.length; k++) {
-              const endLine = lines[k].trim();
-              if (/^##\s+/.test(endLine) || 
-                  /^SECTION\s+\d+/i.test(endLine) ||
-                  /^NEXT\s+STEP/i.test(endLine.toUpperCase()) ||
-                  endLine === "----------------------------------------" ||
-                  endLine === "────────────────────────────────────────" ||
-                  /^---+$/.test(endLine) ||
-                  /^%{10,}/.test(endLine.trim())) { // Corrupted divider
-                summaryEndIdx = k;
-                // Check if next section is NEXT STEP
-                if (/^NEXT\s+STEP/i.test(endLine.toUpperCase())) {
-                  nextStepStartIdx = k;
-                  // Find where NEXT STEP ends
-                  for (let m = k + 1; m < lines.length; m++) {
-                    const nextEndLine = lines[m].trim();
-                    if (/^##\s+/.test(nextEndLine) || 
-                        /^SECTION\s+\d+/i.test(nextEndLine) ||
-                        nextEndLine === "----------------------------------------" ||
-                        nextEndLine === "────────────────────────────────────────" ||
-                        /^---+$/.test(nextEndLine) ||
-                        /^%{10,}/.test(nextEndLine.trim())) { // Corrupted divider
-                      nextStepEndIdx = m;
-                      break;
-                    }
-                  }
-                }
-                break;
-              }
-            }
-            break;
-          }
-        }
-        
-        // Render summary section if found, otherwise generate one
-        if (summaryStartIdx >= 0 && summaryEndIdx > summaryStartIdx) {
-          // Skip the summary header line when rendering
+        // Render intro
+        if (introLines.length > 0) {
+          doc.font("Helvetica-Oblique").fontSize(10).fillColor("#555555");
+          introLines.forEach((l) => doc.text(cleanText(l)));
+          doc.fillColor("#111111").fontSize(11).font("Helvetica");
           doc.moveDown(1);
-          doc.font("Helvetica-Bold").fontSize(14).text("SHORT SUMMARY", {
-            width: availableWidth,
-            lineGap: 2,
-          });
-          doc.moveDown(0.3);
-          doc.font("Helvetica").fontSize(11);
-          
-          // Render summary content
-          for (let j = summaryStartIdx + 1; j < summaryEndIdx; j++) {
-            const summaryLine = lines[j].trim();
-            if (summaryLine && !/^NEXT\s+STEP/i.test(summaryLine.toUpperCase())) {
-              const cleanedLine = cleanText(summaryLine);
-              renderTextWithBold(doc, cleanedLine, {
-                width: availableWidth,
-                lineGap: 2,
-              });
-            }
-          }
-          
-          // Render NEXT STEP section if found
-          if (nextStepStartIdx >= 0 && nextStepEndIdx > nextStepStartIdx) {
-            doc.moveDown(0.5);
-            doc.font("Helvetica-Bold").fontSize(12).text("NEXT STEP", {
-              width: availableWidth,
-              lineGap: 2,
-            });
-            doc.moveDown(0.3);
-            doc.font("Helvetica").fontSize(11);
-            
-            for (let j = nextStepStartIdx + 1; j < nextStepEndIdx; j++) {
-              const nextStepLine = lines[j].trim();
-              if (nextStepLine) {
-                const cleanedLine = cleanText(nextStepLine);
-                renderTextWithBold(doc, cleanedLine, {
-                  width: availableWidth,
-                  lineGap: 2,
-                });
-              }
-            }
-          }
-          
-          // Skip these lines when processing the main loop
-          if (nextStepEndIdx > 0) {
-            skipLinesUntil = nextStepEndIdx;
-            i = nextStepEndIdx - 1; // Will be incremented by loop
-          } else {
-            skipLinesUntil = summaryEndIdx;
-            i = summaryEndIdx - 1; // Will be incremented by loop
-          }
-        } else {
-          // Generate a brief summary if not found in report
-          doc.moveDown(1);
-          doc.font("Helvetica-Bold").fontSize(14).text("SHORT SUMMARY", {
-            width: availableWidth,
-            lineGap: 2,
-          });
-          doc.moveDown(0.3);
-          
-          let summaryText = "";
-          const structureMatch = reportText.match(/STRUCTURE\s+TYPE[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
-          const avoidanceMatch = reportText.match(/AVOIDANCE[:\s]*\n([\s\S]*?)(?=\n##|\n---|$)/i);
-          
-          if (structureMatch || avoidanceMatch) {
-            summaryText = "This diagnostic reveals your structural patterns, avoidance behaviors, and current metrics. " +
-                         "Review the detailed sections below to understand your unique structure and recommended corrections.";
-          } else {
-            summaryText = "This diagnostic report provides a comprehensive analysis of your structural patterns, " +
-                         "avoidance behaviors, and current state. Review each section to understand your unique structure " +
-                         "and the recommended path forward.";
-          }
-          
-          doc.font("Helvetica").fontSize(11);
-          const summaryLines = summaryText.split(/\n/).filter(l => l.trim());
-          summaryLines.forEach(summaryLine => {
-            const cleanedLine = cleanText(summaryLine.trim());
-            renderTextWithBold(doc, cleanedLine, {
-              width: availableWidth,
-              lineGap: 2,
-            });
-          });
         }
-        
-        doc.moveDown(0.8);
-        
-        // Render recommendations right after summary if available
-        if (ucRecommendations && !summaryRendered) {
-          summaryRendered = true;
-          if (
-            ucRecommendations.phase1.length > 0 ||
-            ucRecommendations.phase2.length > 0 ||
-            ucRecommendations.phase3.length > 0
-          ) {
-            renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
-            doc.moveDown(0.8);
-          }
-        }
-        
-        // Continue processing the current line (divider or header)
-        // Don't skip it, let it be processed normally
+      } else {
+        introLines.push(line);
+        continue; // don't render yet
       }
     }
 
-    // Skip intro lines that were already rendered
-    if (inIntroSection && !introEnded) {
-      continue;
-    }
-    
-    // Skip summary and next step lines that were already rendered
-    if (skipLinesUntil > 0 && i < skipLinesUntil) {
-      // Check if this is a summary or next step header line
-      if (/^##\s*SHORT\s+SUMMARY/i.test(line) || 
-          /^SHORT\s+SUMMARY/i.test(line.toUpperCase()) ||
-          /^NEXT\s+STEP/i.test(line.toUpperCase())) {
-        continue;
+    // Skip intro lines being collected
+    if (inIntroSection && !introEnded) continue;
+
+
+    // Intercept FRICTION ANALYSIS (or similar friction section) to inject Metrics BEFORE it
+    if (/##\s+FRICTION\s+ANALYSIS/i.test(line) || /FRICTION\s+ANALYSIS/i.test(line)) {
+      flushTextBuffer();
+      if (hasMetrics && !metricsGaugeRendered) {
+        doc.moveDown(0.5);
+        doc.x = doc.page.margins.left;
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(14)
+          .text("METRICS GAUGE (Current Snapshot)", {
+            width: availableWidth,
+            lineGap: 2,
+          });
+        doc.moveDown(0.3);
+
+        console.log(
+          "[diagnosticPdf] Rendering METRICS GAUGE (at Friction Analysis) with metrics:",
+          metrics
+        );
+
+        // Render all metrics
+        renderMetricLine(doc, "QGC Activation:", metrics.qgcActivation, true);
+        renderMetricLine(doc, "Consciousness Level:", metrics.consciousnessLevel, false);
+        renderMetricLine(doc, "Gravity (Load):", metrics.gravity, true);
+        renderMetricLine(doc, "Signal Coherence:", metrics.signalCoherence, true);
+        renderMetricLine(doc, "Signal Output:", metrics.signalOutput, true);
+
+        metricsGaugeRendered = true;
+        doc.moveDown(0.3);
       }
-      // If we're still within the skip range, continue
-      continue;
-    }
-    // Reset skip flag once we've passed it
-    if (skipLinesUntil > 0 && i >= skipLinesUntil) {
-      skipLinesUntil = -1;
+
+      if (!metricsInterpretationRendered && metricsGaugeRendered) {
+        doc.moveDown(0.5);
+        doc.x = doc.page.margins.left;
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(12)
+          .text("METRICS INTERPRETATION TABLE", {
+            width: availableWidth,
+            lineGap: 2,
+          });
+        doc.moveDown(0.3);
+
+        // Try to find custom table data in the future lines of the report
+        let tableData = null;
+        const searchRegex = /METRICS\s+INTERPRETATION/i;
+        const tableHeaderIdx = lines.findIndex((l, idx) => idx > i && searchRegex.test(l));
+
+        if (tableHeaderIdx !== -1) {
+          // Found the header later in the doc, let's look for the table characters
+          let k = tableHeaderIdx + 1;
+          while (k < lines.length && !lines[k].trim()) k++;
+
+          if (k < lines.length && (lines[k].includes("|") || /[-]{3,}/.test(lines[k]))) {
+            // Supports Both Pipe tables and Dash-separated tables
+            // TODO: Advanced parsing if dash separated.
+            // For now, reuse pipe logic if pipe exists.
+            if (lines[k].includes("|")) {
+              const extractedLines = [];
+              while (k < lines.length && lines[k].includes("|")) {
+                extractedLines.push(lines[k]);
+                k++;
+              }
+              if (extractedLines.length > 0) {
+                tableData = extractedLines.map(row => row.split("|").map(c => c.trim()));
+              }
+            }
+          }
+        }
+
+        if (tableData && tableData.length > 0) {
+          const numCols = tableData[0].length;
+          const colWidths = Array(numCols).fill(availableWidth / numCols);
+          if (numCols === 4) {
+            colWidths[0] = availableWidth * 0.15;
+            colWidths[1] = availableWidth * 0.3;
+            colWidths[2] = availableWidth * 0.45;
+            colWidths[3] = availableWidth * 0.1;
+          }
+          renderTableData(doc, tableData, colWidths);
+        } else {
+          drawMetricsInterpretationTable(doc);
+        }
+        metricsInterpretationRendered = true;
+      }
     }
 
     // Check if we've found the METRICS GAUGE section
     if (/##\s+METRICS\s+GAUGE/i.test(line) || /METRICS\s+GAUGE/i.test(line)) {
+      flushTextBuffer();
       inMetricsGaugeSection = true;
+
+      // If we already rendered it (e.g. before Friction Analysis), just skip this entire section
+      if (metricsGaugeRendered) {
+        continue;
+      }
+
       doc.moveDown(0.5);
+      doc.x = doc.page.margins.left;
       doc
         .font("Helvetica-Bold")
         .fontSize(14)
@@ -630,128 +878,21 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
         });
       doc.moveDown(0.3);
 
-      // Helper to draw a visual gauge bar using rectangles (more reliable than Unicode)
-      const drawGaugeBar = (doc, startX, startY, value, totalBlocks = 12) => {
-        const v = Math.max(0, Math.min(100, Number(value || 0)));
-        const filled = Math.round((v / 100) * totalBlocks);
-        const blockWidth = 8; // Width of each block in points
-        const blockHeight = 10; // Height of each block in points
-        const blockGap = 1; // Gap between blocks
-
-        // Save current fill color
-        const savedFillColor = doc._fillColor;
-
-        let currentX = startX;
-
-        // Draw filled blocks (black)
-        for (let i = 0; i < filled; i++) {
-          doc
-            .rect(currentX, startY, blockWidth, blockHeight)
-            .fillColor("#000000")
-            .fill();
-          currentX += blockWidth + blockGap;
-        }
-
-        // Draw empty blocks (white with gray border)
-        for (let i = filled; i < totalBlocks; i++) {
-          doc
-            .rect(currentX, startY, blockWidth, blockHeight)
-            .fillColor("#FFFFFF")
-            .strokeColor("#CCCCCC")
-            .lineWidth(0.5)
-            .fillAndStroke();
-          currentX += blockWidth + blockGap;
-        }
-
-        // Restore fill color for text
-        doc.fillColor(savedFillColor || "#111111");
-
-        return currentX; // Return the end X position
-      };
-
-      // Helper to render a single line metric with proper spacing
-      const renderMetricLine = (label, value, isPercentage = true) => {
-        // Check if value is actually defined (not undefined, null, or NaN)
-        const hasValue = value !== undefined && value !== null && !isNaN(value);
-
-        // Set font for label
-        doc.font("Helvetica").fontSize(11);
-
-        // Calculate positions - everything on the same line
-        const labelStartX = doc.page.margins.left;
-        const currentY = doc.y;
-        const labelWidth = 160; // Fixed width for label column
-        const gaugeStartX = labelStartX + labelWidth; // Start gauge right after label
-        const blockHeight = 10; // Height of gauge blocks
-        // Align gauge bar vertically with text baseline
-        const textBaselineOffset = 8; // Approximate offset for text baseline
-        const gaugeStartY = currentY + textBaselineOffset - blockHeight / 2;
-        const totalBlockWidth = 12 * 8 + 11 * 1; // 12 blocks * 8pt + 11 gaps * 1pt = 107pt
-        const valueStartX = gaugeStartX + totalBlockWidth + 8; // 8pt gap after gauge
-
-        // Draw label on the same line - use absolute positioning to prevent wrapping
-        const labelText = label.replace(/:/g, ":"); // Ensure colon is included
-        doc.text(labelText, labelStartX, currentY, {
-          width: labelWidth,
-          lineGap: 0,
-        });
-
-        if (!hasValue) {
-          // Draw empty gauge
-          drawGaugeBar(doc, gaugeStartX, gaugeStartY, 0);
-          doc.text("Unknown", valueStartX, currentY, {
-            width: 80,
-            lineGap: 0,
-          });
-          // Minimal spacing between metrics
-          doc.moveDown(0.2);
-          return;
-        }
-
-        const displayValue = Number(value);
-        // For gauge visualization: convert to percentage
-        // For Consciousness Level (0-5), convert to percentage for visual bar
-        const percentageForGauge = isPercentage
-          ? displayValue
-          : (displayValue / 5) * 100;
-        // For display text: show percentage for percentage metrics, raw value for Consciousness Level
-        const valueText = isPercentage
-          ? `${Math.round(displayValue)}%`
-          : `${displayValue}`;
-
-        // Draw gauge bar
-        drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);
-
-        // Draw value text (percentage) - on the same line
-        doc.font("Helvetica").fontSize(11).fillColor("#111111");
-        doc.text(valueText, valueStartX, currentY, {
-          width: 80, // Fixed width for percentage text area
-          align: "left",
-          lineGap: 0,
-        });
-
-        // Move to next line for next metric
-        doc.moveDown(0.2);
-      };
-
       console.log(
         "[diagnosticPdf] Rendering METRICS GAUGE with metrics:",
         metrics
       );
 
-      // Render all metrics with minimal spacing (spacing is handled inside renderMetricLine)
-      renderMetricLine("QGC Activation:", metrics.qgcActivation, true);
-      renderMetricLine(
-        "Consciousness Level:",
-        metrics.consciousnessLevel,
-        false
-      );
-      renderMetricLine("Gravity (Load):", metrics.gravity, true);
-      renderMetricLine("Signal Coherence:", metrics.signalCoherence, true);
-      renderMetricLine("Signal Output:", metrics.signalOutput, true);
+      // Render all metrics using global helpers
+      renderMetricLine(doc, "QGC Activation:", metrics.qgcActivation, true);
+      renderMetricLine(doc, "Consciousness Level:", metrics.consciousnessLevel, false);
+      renderMetricLine(doc, "Gravity (Load):", metrics.gravity, true);
+      renderMetricLine(doc, "Signal Coherence:", metrics.signalCoherence, true);
+      renderMetricLine(doc, "Signal Output:", metrics.signalOutput, true);
 
       // Small spacing after the metrics section
       doc.moveDown(0.3);
+      metricsGaugeRendered = true;
 
       continue;
     }
@@ -790,8 +931,22 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
       /METRICS\s+INTERPRETATION\s+TABLE/i.test(line) ||
       /METRICS INTERPRETATION/i.test(line)
     ) {
+      flushTextBuffer();
+      if (metricsInterpretationRendered) {
+        // If we rendered it already (generic or custom), AND we can't parse a custom table here,
+        // we might want to skip. BUT if parsing failed earlier, maybe we should let the text show?
+
+        // Strategy: If we rendered the GENERIC table (meaning no custom data was found earlier),
+        // we should try to see if THIS section has custom data we missed (e.g. dash table).
+        // For now, let's assume if 'metricsInterpretationRendered' is true, we want to skip.
+        // HOWEVER, if the user sees "incorrect table", maybe we should NOT skip if we are just falling back?
+        skipUntilNextSection = true;
+        continue;
+      }
+
       foundMetricsInterpretation = true;
       doc.moveDown(0.5);
+      doc.x = doc.page.margins.left;
       doc
         .font("Helvetica-Bold")
         .fontSize(12)
@@ -807,211 +962,210 @@ const renderStyledReport = (doc, text, metrics = {}, ucRecommendations = null) =
       // Skip empty lines after header
       while (j < lines.length && !lines[j].trim()) j++;
 
-      if (j < lines.length && lines[j].includes("|")) {
-        while (j < lines.length && lines[j].includes("|")) {
-          tableLines.push(lines[j]);
-          j++;
-        }
-
-        if (tableLines.length > 0) {
-          const tableData = tableLines.map((row) =>
-            row.split("|").map((c) => c.trim())
-          );
-          if (tableData.length > 0) {
-            const numCols = tableData[0].length;
-            const colWidths = Array(numCols).fill(availableWidth / numCols);
-            // Adjust col widths for specific 4-col interpretation table
-            if (numCols === 4) {
-              colWidths[0] = availableWidth * 0.15; // Metric
-              colWidths[1] = availableWidth * 0.3; // Evidence
-              colWidths[2] = availableWidth * 0.45; // Interpretation
-              colWidths[3] = availableWidth * 0.1; // Result
-            }
-            renderTableData(doc, tableData, colWidths);
-            i = j - 1; // Advance pointer
-            skipUntilNextSection = false; // We handled it
-            foundMetricsInterpretation = false;
-            continue;
+      // Parsing Check
+      if (j < lines.length) {
+        if (lines[j].includes("|")) {
+          // Pipe table logic
+          while (j < lines.length && lines[j].includes("|")) {
+            tableLines.push(lines[j]);
+            j++;
           }
+        } else if (lines[j].includes("---") && lines[j].length > 10) {
+          // Dash table logic (e.g. Yashal's report)
+          // Peek back for headers if they were on separate lines
+          let headers = [];
+          let headIdx = j - 1;
+          while (headIdx >= i + 1) {
+            if (lines[headIdx].trim()) headers.unshift(lines[headIdx].trim());
+            headIdx--;
+          }
+          if (headers.length > 0) tableLines.push(headers.join(" | "));
+
+          // Now collect rows
+          let k = j;
+          while (k < lines.length) {
+            let curLine = lines[k].trim();
+            if (!curLine) { k++; continue; }
+            if (curLine.includes("---") && curLine.length > 10) { k++; continue; }
+
+            // If it looks like a new section, stop
+            if (isAllCapsHeader(curLine) || curLine.startsWith("##") || curLine.startsWith("SECTION")) break;
+
+            // Dash tables are often messy. Let's try to group lines into rows.
+            // A row typically starts with a metric name.
+            if (/(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(curLine)) {
+              // Extract metric, value, and the rest as interpretation
+              const match = curLine.match(/(.*?)\s+(\d+(?:\.\d+)?%?)\s+(.*)/i);
+              if (match) {
+                tableLines.push(`${match[1]} | ${match[2]} | ${match[3]}`);
+              } else {
+                // Try to peek ahead for interpretation if it's on next line
+                let row = curLine;
+                let nextK = k + 1;
+                while (nextK < lines.length && lines[nextK].trim() && !/(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(lines[nextK])) {
+                  row += " " + lines[nextK].trim();
+                  nextK++;
+                }
+                // Attempt to split row into 3 parts manually or just use as is
+                tableLines.push(row);
+                k = nextK - 1;
+              }
+            }
+            k++;
+          }
+          j = k;
         }
       }
 
-      // Fallback
-      drawMetricsInterpretationTable(doc);
-      skipUntilNextSection = true;
+      if (tableLines.length > 0) {
+        const tableData = tableLines.map((row) =>
+          row.split("|").map((c) => c.trim())
+        );
+        if (tableData.length > 0) {
+          // ... (render logic)
+          const numCols = tableData[0].length;
+          const colWidths = Array(numCols).fill(availableWidth / numCols);
+          if (numCols === 4) {
+            colWidths[0] = availableWidth * 0.15; // Metric
+            colWidths[1] = availableWidth * 0.3; // Evidence
+            colWidths[2] = availableWidth * 0.45; // Interpretation
+            colWidths[3] = availableWidth * 0.1; // Result
+          }
+          renderTableData(doc, tableData, colWidths);
+          i = j - 1; // Advance pointer
+          skipUntilNextSection = false; // We handled it
+          foundMetricsInterpretation = false;
+          metricsInterpretationRendered = true;
+          continue;
+        }
+      }
+
+      // Fallback: If no pipe table found, DO NOT RENDER GENERIC TABLE if we have content.
+      // Just render the raw content.
+      // We do this by NOT setting skipUntilNextSection.
+      console.log("[diagnosticPdf] No pipe table found for Metrics Interpretation. Falling back to rendering raw text.");
+      metricsInterpretationRendered = true;
+      skipUntilNextSection = false; // Render raw lines!
       continue;
     }
 
-    // Skip lines until we hit the next major section (empty line + header, divider, or section marker)
-    if (skipUntilNextSection) {
-      // Check if we've hit a new section (empty line followed by header, or divider, or section marker)
-      if (
-        (!line.trim() &&
-          i + 1 < lines.length &&
-          (isAllCapsHeader(lines[i + 1]?.trim()) ||
-            /^SECTION\s+\d+/i.test(lines[i + 1]?.trim()) ||
-            /^PHASE\s+\d+/i.test(lines[i + 1]?.trim()) ||
-            lines[i + 1]?.trim().startsWith("##") ||
-            lines[i + 1]?.trim().startsWith("---") ||
-            lines[i + 1]?.trim() ===
-            "----------------------------------------" ||
-            lines[i + 1]?.trim() ===
-            "────────────────────────────────────────")) ||
-        line === "----------------------------------------" ||
-        line === "────────────────────────────────────────" ||
-        /^SECTION\s+\d+/i.test(line) ||
-        /^PHASE\s+\d+/i.test(line) ||
-        /^##\s+/.test(line) ||
-        (isAllCapsHeader(line) && line !== "METRICS INTERPRETATION TABLE")
-      ) {
-        skipUntilNextSection = false;
-        // Reset document position to left margin before processing next section
-        doc.x = doc.page.margins.left;
-        // Continue processing this line
-      } else {
-        // Skip this line (it's part of the table text we're replacing)
+    // Headers (##, ###) - Place generic header check AFTER specific section handlers
+    if (/^#{2,6}\s+/.test(line)) {
+      flushTextBuffer();
+      const level = (line.match(/^#+/) || [""])[0].length;
+      const text = line.replace(/^#+\s*/, "").trim();
+      const headerSize = level === 2 ? 16 : level === 3 ? 14 : 12;
+
+      doc.moveDown(1.5); // More space before headers
+      doc.font("Helvetica-Bold").fontSize(headerSize).text(cleanText(text), {
+        width: availableWidth,
+        lineGap: 4,
+      });
+      doc.font("Helvetica").fontSize(11);
+      doc.moveDown(0.5);
+      continue;
+    }
+
+    // Bullets
+    if (/^[\-•\*]\s+/.test(line)) {
+      flushTextBuffer();
+      // Check if this is a metric bullet line (should be skipped if in metrics section)
+      const isMetricBullet =
+        /(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(
+          line,
+        );
+
+      if (isMetricBullet && inMetricsGaugeSection) {
         continue;
       }
-    }
 
-    // Always ensure x position is at left margin before processing any line
-    doc.x = doc.page.margins.left;
-
-    // Detect metadata lines like "Client: Yashal"
-    if (
-      /^(Client|Report Type|Version|Date|Status|Prepared by|Status):/i.test(
-        line
-      )
-    ) {
-      const parts = line.split(":");
-      const label = parts[0] + ":";
-      const value = parts.slice(1).join(":").trim();
-      doc.font("Helvetica-Bold").fontSize(11).text(label, { continued: true });
-      doc.font("Helvetica").text(" " + value, { width: availableWidth });
+      const bulletContent = line.replace(/^[\-•\*]\s+/, "").trim();
+      doc.moveDown(0.2);
+      renderTextWithBold(doc, `•  ${cleanText(bulletContent)}`, {
+        width: availableWidth,
+        indent: 20,
+        lineGap: 4,
+      });
       continue;
     }
 
-    if (!line.trim()) {
-      doc.moveDown(0.8);
+    // Blockquotes (> text)
+    if (line.trim().startsWith(">")) {
+      flushTextBuffer();
+      const quoteContent = line.trim().substring(1).trim();
+
+      doc.moveDown(0.5);
+      const currentX = doc.x;
+      const currentY = doc.y;
+
+      // Draw left border line
+      doc
+        .moveTo(doc.page.margins.left + 5, currentY)
+        .lineTo(doc.page.margins.left + 5, currentY + doc.heightOfString(cleanText(quoteContent), { width: availableWidth - 25 }) + 5)
+        .lineWidth(2)
+        .strokeColor("#cccccc")
+        .stroke();
+
+      doc.fillColor("#555555");
+      renderTextWithBold(doc, cleanText(quoteContent), {
+        width: availableWidth - 25,
+        indent: 15,
+        lineGap: 4,
+        oblique: true
+      });
+
+      doc.fillColor("#111111");
+      doc.moveDown(0.5);
       continue;
     }
 
-    // Markdown horizontal rules (---)
-    if (/^---+$/.test(line)) {
-      doc.moveDown(0.3);
-      continue;
-    }
-
-    // Handle dividers (both proper and corrupted)
-    if (
-      line === "----------------------------------------" ||
-      line === "────────────────────────────────────────" ||
-      /^%{10,}/.test(line.trim()) // Corrupted divider (many % characters, possibly with numbers)
-    ) {
+    // Dividers
+    if (/^[\-─_]{3,}/.test(line)) {
+      flushTextBuffer();
       drawDivider(doc);
       continue;
     }
 
-    // H1: "* ..."
-    if (line.startsWith("* ")) {
-      doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(16).text(line.slice(2), {
+    // Default Text Render - Buffer for paragraph joining
+    if (line.trim()) {
+      // If it looks like a "Metadata" line but we've already rendered metadata, 
+      // or it's just plain text, buffer it.
+      textBuffer.push(line.trim());
+    } else {
+      flushTextBuffer();
+    }
+  }
+
+  // Final flush
+  flushTextBuffer();
+
+  // After processing all lines, check if metrics sections were rendered
+  // If we reached here and haven't rendered metrics yet but have them,
+  // it might be because the text report didn't have the header 'METRICS GAUGE'.
+  // In that case, we append them at the end.
+  if (hasMetrics && !metricsGaugeRendered && isDiscovery) {
+    console.log(
+      "[diagnosticPdf] Force-rendering METRICS GAUGE for discovery report with metrics (End of doc):",
+      metrics,
+    );
+
+    // Use renderVisualGauge for consistent visual style
+    renderVisualGauge(doc, metrics);
+    metricsGaugeRendered = true;
+
+    // Add METRICS INTERPRETATION TABLE right after gauge
+    doc.moveDown(0.8);
+    doc.x = doc.page.margins.left;
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .text("METRICS INTERPRETATION TABLE", {
         width: availableWidth,
         lineGap: 2,
       });
-      doc.font("Helvetica").fontSize(11);
-      doc.moveDown(0.4);
-      continue;
-    }
-
-    // Markdown headers (##, ###, etc.)
-    if (/^#{1,6}\s+/.test(line)) {
-      const headerText = line.replace(/^#{1,6}\s+/, "").trim();
-      const headerLevel = (line.match(/^#+/)?.[0] || "").length;
-      const fontSize =
-        headerLevel === 1
-          ? 16
-          : headerLevel === 2
-            ? 14
-            : headerLevel === 3
-              ? 13
-              : 12;
-      doc.moveDown(0.3);
-      doc.font("Helvetica-Bold").fontSize(fontSize).text(headerText, {
-        width: availableWidth,
-        lineGap: 2,
-      });
-      doc.font("Helvetica").fontSize(11);
-      doc.moveDown(0.2);
-      continue;
-    }
-
-    // Section headers
-    if (/^SECTION\s+\d+/i.test(line)) {
-      doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(13).text(line, {
-        width: availableWidth,
-        lineGap: 2,
-      });
-      doc.font("Helvetica").fontSize(11);
-      doc.moveDown(0.2);
-      continue;
-    }
-
-    // Phase headers
-    if (/^PHASE\s+\d+/i.test(line)) {
-      doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(12).text(line, {
-        width: availableWidth,
-        lineGap: 2,
-      });
-      doc.font("Helvetica").fontSize(11);
-      doc.moveDown(0.2);
-      continue;
-    }
-
-    // Block headers
-    if (line === "EVIDENCE:") {
-      doc.font("Helvetica-Bold").fontSize(11).text(line, {
-        width: availableWidth,
-        lineGap: 2,
-      });
-      doc.font("Helvetica").fontSize(11);
-      continue;
-    }
-
-    if (isAllCapsHeader(line)) {
-      // Reset x position to left margin for headers
-      doc.x = doc.page.margins.left;
-      doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(12).text(line, {
-        width: availableWidth,
-        lineGap: 2,
-      });
-      doc.font("Helvetica").fontSize(11);
-      doc.moveDown(0.1);
-      continue;
-    }
-
-    // Bullets: "- ...", "• ...", or "● ..."
-    if (/^[\-\•\●]\s+/.test(line)) {
-      const bulletText = line.replace(/^[\-\•\●]\s+/, "").trim();
-      // Clean the text and render with bold support
-      const cleanBulletText = cleanText(bulletText);
-      renderTextWithBold(doc, `• ${cleanBulletText}`, {
-        width: availableWidth,
-        indent: 18,
-        lineGap: 2,
-      });
-      continue;
-    }
-
-    // Body - clean text first, then render with inline bold formatting support
-    const cleanedLine = cleanText(line);
-    renderTextWithBold(doc, cleanedLine, {
-      width: availableWidth,
-      lineGap: 2,
-    });
+    doc.moveDown(0.3);
+    drawMetricsInterpretationTable(doc);
+    metricsInterpretationRendered = true;
   }
 };
 
@@ -1112,7 +1266,7 @@ const fetchCourseWeekTitles = async (courseId = "2148785745") => {
 const generateUnlimitedCreatedRecommendations = async (
   metrics = {},
   aiReport = {},
-  weekTitles = {}
+  weekTitles = {},
 ) => {
   const gravity = metrics.gravity || 0;
   const signalOutput = metrics.signalOutput || 0;
@@ -1180,7 +1334,7 @@ const generateUnlimitedCreatedRecommendations = async (
       hasLowSignalOutput ||
       (reportText &&
         /visibility|invisible|witch|power.*safety|safety.*power/i.test(
-          reportText
+          reportText,
         ))
     ) {
       recommendations.phase1.push({ week: "7B", title: getWeekTitle("7B") });
@@ -1377,13 +1531,13 @@ const generateDiagnosticPdf = (diagnostic) =>
         "..",
         "..",
         "reports",
-        "diagnostics"
+        "diagnostics",
       );
       ensureDir(outputDir);
 
       const filePath = path.join(
         outputDir,
-        `diagnostic-${diagnostic.id || Date.now()}.pdf`
+        `diagnostic-${diagnostic.id || Date.now()}.pdf`,
       );
 
       const doc = new PDFDocument({ margin: 50 });
@@ -1393,6 +1547,56 @@ const generateDiagnosticPdf = (diagnostic) =>
       stream.on("error", reject);
 
       doc.pipe(stream);
+
+      // --- ADDED LOGO ---
+      // --- ADDED LOGO ---
+      // Logic: try environment URL/path first -> fetch if URL -> use if path -> fallback to local asset
+      try {
+        const logoEnv = process.env.LOGO_URL;
+        // Fallback local path
+        const localLogoPath = path.join(__dirname, "..", "assets", "logo.png");
+        let logoBuffer = null;
+
+        if (logoEnv) {
+          if (logoEnv.startsWith("http://") || logoEnv.startsWith("https://")) {
+            // Fetch URL
+            try {
+              const response = await axios.get(logoEnv, {
+                responseType: "arraybuffer",
+              });
+              logoBuffer = Buffer.from(response.data, "binary");
+            } catch (err) {
+              console.log(
+                "[diagnosticPdf] Failed to fetch logo from URL:",
+                err.message,
+              );
+            }
+          } else {
+            // Treat as local file path
+            if (fs.existsSync(logoEnv)) {
+              logoBuffer = logoEnv;
+            }
+          }
+        }
+
+        // Fallback: If no buffer yet (either no env, or fetch failed), try default local asset
+        if (!logoBuffer && fs.existsSync(localLogoPath)) {
+          logoBuffer = localLogoPath;
+        }
+
+        // Draw the logo if we have a buffer/path
+        if (logoBuffer) {
+          doc.image(logoBuffer, doc.page.width / 2 - 25, 30, { width: 50 });
+          doc.moveDown(3);
+        } else {
+          // No logo available at all
+          doc.moveDown(2);
+        }
+      } catch (err) {
+        console.error("Error loading logo:", err);
+        doc.moveDown(2);
+      }
+      // ------------------
 
       const data = diagnostic.data || {};
       const profile = data.profile || {};
@@ -1444,7 +1648,7 @@ const generateDiagnosticPdf = (diagnostic) =>
           /^Please hold on[.\s\S]*?(?=\n---|\n##|EUPHORIAM|✨|────────────────)/i,
           /^Generating your report[.\s\S]*?(?=\n---|\n##|EUPHORIAM|✨|────────────────)/i,
         ];
-        
+
         for (const pattern of prefixPatterns) {
           const match = cleanedReport.match(pattern);
           if (match) {
@@ -1454,9 +1658,9 @@ const generateDiagnosticPdf = (diagnostic) =>
             break; // Only remove one prefix
           }
         }
-        
+
         // Also check if report starts with "---" after some text - extract everything from "---" onwards
-        const dividerIndex = cleanedReport.indexOf('\n---');
+        const dividerIndex = cleanedReport.indexOf("\n---");
         if (dividerIndex > 0 && dividerIndex < 200) {
           // There's text before the divider, likely a prefix message
           cleanedReport = cleanedReport.substring(dividerIndex + 1).trimStart();
@@ -1466,10 +1670,10 @@ const generateDiagnosticPdf = (diagnostic) =>
         // that contain the intro within the first chunk.
         const trimmed = cleanedReport.trimStart();
         const startsWithDivider = trimmed.startsWith(
-          "----------------------------------------"
+          "----------------------------------------",
         );
         const startsWithIntro = trimmed.startsWith(
-          "✨ BEFORE YOU READ THIS DIAGNOSTIC"
+          "✨ BEFORE YOU READ THIS DIAGNOSTIC",
         );
         const containsIntroEarly =
           !startsWithIntro &&
@@ -1478,12 +1682,12 @@ const generateDiagnosticPdf = (diagnostic) =>
           .toUpperCase()
           .startsWith("EUPHORIAM DIAGNOSTIC REPORT");
         const startsWithFullTitle = /^EUPHORIAM.*DIAGNOSTIC REPORT/i.test(
-          trimmed
+          trimmed,
         );
         // Check for markdown format (--- followed by ## header, or just ## header)
         const hasMarkdownHeader =
           /^---+[\s\n]*##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(
-            trimmed
+            trimmed,
           ) ||
           /^##\s*EUPHORIAM.*STRUCTURAL UPDATE REPORT/i.test(trimmed) ||
           /^EUPHORIAM.*REPORT/i.test(trimmed);
@@ -1504,29 +1708,50 @@ const generateDiagnosticPdf = (diagnostic) =>
           const head = cleanedReport.slice(0, 300);
 
           // Check for typical AI refusal patterns
-          const isRefusal = /i'm sorry|can't assist|cannot assist|policy|guidelines|unsafe/i.test(head);
+          const isRefusal =
+            /i'm sorry|can't assist|cannot assist|policy|guidelines|unsafe/i.test(
+              head,
+            );
 
           const err = new Error(
             isRefusal
               ? `AI refused to generate the report. Response: "${head.trim()}"`
-              : `aiReport does not start with a recognized header. First 300 chars:\n${head}`
+              : `aiReport does not start with a recognized header. First 300 chars:\n${head}`,
           );
-          err.code = isRefusal ? "AI_REPORT_REFUSAL" : "AI_REPORT_TEMPLATE_MISMATCH";
+          err.code = isRefusal
+            ? "AI_REPORT_REFUSAL"
+            : "AI_REPORT_TEMPLATE_MISMATCH";
           throw err;
         }
 
         // Generate recommendations BEFORE rendering report so they can be inserted after summary
         const weekTitles = await fetchCourseWeekTitles("2148785745").catch(
-          () => ({})
+          () => ({}),
         );
         const ucRecommendations = await generateUnlimitedCreatedRecommendations(
           metrics,
           cleanedReport,
-          weekTitles
+          weekTitles,
         );
 
+        // Detect if this is a discovery report
+        const isDiscoveryReport =
+          diagnostic.title?.toLowerCase().includes("discovery") ||
+          diagnostic.title?.toLowerCase().includes("chat report") ||
+          cleanedReport.toLowerCase().includes("structural update report") ||
+          cleanedReport.toLowerCase().includes("discovery report");
+
+
+        // Always ensure x position is at left margin before processing any line
+        doc.x = doc.page.margins.left;
         // Render report with recommendations passed in (will be inserted after summary)
-        renderStyledReport(doc, cleanedReport, metrics, ucRecommendations);
+        renderStyledReport(
+          doc,
+          cleanedReport,
+          metrics,
+          ucRecommendations,
+          isDiscoveryReport,
+        );
 
         // Optional metadata on a new page (after the report)
         doc.addPage();
@@ -1551,8 +1776,9 @@ const generateDiagnosticPdf = (diagnostic) =>
           {
             width: metadataWidth,
             lineGap: 2,
-          }
+          },
         );
+
         // doc.text(`User ID: ${diagnostic.userId || "N/A"}`, {
         //   width: metadataWidth,
         //   lineGap: 2,
@@ -1628,7 +1854,7 @@ const generateDiagnosticPdf = (diagnostic) =>
             aiReport.productGuidance
               ? `Guidance: ${aiReport.productGuidance}`
               : null,
-          ].filter(Boolean)
+          ].filter(Boolean),
         );
 
         addList(doc, "Strengths", aiReport.strengths);
@@ -1647,7 +1873,7 @@ const generateDiagnosticPdf = (diagnostic) =>
             facts.memberSince ? `Member since: ${facts.memberSince}` : null,
             `Sign-ins: ${facts.signInCount ?? profile.signInCount ?? 0}`,
             `Net revenue: ${facts.netRevenue ?? profile.netRevenue ?? 0}`,
-          ].filter(Boolean)
+          ].filter(Boolean),
         );
 
         const products = facts.products || data.products || [];
@@ -1658,7 +1884,7 @@ const generateDiagnosticPdf = (diagnostic) =>
             const title = p.title || p.id || "Product";
             const type = p.type ? ` (${p.type})` : "";
             return `${title}${type}`;
-          })
+          }),
         );
 
         const offers = facts.offers || data.offers || [];
@@ -1670,7 +1896,7 @@ const generateDiagnosticPdf = (diagnostic) =>
             const price =
               o.price !== undefined && o.price !== null ? ` — ${o.price}` : "";
             return `${title}${price}`;
-          })
+          }),
         );
 
         const courses = facts.courses || metrics.assessments || {};
@@ -1709,7 +1935,7 @@ const generateDiagnosticPdf = (diagnostic) =>
           addSection(
             doc,
             "Evidence",
-            Array.isArray(s.evidence) ? s.evidence.map((e) => `- ${e}`) : []
+            Array.isArray(s.evidence) ? s.evidence.map((e) => `- ${e}`) : [],
           );
         }
 
@@ -1722,12 +1948,12 @@ const generateDiagnosticPdf = (diagnostic) =>
         // Add Unlimited Created week-wise recommendations
         // Fetch course videos to get actual titles
         const weekTitles = await fetchCourseWeekTitles("2148785745").catch(
-          () => ({})
+          () => ({}),
         );
         const ucRecommendations = await generateUnlimitedCreatedRecommendations(
           metrics,
           aiReport,
-          weekTitles
+          weekTitles,
         );
         renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
 
@@ -1735,7 +1961,7 @@ const generateDiagnosticPdf = (diagnostic) =>
         addList(
           doc,
           finalSummary.title || "Final Summary",
-          finalSummary.bullets || []
+          finalSummary.bullets || [],
         );
       }
 
@@ -1746,7 +1972,7 @@ const generateDiagnosticPdf = (diagnostic) =>
           const title = p.title || p.id || "Product";
           const type = p.type ? ` (${p.type})` : "";
           return `${title}${type}`;
-        })
+        }),
       );
 
       // Back-compat only: older data shape (not used in v2)
@@ -1758,7 +1984,7 @@ const generateDiagnosticPdf = (diagnostic) =>
           assessmentProgress.map((a) => {
             const status = a.status || "pending";
             return `Assessment ${a.assessmentId}: ${status}`;
-          })
+          }),
         );
       }
 

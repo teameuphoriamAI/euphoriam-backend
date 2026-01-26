@@ -590,8 +590,8 @@ const buildFallbackDiscoveryReport = ({
 
   const phase1 =
     safeMetrics.gravity >= 70 ||
-    safeMetrics.signalOutput < 30 ||
-    safeMetrics.signalCoherence < 70
+      safeMetrics.signalOutput < 30 ||
+      safeMetrics.signalCoherence < 70
       ? [4, 6, 8]
       : [4];
   const phase2 = safeMetrics.consciousnessLevel < 2.5 ? [3] : [3];
@@ -1060,12 +1060,12 @@ const handleDiscoveryMode = async ({
 
       const qs =
         discoveryReadiness?.nextQuestions &&
-        discoveryReadiness.nextQuestions.length > 0
+          discoveryReadiness.nextQuestions.length > 0
           ? discoveryReadiness.nextQuestions
           : [
-              "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
-              "What’s the main loop/friction you keep noticing this week?",
-            ];
+            "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
+            "What’s the main loop/friction you keep noticing this week?",
+          ];
 
       const userText = (lastUser?.content || "").toLowerCase();
       const isAskingHowManyQuestions =
@@ -1073,16 +1073,14 @@ const handleDiscoveryMode = async ({
 
       nextMessage = {
         role: "assistant",
-        content: `${
-          isAskingHowManyQuestions
-            ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
-            : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${
-                qs.length === 1 ? "" : "s"
-              } first:\n\n`
-        }${qs
-          .slice(0, 2)
-          .map((q, idx) => `${idx + 1}) ${q}`)
-          .join("\n")}`,
+        content: `${isAskingHowManyQuestions
+          ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
+          : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${qs.length === 1 ? "" : "s"
+          } first:\n\n`
+          }${qs
+            .slice(0, 2)
+            .map((q, idx) => `${idx + 1}) ${q}`)
+            .join("\n")}`,
       };
 
       // IMPORTANT:
@@ -1189,72 +1187,70 @@ Evidence: ${discoveryReadiness?.stageEvidence || "N/A (readiness check disabled)
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${
-  previousDiscovery
-    ? `Previous discovery report (reference):
+${previousDiscovery
+        ? `Previous discovery report (reference):
 ${truncateForContext(
-  previousDiscovery.data?.newReport ||
-    previousDiscovery.data?.previousReport ||
-    previousDiscovery.newReportSnippet ||
-    previousDiscovery.data?.newReportSnippet ||
-    "",
-  4000,
-)}`
-    : ""
-}
+          previousDiscovery.data?.newReport ||
+          previousDiscovery.data?.previousReport ||
+          previousDiscovery.newReportSnippet ||
+          previousDiscovery.data?.newReportSnippet ||
+          "",
+          4000,
+        )}`
+        : ""
+      }
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(updatedTranscript, null, 2)}
 
-${
-  (allUserSessions && allUserSessions.length > 0) ||
-  latestUserSession?.transcript
-    ? `All 1:1 Coaching Sessions (use these for additional context):
+${(allUserSessions && allUserSessions.length > 0) ||
+        latestUserSession?.transcript
+        ? `All 1:1 Coaching Sessions (use these for additional context):
 
 ${(() => {
-  const sessionsToUse =
-    allUserSessions && allUserSessions.length > 0
-      ? allUserSessions
-      : latestUserSession
-        ? [latestUserSession]
-        : [];
-  // Limit to most recent 5 sessions to avoid token overflow
-  const sessionsToInclude = sessionsToUse.slice(0, 5);
-  const hasMoreSessions = sessionsToUse.length > 5;
+          const sessionsToUse =
+            allUserSessions && allUserSessions.length > 0
+              ? allUserSessions
+              : latestUserSession
+                ? [latestUserSession]
+                : [];
+          // Limit to most recent 5 sessions to avoid token overflow
+          const sessionsToInclude = sessionsToUse.slice(0, 5);
+          const hasMoreSessions = sessionsToUse.length > 5;
 
-  return (
-    sessionsToInclude
-      .map((session, index) => {
-        const sessionNum =
-          sessionsToUse.length > 1
-            ? `Session ${index + 1} (${sessionsToUse.length} total)`
-            : "Session";
-        const sessionDate = session.sessionDate
-          ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            })
-          : "Date not specified";
+          return (
+            sessionsToInclude
+              .map((session, index) => {
+                const sessionNum =
+                  sessionsToUse.length > 1
+                    ? `Session ${index + 1} (${sessionsToUse.length} total)`
+                    : "Session";
+                const sessionDate = session.sessionDate
+                  ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  })
+                  : "Date not specified";
 
-        // Prioritize summaries - only include full transcript for most recent session
-        const isMostRecent = index === 0;
-        const hasSummary = session.summery && session.summery.trim().length > 0;
+                // Prioritize summaries - only include full transcript for most recent session
+                const isMostRecent = index === 0;
+                const hasSummary = session.summery && session.summery.trim().length > 0;
 
-        if (hasSummary) {
-          if (isMostRecent) {
-            // Most recent: summary + brief transcript preview
-            const transcriptPreview = Array.isArray(session.transcript)
-              ? session.transcript
-                  .slice(0, 10)
-                  .map(
-                    (msg) =>
-                      `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
-                  )
-                  .join("\n")
-              : "";
+                if (hasSummary) {
+                  if (isMostRecent) {
+                    // Most recent: summary + brief transcript preview
+                    const transcriptPreview = Array.isArray(session.transcript)
+                      ? session.transcript
+                        .slice(0, 10)
+                        .map(
+                          (msg) =>
+                            `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
+                        )
+                        .join("\n")
+                      : "";
 
-            return `--- ${sessionNum} ---
+                    return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
@@ -1262,34 +1258,34 @@ ${session.summery}
 
 TRANSCRIPT PREVIEW (first 10 messages):
 ${transcriptPreview || "Full transcript available if needed"}`;
-          } else {
-            // Older sessions: summary only
-            return `--- ${sessionNum} ---
+                  } else {
+                    // Older sessions: summary only
+                    return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
 ${session.summery}`;
-          }
-        } else {
-          // No summary - include truncated transcript
-          const transcriptText = Array.isArray(session.transcript)
-            ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
-              (session.transcript.length > 20 ? "\n...[truncated]" : "")
-            : JSON.stringify(session.transcript, null, 2);
+                  }
+                } else {
+                  // No summary - include truncated transcript
+                  const transcriptText = Array.isArray(session.transcript)
+                    ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
+                    (session.transcript.length > 20 ? "\n...[truncated]" : "")
+                    : JSON.stringify(session.transcript, null, 2);
 
-          return `--- ${sessionNum} ---
+                  return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 TRANSCRIPT (${isMostRecent ? "full" : "truncated"}):
 ${transcriptText}`;
-        }
-      })
-      .join("\n\n") +
-    (hasMoreSessions
-      ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
-      : "")
-  );
-})()}
+                }
+              })
+              .join("\n\n") +
+            (hasMoreSessions
+              ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
+              : "")
+          );
+        })()}
 
 ⚠️ IMPORTANT: Use these 1:1 coaching session${(allUserSessions && allUserSessions.length > 1) || (!allUserSessions && latestUserSession) ? "s" : ""} data to:
 - Understand their current state and what's happening in their life
@@ -1301,8 +1297,8 @@ ${transcriptText}`;
 - ${(allUserSessions && allUserSessions.some((s) => s.summery)) || latestUserSession?.summery ? "The summaries above provide key insights; use the full transcripts for specific details" : ""}
 
 `
-    : ""
-}
+        : ""
+      }
 
 Client Name: ${userName}
 Client ID: N/A
@@ -1334,15 +1330,11 @@ ABSOLUTE REQUIREMENTS:
 
 **METRICS CALCULATION RULE:**
 - Calculate UPDATED metrics based on the NEW conversation transcript above
-- Compare previous metrics (Gravity: ~${
-      diagnosticMetrics.gravity || "N/A"
-    }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${
-      diagnosticMetrics.qgcActivation || "N/A"
-    }%, Signal Coherence: ~${
-      diagnosticMetrics.signalCoherence || "N/A"
-    }%, Signal Output: ~${
-      diagnosticMetrics.signalOutput || "N/A"
-    }%) with evidence from the new conversation
+- Compare previous metrics (Gravity: ~${diagnosticMetrics.gravity || "N/A"
+      }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${diagnosticMetrics.qgcActivation || "N/A"
+      }%, Signal Coherence: ~${diagnosticMetrics.signalCoherence || "N/A"
+      }%, Signal Output: ~${diagnosticMetrics.signalOutput || "N/A"
+      }%) with evidence from the new conversation
 - Calculate what changed based on the new responses
 - Output updated metrics in the METRICS GAUGE section with actual calculated values
 - DO NOT use placeholders - calculate actual values based on evidence from the new conversation
@@ -1429,9 +1421,8 @@ Marker of shift:
 
 ### 7. SIGNAL COHERENCE
 
-**Signal Coherence:** [Current status - use exact calculated value: ${
-      diagnosticMetrics.signalCoherence || "N/A"
-    }%]
+**Signal Coherence:** [Current status - use exact calculated value: ${diagnosticMetrics.signalCoherence || "N/A"
+      }%]
 
 **Coherence Evidence:**
 [Specific examples from conversation transcript showing signal coherence:
@@ -1479,21 +1470,20 @@ That's it.
 
 ## METRICS GAUGE (Current Snapshot)
 
-* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
-      diagnosticMetrics.qgcActivation || "N/A"
-    }%
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${diagnosticMetrics.qgcActivation || "N/A"
+      }%
 * **Consciousness Level:** ${renderGauge(
-      (diagnosticMetrics.consciousnessLevel || 0) * 20,
-    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+        (diagnosticMetrics.consciousnessLevel || 0) * 20,
+      )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
 * **Gravity:** ${renderGauge(
-      diagnosticMetrics.gravity || 0,
-    )}  [Current status with arrow if changed]
+        diagnosticMetrics.gravity || 0,
+      )}  [Current status with arrow if changed]
 * **Signal Coherence:** ${renderGauge(
-      diagnosticMetrics.signalCoherence || 0,
-    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+        diagnosticMetrics.signalCoherence || 0,
+      )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
 * **Signal Output:** ${renderGauge(
-      diagnosticMetrics.signalOutput || 0,
-    )}  [Current status]
+        diagnosticMetrics.signalOutput || 0,
+      )}  [Current status]
 
 ---
 
@@ -1927,9 +1917,9 @@ METRICS_JSON_END`;
         message: `Discovery report generated. PDF are being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together`,
         nextMessage: finalBotMessage
           ? {
-              role: "assistant",
-              content: finalBotMessage,
-            }
+            role: "assistant",
+            content: finalBotMessage,
+          }
           : nextMessage, // Include bot's final completion message + system message
         discoveryReport: discoveryReport || null,
         pdfPath: null, // Will be generated in background
@@ -1938,11 +1928,10 @@ METRICS_JSON_END`;
         status: "completed",
         statusMessage:
           "Report generated. PDF and email processing in background.",
-        userMessage: `Your discovery report has been generated. ${
-          shouldEmail
-            ? "Email will be sent shortly."
-            : "You can access it in your account."
-        }`,
+        userMessage: `Your discovery report has been generated. ${shouldEmail
+          ? "Email will be sent shortly."
+          : "You can access it in your account."
+          }`,
         emailed: false, // Will be updated in background
         // Don't include answeredCount or pendingQuestion in discovery mode - those are for diagnostic mode only
       });
@@ -1976,9 +1965,8 @@ METRICS_JSON_END`;
               const buffer = await fs.promises.readFile(pdfPath);
               const upload = await uploadBufferToSupabase({
                 buffer,
-                objectPath: `discoveries/discovery-${
-                  existingDiagnostic?.id || Date.now()
-                }-${Date.now()}.pdf`,
+                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
+                  }-${Date.now()}.pdf`,
                 contentType: "application/pdf",
               });
 
@@ -2086,9 +2074,8 @@ METRICS_JSON_END`;
       await Diagnostic.create({
         userId: appUser.id || null,
         email,
-        title: `Discovery Chat (Draft) – ${
-          name || email?.split("@")[0] || "User"
-        }`,
+        title: `Discovery Chat (Draft) – ${name || email?.split("@")[0] || "User"
+          }`,
         data: {
           profile: { name, email },
           intakeState: discoveryIntakeState,
@@ -2100,7 +2087,7 @@ METRICS_JSON_END`;
   // Get updated state after saving
   const updatedState = existingDiagnostic
     ? (await Diagnostic.findByPk(existingDiagnostic.id))?.data?.intakeState ||
-      existingState
+    existingState
     : existingState;
 
   // Intercept nextMessage if we've asked 6+ questions and it's asking another question
@@ -2270,55 +2257,53 @@ Where previous reports offered a sentence, this report offers a full analytical 
 **Previous Diagnostic (Baseline - DO NOT COPY STYLE):**
 ${priorReportSnippet || "None"}
 
-${
-  previousDiscovery
-    ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
+${previousDiscovery
+      ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
 ${truncateForContext(
-  previousDiscovery.data?.newReport ||
-    previousDiscovery.data?.previousReport ||
-    previousDiscovery.newReportSnippet ||
-    previousDiscovery.data?.newReportSnippet ||
-    "",
-  4000,
-)}`
-    : ""
-}
+        previousDiscovery.data?.newReport ||
+        previousDiscovery.data?.previousReport ||
+        previousDiscovery.newReportSnippet ||
+        previousDiscovery.data?.newReportSnippet ||
+        "",
+        4000,
+      )}`
+      : ""
+    }
  
-${
-  (allUserSessions && allUserSessions.length > 0) ||
-  latestUserSession?.transcript
-    ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
+${(allUserSessions && allUserSessions.length > 0) ||
+      latestUserSession?.transcript
+      ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
 *Use this data to build your 300-word analysis sections. Analyze the user's specific language, fears, and breakthroughs.*
 
 ${(() => {
-  const sessionsToUse =
-    allUserSessions && allUserSessions.length > 0
-      ? allUserSessions
-      : latestUserSession
-        ? [latestUserSession]
-        : [];
-  return sessionsToUse
-    .map((session, index) => {
-      const sessionNum =
-        sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
-      const sessionDate = session.sessionDate
-        ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-          })
-        : "Unknown Date";
+        const sessionsToUse =
+          allUserSessions && allUserSessions.length > 0
+            ? allUserSessions
+            : latestUserSession
+              ? [latestUserSession]
+              : [];
+        return sessionsToUse
+          .map((session, index) => {
+            const sessionNum =
+              sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
+            const sessionDate = session.sessionDate
+              ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })
+              : "Unknown Date";
 
-      return `--- ${sessionNum} (${sessionDate}) ---
+            return `--- ${sessionNum} (${sessionDate}) ---
 Summary: ${session.summery || "N/A"}
 Transcript Data: ${JSON.stringify(session.transcript)}
 `;
-    })
-    .join("\n\n");
-})()}
+          })
+          .join("\n\n");
+      })()}
 `
-    : ""
-}
+      : ""
+    }
 
 **Current Discovery Chat Transcript (Latest Data):**
 ${JSON.stringify(transcriptForFinal, null, 2)}
@@ -2743,9 +2728,8 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
       try {
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Diagnostics Chat Report – ${
-            name || email?.split("@")[0] || "User"
-          }`,
+          title: `Diagnostics Chat Report – ${name || email?.split("@")[0] || "User"
+            }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
           data: {
             profile: {
@@ -2767,9 +2751,8 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             const buffer = await fs.promises.readFile(pdfPath);
             const upload = await uploadBufferToSupabase({
               buffer,
-              objectPath: `discoveries/discovery-${
-                existingDiagnostic?.id || Date.now()
-              }-${Date.now()}.pdf`,
+              objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
               contentType: "application/pdf",
             });
             pdfUrl = upload.url || null;
@@ -3430,9 +3413,9 @@ const handleDiagnosticMode = async ({
   } = require("../utils/validation");
   const userWantsToGenerateReport = lastUser?.content
     ? await detectUserWantsToEndOrGenerateReport({
-        userMessage: lastUser.content,
-        transcript: transcript,
-      })
+      userMessage: lastUser.content,
+      transcript: transcript,
+    })
     : false;
 
   // CRITICAL: If assistant just said they're ready to generate AND we have 12+ questions answered,
@@ -4076,27 +4059,15 @@ const chatbotDiagnosticFreeform = async (req, res) => {
             intakeState: updatedIntakeState,
           },
         });
+
+        // Update existingState so the rest of the function sees the new mode
+        if (existingState) {
+          Object.assign(existingState, updatedIntakeState);
+        }
       }
-
-      return successResponse(res, "Diagnostic completed", {
-        hasIncompleteChat: false,
-        hasExistingReport: true,
-        mode: "discovery",
-        transcript: [],
-        intakeState: {
-          ...intakeStateInternal,
-          transcript: [],
-          mode: "discovery",
-        },
-        diagnosticMetrics: metricsForResponse,
-        canResume: false,
-        status: "completed",
-        statusMessage:
-          "Your diagnostic report has been completed. You can start a new discovery session.",
-      });
-    }
-
-    if (hasIncompleteChat) {
+      // If we have an existing report, let it fall through to generate the discovery welcome message.
+      // If no report exists yet, we should probably handle that case, but for now we follow the "if completed" logic.
+    } else if (hasIncompleteChat) {
       const isIncompleteDiscovery =
         hasExistingReport && intakeStateInternal.mode === "discovery";
       const mode =
@@ -4195,9 +4166,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-            question: lastAssistant.content,
-            reply: lastUser.content,
-          })
+          question: lastAssistant.content,
+          reply: lastUser.content,
+        })
         : false;
 
     const qStats = trackQuestionNumbers(transcript);
@@ -4470,12 +4441,10 @@ ${formatPercentage(signalOutput)}`
       }
 
       const qText = correction
-        ? `Since this report (${
-            reportDate || "recently"
-          }), have you made any progress on ${correction}?`
-        : `Since this report (${
-            reportDate || "recently"
-          }), what has changed or stayed the same?`;
+        ? `Since this report (${reportDate || "recently"
+        }), have you made any progress on ${correction}?`
+        : `Since this report (${reportDate || "recently"
+        }), what has changed or stayed the same?`;
 
       nextMessage = {
         role: "assistant",
@@ -4486,21 +4455,19 @@ I want to reflect it back to you first — simply and cleanly — before we move
 Your structure at the last check-in was very clear:
 ${metricsSection}
 
-${
-  keySentence
-    ? `This is the key sentence from your map, distilled:
+${keySentence
+            ? `This is the key sentence from your map, distilled:
 > *"${keySentence}"*
 
 `
-    : ""
-}${
-          correction
+            : ""
+          }${correction
             ? `Your **entire correction** was about one thing only:
 **${correction}**
 
 `
             : ""
-        }Before I update anything, I need to check one thing — slowly.
+          }Before I update anything, I need to check one thing — slowly.
 
 **Since this report (${reportDate || "recently"}):**
 
@@ -4608,6 +4575,7 @@ Take your time and share what feels true for you.`,
         introText,
         discoveryType,
         latestUserSession, // Pass latest user session
+        allUserSessions, // Pass all user sessions
       });
     } else {
       return await handleDiagnosticMode({

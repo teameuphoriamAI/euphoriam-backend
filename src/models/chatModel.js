@@ -1,5 +1,6 @@
 const { DataTypes } = require("sequelize");
 const { sequelize } = require("../config/sequelize");
+const { ChatType } = require("../utils/types");
 
 const Chat = sequelize.define(
   "Chat",
@@ -31,7 +32,8 @@ const Chat = sequelize.define(
       defaultValue: false,
     },
     chatType: {
-      type: DataTypes.ENUM("dignostic", "discovery"),
+      type: DataTypes.ENUM(...Object.values(ChatType)),
+      defaultValue: ChatType.DIAGNOSTIC,
     },
     createdAt: {
       type: DataTypes.DATE,
@@ -48,7 +50,7 @@ const Chat = sequelize.define(
     tableName: "chat",
     freezeTableName: true,
     timestamps: true,
-  }
+  },
 );
 
 module.exports = { Chat };

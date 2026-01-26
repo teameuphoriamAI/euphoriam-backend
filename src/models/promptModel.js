@@ -1,6 +1,6 @@
 const { DataTypes } = require("sequelize");
 const { sequelize } = require("../config/sequelize");
-
+const { PromptType } = require("../utils/types");
 const Prompt = sequelize.define(
   "Prompt",
   {
@@ -14,9 +14,8 @@ const Prompt = sequelize.define(
       allowNull: false,
     },
     type: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      comment: "e.g., 'system', 'intake', 'discovery', 'report'",
+      type: DataTypes.ENUM(...Object.values(PromptType)),
+      defaultValue: PromptType.DIAGNOSTIC,
     },
     content: {
       type: DataTypes.TEXT,
@@ -57,7 +56,7 @@ const Prompt = sequelize.define(
     tableName: "prompts",
     freezeTableName: true,
     timestamps: true,
-  }
+  },
 );
 
 const PromptHistory = sequelize.define(
@@ -119,7 +118,7 @@ const PromptHistory = sequelize.define(
     timestamps: false,
     createdAt: "createdAt",
     updatedAt: false,
-  }
+  },
 );
 
 // Associations
@@ -127,8 +126,4 @@ Prompt.hasMany(PromptHistory, { foreignKey: "promptId", as: "history" });
 PromptHistory.belongsTo(Prompt, { foreignKey: "promptId" });
 
 module.exports = { Prompt, PromptHistory };
-
-
-
-
 

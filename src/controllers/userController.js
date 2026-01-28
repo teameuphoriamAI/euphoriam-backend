@@ -280,7 +280,6 @@ const getUserProfile = async (req, res) => {
     }
 
     // Get current metrics
-
     const { existingDiagnostic, diagnosticMetrics } = await loadDiagnosticState(
       user.email,
     );
@@ -289,8 +288,53 @@ const getUserProfile = async (req, res) => {
       diagnosticMetrics,
     );
 
-    // Use latest discovery metrics if available, otherwise use diagnostic metrics
-    const currentMetrics = latestDiscoveryMetrics || diagnosticMetrics || {};
+    // Also check if metrics are stored directly in diagnostic data
+    const diagnosticDataMetrics = existingDiagnostic?.data?.metrics || {};
+
+    // Merge metrics intelligently: use latestDiscoveryMetrics as base, but fill in missing values from diagnosticMetrics
+    // Count how many complete metrics each source has
+    const countCompleteMetrics = (metrics) => {
+      if (!metrics || typeof metrics !== 'object') return 0;
+      const requiredKeys = ['gravity', 'signalCoherence', 'signalOutput', 'consciousnessLevel', 'qgcActivation'];
+      return requiredKeys.filter(key => metrics[key] !== undefined && metrics[key] !== null).length;
+    };
+
+    const latestCount = countCompleteMetrics(latestDiscoveryMetrics);
+    const diagnosticCount = countCompleteMetrics(diagnosticMetrics);
+    const dataCount = countCompleteMetrics(diagnosticDataMetrics);
+
+    // Use the source with the most complete metrics, or merge if latest is incomplete
+    let currentMetrics = {};
+    if (latestCount >= 3 && latestCount >= diagnosticCount) {
+      // Latest discovery metrics are reasonably complete, use them and fill gaps from diagnostic
+      currentMetrics = {
+        ...diagnosticMetrics,
+        ...diagnosticDataMetrics,
+        ...latestDiscoveryMetrics, // Latest discovery takes precedence for values it has
+      };
+    } else if (diagnosticCount > latestCount) {
+      // Diagnostic metrics are more complete, use them
+      currentMetrics = diagnosticMetrics || diagnosticDataMetrics || {};
+    } else {
+      // Fallback: merge all sources, with latest discovery taking precedence
+      currentMetrics = {
+        ...diagnosticDataMetrics,
+        ...diagnosticMetrics,
+        ...latestDiscoveryMetrics,
+      };
+    }
+
+    // Debug logging to track metric sources
+    console.log("[getUserProfile] Metric sources:", {
+      latestDiscoveryMetrics,
+      latestCount,
+      diagnosticMetrics,
+      diagnosticCount,
+      diagnosticDataMetrics,
+      dataCount,
+      currentMetrics,
+      existingDiagnosticId: existingDiagnostic?.id,
+    });
 
     // Get discovery counts
     const discoveries = await Discovery.findAll({
@@ -558,19 +602,44 @@ const getUserProfile = async (req, res) => {
       lastUpdated: membership.lastUpdated || null,
     };
 
-    // Format metrics
+    // Format metrics - preserve 0 values explicitly
+    // Check if values exist (including 0) vs undefined/null
+    const hasSignalOutput = currentMetrics.signalOutput !== undefined && currentMetrics.signalOutput !== null;
+    const hasQgcActivation = currentMetrics.qgcActivation !== undefined && currentMetrics.qgcActivation !== null;
+    const hasConsciousnessLevel = currentMetrics.consciousnessLevel !== undefined && currentMetrics.consciousnessLevel !== null;
+    const hasGravity = currentMetrics.gravity !== undefined && currentMetrics.gravity !== null;
+    const hasSignalCoherence = currentMetrics.signalCoherence !== undefined && currentMetrics.signalCoherence !== null;
+
+    // Format consciousnessLevel: if it's <= 5, it's on 1-5 scale, convert to percentage
+    // Otherwise, it's already a percentage
+    let formattedConsciousnessLevel = 0;
+    if (hasConsciousnessLevel) {
+      const clValue = Number(currentMetrics.consciousnessLevel);
+      if (!isNaN(clValue)) {
+        formattedConsciousnessLevel = clValue <= 5 ? (clValue / 5) * 100 : clValue;
+      }
+    }
+
     const formattedMetrics = {
-      signalOutput: currentMetrics.signalOutput || 0,
-      qgcActivation: currentMetrics.qgcActivation || 0,
-      consciousnessLevel:
-        Number(currentMetrics.consciousnessLevel) <= 5
-          ? (currentMetrics.consciousnessLevel / 5) * 100
-          : currentMetrics.consciousnessLevel || 0,
-      gravity: currentMetrics.gravity || 0,
-      signalCoherence: currentMetrics.signalCoherence || 0,
+      signalOutput: hasSignalOutput ? Number(currentMetrics.signalOutput) || 0 : 0,
+      qgcActivation: hasQgcActivation ? Number(currentMetrics.qgcActivation) || 0 : 0,
+      consciousnessLevel: formattedConsciousnessLevel,
+      gravity: hasGravity ? Number(currentMetrics.gravity) || 0 : 0,
+      signalCoherence: hasSignalCoherence ? Number(currentMetrics.signalCoherence) || 0 : 0,
       lastUpdated:
         existingDiagnostic?.updatedAt || existingDiagnostic?.createdAt || null,
     };
+
+    // Debug logging to help identify issues
+    console.log("[getUserProfile] Metrics formatting:", {
+      currentMetrics,
+      formattedMetrics,
+      hasSignalOutput,
+      hasQgcActivation,
+      hasConsciousnessLevel,
+      hasGravity,
+      hasSignalCoherence,
+    });
 
     return successResponse(res, "User profile fetched successfully", {
       metrics: formattedMetrics,

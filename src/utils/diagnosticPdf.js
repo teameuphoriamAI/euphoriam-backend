@@ -1167,6 +1167,13 @@ const renderStyledReport = (
     drawMetricsInterpretationTable(doc);
     metricsInterpretationRendered = true;
   }
+
+  // FINALLY: Render UC Recommendations if provided and not already rendered manually in text
+  if (ucRecommendations && (ucRecommendations.phase1.length > 0 || ucRecommendations.phase2.length > 0 || ucRecommendations.phase3.length > 0)) {
+    // Only render if we didn't see a "UC MODULE RECOMMENDATION" section in the text
+    // (Actually, better to always render it for consistency since the AI output might be basic)
+    renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
+  }
 };
 
 /**
@@ -1694,6 +1701,11 @@ const generateDiagnosticPdf = (diagnostic) =>
         const startsWithMarkdownHeader = /^#+\s*EUPHORIAM/i.test(trimmed);
         const startsWithMarkdownDivider =
           /^---+/.test(trimmed) || /^───+/.test(trimmed);
+        // Phase C format: starts with "YOUR LIVED CONSTRAINT" section
+        const startsWithPhaseC =
+          /^YOUR\s+LIVED\s+CONSTRAINT/i.test(trimmed) ||
+          /^SECTION\s+1|^STRUCTURE\s+TYPE/i.test(trimmed) ||
+          /^1\.\s*STRUCTURE\s+TYPE|^##?\s*YOUR\s+LIVED\s+CONSTRAINT/i.test(trimmed);
 
         if (
           !startsWithDivider &&
@@ -1703,7 +1715,8 @@ const generateDiagnosticPdf = (diagnostic) =>
           !startsWithFullTitle &&
           !hasMarkdownHeader &&
           !startsWithMarkdownHeader &&
-          !startsWithMarkdownDivider
+          !startsWithMarkdownDivider &&
+          !startsWithPhaseC
         ) {
           const head = cleanedReport.slice(0, 300);
 

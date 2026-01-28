@@ -1,5 +1,4 @@
 const {
-  EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   buildFinalReportPrompt,
@@ -7,7 +6,10 @@ const {
   sanitizeReportText,
   SUPPORT_LOCK_PROMPT,
   checkWantsEmail,
+  calculateDiagnosticConfidence,
 } = require("../helpers/euphoriamChatbot");
+const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
+
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
   persistDiscoveryRecord,
@@ -298,7 +300,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
           },
         });
         console.log(
-          `[endChatAsDiscovery] Chat ${chat.id} marked as ended for user ${session.email} (socket) with PDF URL: ${pdfUrl || 'none'}`
+          `[endChatAsDiscovery] Chat ${chat.id} marked as ended for user ${session.email} (socket) with PDF URL: ${pdfUrl || "none"}`,
         );
       }
     }
@@ -309,7 +311,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
         ?.content || "";
     const userWantsEmail = checkWantsEmail(
       session.transcript || [],
-      lastUserMessage
+      lastUserMessage,
     );
     const shouldEmail = userWantsEmail;
 
@@ -320,7 +322,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
           session.email,
           "Your Updated Diagnostic Report – Euphoriam AI",
           discoveryReportEmail(userName),
-          pdfPath
+          pdfPath,
         );
         // Mark that discovery chat has been saved and emailed
         session.discoverySavedAndEmailed = true;
@@ -343,7 +345,7 @@ const wireChatbotFreeform = (io) => {
   nsp.on("connection", (socket) => {
     sessions.set(socket.id, {
       transcript: [],
-      targetCount: 12,
+      targetCount: 25, // 25 core questions in the Deep Intake Engine
       introPageText: DEFAULT_INTRO_PAGE_TEXT,
       assessmentIds: [],
       email: null,
@@ -390,10 +392,9 @@ const wireChatbotFreeform = (io) => {
           session.existingDiagnostic = existing;
 
           // Load latest discovery to get updated metrics (vortex, pmatrice) and user session
-          const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
           const discoveryRes = await loadLatestDiscoveryMetrics(
             existing,
-            existing?.data?.metrics || {}
+            existing?.data?.metrics || {},
           );
           const latestDiscoveryMetrics = discoveryRes.latestDiscoveryMetrics;
           const latestDiscoveryReport = discoveryRes.latestDiscoveryReport;
@@ -403,7 +404,7 @@ const wireChatbotFreeform = (io) => {
           session.priorReportSnippet = latestDiscoveryReport
             ? truncateForContext(latestDiscoveryReport, 4000)
             : truncateForContext(existing.data.aiReport, 4000);
-          
+
           // Store latest user session in session for discovery chat
           session.latestUserSession = latestUserSession;
 
@@ -445,13 +446,13 @@ const wireChatbotFreeform = (io) => {
       const lowerContent = content.toLowerCase();
       const wantsNewDiagnostic =
         /(do|start|create|generate|redo|medo|new|another|fresh|again).*(diagnostic|report|dignostic)/i.test(
-          lowerContent
+          lowerContent,
         ) ||
         /(diagnostic|report|dignostic).*(again|new|redo|medo|fresh|another|start over|over again)/i.test(
-          lowerContent
+          lowerContent,
         ) ||
         /(want|need|would like|let's|let me).*(new|another|fresh|redo|medo).*(diagnostic|report|dignostic)/i.test(
-          lowerContent
+          lowerContent,
         );
 
       // If user wants new diagnostic, don't end chat - switch to diagnostic mode instead
@@ -480,7 +481,7 @@ const wireChatbotFreeform = (io) => {
         // Keep the request message but clear previous discovery chat
         session.transcript = [{ role: "user", content }]; // Start fresh with just the request
         session.priorReportSnippet = null; // Don't reference old report
-        session.targetCount = 12; // Ensure 12 questions
+        session.targetCount = 25; // Ensure 25 core questions
       }
 
       // Check if user previously requested a new diagnostic (persist through intake)
@@ -488,7 +489,7 @@ const wireChatbotFreeform = (io) => {
       const previouslyRequestedNewDiagnostic =
         session.requestingNewDiagnostic === true;
       const assistantQuestions = session.transcript.filter(
-        (m) => m.role === "assistant"
+        (m) => m.role === "assistant",
       ).length;
       const intakeInProgress =
         assistantQuestions > 0 && assistantQuestions < session.targetCount;
@@ -510,8 +511,15 @@ const wireChatbotFreeform = (io) => {
           .map((m) => extractQuestionNumber(m.content))
           .filter((n) => typeof n === "number");
         distinctQuestionNumbers = [...new Set(assistantQuestionNumbers)].sort(
-          (a, b) => a - b
+          (a, b) => a - b,
         );
+      }
+
+      // Calculate confidence if in diagnostic mode and 25 questions reached
+      let confidenceResult = null;
+      if (session.mode === "diagnostic" && distinctQuestionNumbers.length >= 25) {
+        console.log("[socket diagnostic] Calculating confidence for Q25+");
+        confidenceResult = await calculateDiagnosticConfidence(session.transcript);
       }
 
       // Use discovery chat prompt for discovery mode, intake prompt for diagnostic mode
@@ -527,7 +535,7 @@ const wireChatbotFreeform = (io) => {
             metrics: session.latestDiscoveryMetrics || session.metrics || {}, // Use latest discovery metrics (includes updated vortex, pmatrice)
             reportDate: session.existingDiagnostic?.updatedAt
               ? new Date(
-                session.existingDiagnostic.updatedAt
+                session.existingDiagnostic.updatedAt,
               ).toLocaleDateString("en-US", {
                 month: "short",
                 day: "numeric",
@@ -544,6 +552,7 @@ const wireChatbotFreeform = (io) => {
             retrieved,
             priorReport: session.priorReportSnippet,
             distinctQuestionNumbers: distinctQuestionNumbers, // Pass distinct question numbers
+            confidenceResult, // Pass confidence result for Q25+
           });
 
       const sessionSystemBlock = session.latestUserSession?.transcript
@@ -580,7 +589,7 @@ CRITICAL RULES:
 - Reference their previous diagnostic only when it naturally fits the conversation
 - Be warm, human, and conversational - not clinical or structured
 - Let the conversation flow organically based on what they share`
-          : EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT;
+          : "EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT";
 
       // Filter out messages with null/undefined content and ensure all content is strings
       const validTranscriptMessages = session.transcript
@@ -670,7 +679,7 @@ CRITICAL RULES:
           asked: session.transcript.filter((m) => m.role === "assistant")
             .length,
           answered: session.transcript.filter(
-            (m) => m.role === "user" && isAnswerLike(m.content)
+            (m) => m.role === "user" && isAnswerLike(m.content),
           ).length,
           total: session.targetCount,
         },
@@ -699,7 +708,7 @@ CRITICAL RULES:
             ?.content || "";
         const userWantsEmail = checkWantsEmail(
           session.transcript || [],
-          lastUserMessage
+          lastUserMessage,
         );
         const shouldEmail = userWantsEmail;
 
@@ -849,7 +858,7 @@ CRITICAL RULES:
           ?.content || "";
       const userWantsEmail = checkWantsEmail(
         session.transcript || [],
-        lastUserMessage
+        lastUserMessage,
       );
       const shouldEmail = isFirstTimeUser || userWantsEmail;
 
@@ -864,9 +873,9 @@ CRITICAL RULES:
             session.email,
             "Your Diagnostic Report – Euphoriam AI",
             require("../utils/emailTemplate/initialDignosticReport").diagnosticReportEmail(
-              session.email?.split("@")[0] || "User"
+              session.email?.split("@")[0] || "User",
             ),
-            pdfPath
+            pdfPath,
           );
         } catch (err) {
           console.error("[socket finalize] Email sending failed", err);

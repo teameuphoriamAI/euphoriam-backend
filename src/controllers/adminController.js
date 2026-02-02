@@ -104,25 +104,9 @@ const getAllPrompts = async (req, res) => {
   try {
     const prompts = await Prompt.findAll({
       order: [["updatedAt", "DESC"]],
-      // include: [
-      //   {
-      //     model: PromptHistory,
-      //     as: "history",
-      //     limit: 1,
-      //     order: [["createdAt", "DESC"]],
-      //   },
-      // ],
     });
 
-    // Get the latest prompt (most recently updated)
-    const latestPromptId = prompts.length > 0 ? prompts[0].id : null;
-
-    const promptsWithLatest = prompts.map((prompt) => ({
-      ...prompt.toJSON(),
-      isLatest: prompt.id === latestPromptId,
-    }));
-
-    return successResponse(res, "Prompts fetched", promptsWithLatest);
+    return successResponse(res, "Prompts fetched", prompts);
   } catch (error) {
     console.error("[admin] Error fetching prompts:", error);
     return errorResponse(res, "Failed to fetch prompts", 500);

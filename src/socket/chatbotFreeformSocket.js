@@ -7,8 +7,11 @@ const {
   SUPPORT_LOCK_PROMPT,
   checkWantsEmail,
   calculateDiagnosticConfidence,
+  getLatestPromptFromDb,
+  buildChatPrompts,
 } = require("../helpers/euphoriamChatbot");
 const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
+const { PromptType } = require("../utils/types");
 
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
@@ -32,32 +35,26 @@ const {
 const fs = require("fs");
 
 /* -------------------- Utils -------------------- */
-const getLatestPromptFromDb = async () => {
-  try {
-    const prompt = await Prompt.findOne({
-      where: { isActive: true },
-      order: [["createdAt", "DESC"]],
-      raw: true, // returns plain JS object
-    });
-
-    if (!prompt) return null;
-
-    return {
-      ...prompt,
-      fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}`,
-    };
-  } catch (error) {
-    console.error("Error fetching latest prompt:", error);
-    return null;
-  }
-};
-
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const isAnswerLike = (text = "") => {
-  const t = text.trim();
+  const t = text.trim().toLowerCase();
   if (!t) return false;
-  if (isQuestion(t)) return false;
-  return /[A-Za-z]/.test(t);
+  if (t.endsWith("?")) return false;
+
+  const clarifyPhrases = [
+    "elaborate",
+    "clarify",
+    "explain",
+    "repeat",
+    "don't understand",
+    "do not understand",
+    "not sure",
+    "what do you mean",
+    "rephrase",
+  ];
+  if (clarifyPhrases.some((p) => t.includes(p))) return false;
+
+  return /[A-Za-z0-9]/.test(t);
 };
 
 const extractQuestionNumber = (text = "") => {
@@ -522,74 +519,34 @@ const wireChatbotFreeform = (io) => {
         confidenceResult = await calculateDiagnosticConfidence(session.transcript);
       }
 
-      // Use discovery chat prompt for discovery mode, intake prompt for diagnostic mode
-      const chatPrompt =
-        session.mode === "discovery"
-          ? buildDiscoveryChatPrompt({
-            transcript: session.transcript,
-            retrieved,
-            // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
-            factsContext: null, // Not using Kajabi data for now
-            userName: session.email?.split("@")[0] || "there",
-            priorReport: session.priorReportSnippet,
-            metrics: session.latestDiscoveryMetrics || session.metrics || {}, // Use latest discovery metrics (includes updated vortex, pmatrice)
-            reportDate: session.existingDiagnostic?.updatedAt
-              ? new Date(
-                session.existingDiagnostic.updatedAt,
-              ).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-              })
-              : null,
-            userSession: session.latestUserSession || null, // Pass latest user session
+      // Use robust buildChatPrompts helper to construct both system and user prompts
+      const { systemPrompt, userPrompt: chatPrompt } = await buildChatPrompts({
+        isDiscoveryMode: session.mode === "discovery",
+        transcript: session.transcript,
+        targetCount: session.targetCount,
+        introText: session.introPageText,
+        name: session.email?.split("@")[0] || "there",
+        retrieved,
+        priorReportSnippet: session.priorReportSnippet,
+        lastTurnAssistant: assistantQuestions > 0,
+        resumeNotice: previouslyRequestedNewDiagnostic ? "Starting a fresh diagnostic intake." : null,
+        wantsNewDiagnostic: previouslyRequestedNewDiagnostic,
+        intakeHasStarted: assistantQuestions > 0,
+        distinctQuestionNumbers,
+        discoveryType: null, // Default
+        latestDiscoveryMetrics: session.latestDiscoveryMetrics || session.metrics || {},
+        reportDate: session.existingDiagnostic?.updatedAt
+          ? new Date(session.existingDiagnostic.updatedAt).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
           })
-          : buildFreeformIntakePrompt({
-            transcript: session.transcript,
-            targetCount: session.targetCount,
-            introPageText: session.introPageText,
-            // factsContext: session.diagnosticContext, // Commented out - not using Kajabi data for now
-            factsContext: null, // Not using Kajabi data for now
-            retrieved,
-            priorReport: session.priorReportSnippet,
-            distinctQuestionNumbers: distinctQuestionNumbers, // Pass distinct question numbers
-            confidenceResult, // Pass confidence result for Q25+
-          });
+          : null,
+        latestUserSession: session.latestUserSession || null,
+        confidenceResult,
+      });
 
-      const sessionSystemBlock = session.latestUserSession?.transcript
-        ? `\n\n🎯🎯🎯 USER'S 1:1 COACHING SESSION TRANSCRIPT (AVAILABLE TO YOU):
-🚨🚨🚨 THIS TRANSCRIPT IS PROVIDED TO YOU - YOU CAN ACCESS IT
-
-Session Date: ${session.latestUserSession.sessionDate ? new Date(session.latestUserSession.sessionDate).toLocaleDateString() : "Not specified"}
-
-FULL SESSION TRANSCRIPT:
-${JSON.stringify(session.latestUserSession.transcript, null, 2)}
-
-🚨🚨🚨🚨🚨 CRITICAL: When user asks about their "1:1 session", "session details", "do you have my session details", or asks to "summarize my session":
-- You HAVE this transcript - it's provided above in this system prompt
-- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to access" or "I don't have access"
-- ABSOLUTELY FORBIDDEN: NEVER say "I'm unable to provide a detailed summary"
-- ABSOLUTELY FORBIDDEN: NEVER talk about diagnostic reports when they ask about session details
-- Parse the JSON transcript and summarize/reference what was discussed
-- The transcript has role/content pairs - read them and provide a summary
-- DO NOT confuse session details with diagnostic report - they're asking about the 1:1 coaching session transcript above
-`
-        : "";
-
-      const systemPrompt =
-        session.mode === "discovery"
-          ? `You are Euphoriam AI having a natural, flowing conversation. This is NOT a Q&A session or intake. 
-${sessionSystemBlock}
-CRITICAL RULES:
-- NEVER use numbered questions (Q1, Q2, etc.) - this is a conversation, not an interview
-- NEVER structure responses as "Q1: ..." or count questions
-- Respond naturally to what the user says, like a supportive friend or coach
-- Have a back-and-forth dialogue, not an interrogation
-- If the user shares something, acknowledge it and respond naturally
-- If the user asks you something, answer it directly
-- Reference their previous diagnostic only when it naturally fits the conversation
-- Be warm, human, and conversational - not clinical or structured
-- Let the conversation flow organically based on what they share`
-          : "EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT";
+      const safeSystemPrompt = systemPrompt || (session.mode === "discovery" ? "You are Euphoriam AI." : "EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT");
+      const safeChatPrompt = chatPrompt || "";
 
       // Filter out messages with null/undefined content and ensure all content is strings
       const validTranscriptMessages = session.transcript
@@ -598,12 +555,6 @@ CRITICAL RULES:
           role: m.role === "assistant" ? "assistant" : "user",
           content: String(m.content), // Ensure it's a string
         }));
-
-      // Ensure systemPrompt and chatPrompt are strings
-      const safeSystemPrompt =
-        systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
-      const safeChatPrompt =
-        chatPrompt && typeof chatPrompt === "string" ? chatPrompt : "";
 
       if (!safeSystemPrompt || !safeChatPrompt) {
         console.error("[socket] Invalid system or chat prompt:", {

@@ -28,7 +28,6 @@ const {
   buildFreeformIntakePrompt,
   extractQuestionNumber,
   validateChatbotRequest,
-  SUPPORT_LOCK_PROMPT,
   getDiscoverySystemPrompt,
 } = require("../helpers/euphoriamChatbot");
 const { retrieveSimilarChunks } = require("../helpers/rag");
@@ -182,12 +181,20 @@ const saveChatIncrementally = async ({
     }
 
     if (chat && !isNewSession) {
+      // SAFETY: Prevent saving corrupted transcripts
+      const MAX_TRANSCRIPT_LENGTH = 200;
+      let transcriptToSave = transcript;
+      if (transcript.length > MAX_TRANSCRIPT_LENGTH) {
+        console.warn(`[saveChatIncrementally] ⚠️ Transcript too long (${transcript.length}), truncating to last ${MAX_TRANSCRIPT_LENGTH}`);
+        transcriptToSave = transcript.slice(-MAX_TRANSCRIPT_LENGTH);
+      }
+      
       // Update existing incomplete chat with latest transcript
       // Also update diagnosticId/discoveryId if they were set after chat creation
       const updateData = {
         data: {
           ...(chat.data || {}),
-          transcript: transcript,
+          transcript: transcriptToSave,
           // messages: transcript,
           lastUpdated: new Date().toISOString(),
           ...(pdfSummary ? { pdfSummary: pdfSummary } : {}), // Add PDF summary if provided
@@ -210,6 +217,14 @@ const saveChatIncrementally = async ({
       );
       return chat;
     } else {
+      // SAFETY: Prevent saving corrupted transcripts on new chat creation
+      const MAX_TRANSCRIPT_LENGTH = 200;
+      let transcriptToSave = transcript;
+      if (transcript.length > MAX_TRANSCRIPT_LENGTH) {
+        console.warn(`[saveChatIncrementally] ⚠️ New chat transcript too long (${transcript.length}), truncating to last ${MAX_TRANSCRIPT_LENGTH}`);
+        transcriptToSave = transcript.slice(-MAX_TRANSCRIPT_LENGTH);
+      }
+      
       // Create new chat record (new session)
       chat = await Chat.create({
         userId: userId,
@@ -218,7 +233,7 @@ const saveChatIncrementally = async ({
         chatType: chatType,
         isChatEnded: isChatEnded,
         data: {
-          transcript: transcript,
+          transcript: transcriptToSave,
           sessionStartedAt: new Date().toISOString(),
           lastUpdated: new Date().toISOString(),
           ...(pdfSummary ? { pdfSummary: pdfSummary } : {}), // Add PDF summary if provided

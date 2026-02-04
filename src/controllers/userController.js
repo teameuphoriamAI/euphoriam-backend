@@ -202,7 +202,10 @@ const updateUserClubMembership = async ({
   assessmentIds = [],
 }) => {
   // Find or create user first
-  const user = await findOrCreateCreatorUser({ email, name });
+  const user = await User.findOne({
+    where: { email },
+    attributes: { exclude: ["password"] },
+  });
   console.log("using kajabi in ", updateUserClubMembership);
 
   // Get Kajabi context to check membership (this is the only call to buildKajabiDiagnosticContext)
@@ -226,7 +229,9 @@ const updateUserClubMembership = async ({
 
   // Update user membership column with club membership info
   const membership = {
-    isCreatorClub,
+    isCreatorClub: isCreatorClub.club,
+    isCreatorClubBronze: isCreatorClub.bronze,
+    isCreatorClubSilver: isCreatorClub.silver,
     lastUpdated: new Date().toISOString(),
     products: diagnosticContext.products || [],
     offers: diagnosticContext.offers || [],
@@ -249,13 +254,35 @@ const updateUserClubMembership = async ({
   };
 };
 const isCreatorClubMember = (context = {}) => {
-  const hasProduct = (context.products || []).some((p) =>
-    (p.title || "").toLowerCase().includes("creator club"),
+  const products = context.products || [];
+  const offers = context.offers || [];
+
+  const allItems = [...products, ...offers];
+
+  const titles = allItems.map((item) => (item.title || "").toLowerCase());
+
+  const bronze = titles.some((t) => t.includes("creator club bronze"));
+  const silver = titles.some((t) => t.includes("creator club silver"));
+  const club = titles.some((t) => t.includes("creator club"));
+
+  // --- Logging for debugging ---
+  console.log("==== Creator Club Check ====");
+  console.log(
+    "All Products/Offers:",
+    allItems.map((i) => i.title),
   );
-  const hasOffer = (context.offers || []).some((o) =>
-    (o.title || "").toLowerCase().includes("creator club"),
-  );
-  return hasProduct || hasOffer;
+  console.log("Is Creator Club Member:", club);
+  console.log("Is Bronze:", bronze);
+  console.log("Is Silver:", silver);
+
+  if (!club) console.log("User is NOT a Creator Club member.");
+  else console.log("User IS a Creator Club member.");
+
+  return {
+    club,
+    bronze,
+    silver,
+  };
 };
 
 /**
@@ -294,9 +321,17 @@ const getUserProfile = async (req, res) => {
     // Merge metrics intelligently: use latestDiscoveryMetrics as base, but fill in missing values from diagnosticMetrics
     // Count how many complete metrics each source has
     const countCompleteMetrics = (metrics) => {
-      if (!metrics || typeof metrics !== 'object') return 0;
-      const requiredKeys = ['gravity', 'signalCoherence', 'signalOutput', 'consciousnessLevel', 'qgcActivation'];
-      return requiredKeys.filter(key => metrics[key] !== undefined && metrics[key] !== null).length;
+      if (!metrics || typeof metrics !== "object") return 0;
+      const requiredKeys = [
+        "gravity",
+        "signalCoherence",
+        "signalOutput",
+        "consciousnessLevel",
+        "qgcActivation",
+      ];
+      return requiredKeys.filter(
+        (key) => metrics[key] !== undefined && metrics[key] !== null,
+      ).length;
     };
 
     const latestCount = countCompleteMetrics(latestDiscoveryMetrics);
@@ -604,11 +639,20 @@ const getUserProfile = async (req, res) => {
 
     // Format metrics - preserve 0 values explicitly
     // Check if values exist (including 0) vs undefined/null
-    const hasSignalOutput = currentMetrics.signalOutput !== undefined && currentMetrics.signalOutput !== null;
-    const hasQgcActivation = currentMetrics.qgcActivation !== undefined && currentMetrics.qgcActivation !== null;
-    const hasConsciousnessLevel = currentMetrics.consciousnessLevel !== undefined && currentMetrics.consciousnessLevel !== null;
-    const hasGravity = currentMetrics.gravity !== undefined && currentMetrics.gravity !== null;
-    const hasSignalCoherence = currentMetrics.signalCoherence !== undefined && currentMetrics.signalCoherence !== null;
+    const hasSignalOutput =
+      currentMetrics.signalOutput !== undefined &&
+      currentMetrics.signalOutput !== null;
+    const hasQgcActivation =
+      currentMetrics.qgcActivation !== undefined &&
+      currentMetrics.qgcActivation !== null;
+    const hasConsciousnessLevel =
+      currentMetrics.consciousnessLevel !== undefined &&
+      currentMetrics.consciousnessLevel !== null;
+    const hasGravity =
+      currentMetrics.gravity !== undefined && currentMetrics.gravity !== null;
+    const hasSignalCoherence =
+      currentMetrics.signalCoherence !== undefined &&
+      currentMetrics.signalCoherence !== null;
 
     // Format consciousnessLevel: if it's <= 5, it's on 1-5 scale, convert to percentage
     // Otherwise, it's already a percentage
@@ -616,16 +660,23 @@ const getUserProfile = async (req, res) => {
     if (hasConsciousnessLevel) {
       const clValue = Number(currentMetrics.consciousnessLevel);
       if (!isNaN(clValue)) {
-        formattedConsciousnessLevel = clValue <= 5 ? (clValue / 5) * 100 : clValue;
+        formattedConsciousnessLevel =
+          clValue <= 5 ? (clValue / 5) * 100 : clValue;
       }
     }
 
     const formattedMetrics = {
-      signalOutput: hasSignalOutput ? Number(currentMetrics.signalOutput) || 0 : 0,
-      qgcActivation: hasQgcActivation ? Number(currentMetrics.qgcActivation) || 0 : 0,
+      signalOutput: hasSignalOutput
+        ? Number(currentMetrics.signalOutput) || 0
+        : 0,
+      qgcActivation: hasQgcActivation
+        ? Number(currentMetrics.qgcActivation) || 0
+        : 0,
       consciousnessLevel: formattedConsciousnessLevel,
       gravity: hasGravity ? Number(currentMetrics.gravity) || 0 : 0,
-      signalCoherence: hasSignalCoherence ? Number(currentMetrics.signalCoherence) || 0 : 0,
+      signalCoherence: hasSignalCoherence
+        ? Number(currentMetrics.signalCoherence) || 0
+        : 0,
       lastUpdated:
         existingDiagnostic?.updatedAt || existingDiagnostic?.createdAt || null,
     };
@@ -833,4 +884,5 @@ module.exports = {
   getUserProfile,
   verifyOTP,
   resendOTP,
+  isCreatorClubMember,
 };

@@ -400,6 +400,38 @@ const formatFactsContext = (context = {}) => {
     .join(" | ");
 };
 
+/**
+ * Returns the pre-built welcome message for new diagnostic users (no prior report, first interaction).
+ * Fetches the Diagnostic prompt from DB and extracts Q1 from it. Falls back to null if Q1 cannot be extracted.
+ */
+const getDiagnosticNewUserWelcomeMessage = async (userName) => {
+  const { PromptType } = require("../utils/types");
+  const diagnosticPromptObj = await getLatestPromptFromDb(PromptType.DIAGNOSTIC);
+  const diagnosticPromptContent = diagnosticPromptObj?.content || "";
+
+  // Extract Q1 block from prompt (supports Q1:, Q1 —, Q1., **Q1 —**, etc.; stops at Q2)
+  const q1Match = diagnosticPromptContent.match(
+    /(?:^|\n)((?:\*\*)?Q1\s*[—–\-\.\):]\s*[\s\S]*?)(?=\n\s*(?:\*\*)?Q2\s*[—–\-\.\):]|$)/im
+  );
+  const q1Block = q1Match ? q1Match[1].trim() : null;
+
+  if (!q1Block) {
+    console.warn(
+      "[getDiagnosticNewUserWelcomeMessage] Could not extract Q1 from Diagnostic prompt",
+    );
+    return null;
+  }
+
+  const displayName =
+    typeof userName === "string" && userName.trim().length
+      ? userName.trim()
+      : "there";
+
+  return `Hi ${displayName}, I don't have your intake on record yet, so we'll start with the 25-Question Deep Intake Engine™. One question at a time. No rushing. No fixing. Just mapping.
+
+${q1Block}`;
+};
+
 const buildFreeformIntakePrompt = ({
   transcript = [],
   userName,
@@ -488,6 +520,8 @@ Your response must flow naturally WITHOUT any labels like "STEP 1" or "STEP 2". 
 
 ⚠️ DO NOT output "STEP 1:", "STEP 2:", etc. — these are internal instructions only!
 
+🚨 MANDATORY QUESTION NUMBERING: Every core question (Q1–Q25) MUST be prefixed with **Q{N} — Question Name** (e.g. **Q1 — Desired Reality**, **Q7 — Duration**). NEVER ask a core question without this format. Clarifier questions use **CB{N}** (e.g. **CB1**, **CB2**).
+
 EXAMPLE OF CORRECT OUTPUT FORMAT:
 
 User says: "In the head"
@@ -559,8 +593,8 @@ Current State:
 - Clarifiers Asked So Far: ${cbCount}
 
 👉 ACTION:
-${coreQuestionCount < 25 ? `- If user answered the last question: Ask Core Question Q${coreQuestionCount + 1}.` : ""}
-${coreQuestionCount < 25 ? `- If user did NOT answer or asked to rephrase: Clarify and re-ask Core Question Q${coreQuestionCount}.` : ""}
+${coreQuestionCount < 25 ? `- If user answered the last question: Ask Core Question Q${coreQuestionCount + 1} — prefix with **Q${coreQuestionCount + 1} — [Question Name]**` : ""}
+${coreQuestionCount < 25 ? `- If user did NOT answer or asked to rephrase: Clarify and re-ask Core Question Q${coreQuestionCount} — keep **Q${coreQuestionCount} — [Question Name]**` : ""}
 ${coreQuestionCount >= 25 && confidenceResult && confidenceResult.confidence >= 85 ? `👉 ACTION: Confidence is ${confidenceResult.confidence}% (≥ 85%). IMMEDIATELY use Completion Signal. Do NOT ask another question.` : ""}
 ${coreQuestionCount >= 25 && (!confidenceResult || confidenceResult.confidence < 85) ? `👉 ACTION: Evaluate confidence. If < 85%, ask next CB (CB${cbCount + 1}) with transition explanation. If ≥ 85%, use Completion Signal immediately.` : ""}
 
@@ -4154,6 +4188,7 @@ module.exports = {
   // buildIntakeQuestionResponse,
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
+  getDiagnosticNewUserWelcomeMessage,
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   sanitizeReportText,

@@ -64,7 +64,26 @@ const generateOTP = () =>
  */
 const checkCreatorClubByEmail = async ({ email, assessmentIds = [] }) => {
   console.log("Checking Creator Club membership for email:", email);
-  const { diagnosticContext } = await buildKajabiDiagnosticContext({ email });
+
+  const result = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+  if (!result) {
+    console.warn(
+      " No diagnostic context available — user not found in Kajabi",
+      {
+        email,
+      },
+    );
+
+    return {
+      clubStatus: false,
+      diagnosticContext: null,
+      reason: "CUSTOMER_NOT_FOUND",
+    };
+  }
+
+  const { diagnosticContext } = result;
+
   const { isCreatorClubMember } = require("./userController"); // lazy load
   console.log("diagnosticContext", diagnosticContext);
 
@@ -436,8 +455,8 @@ const buildFallbackDiscoveryReport = ({
 
   const phase1 =
     safeMetrics.gravity >= 70 ||
-      safeMetrics.signalOutput < 30 ||
-      safeMetrics.signalCoherence < 70
+    safeMetrics.signalOutput < 30 ||
+    safeMetrics.signalCoherence < 70
       ? [4, 6, 8]
       : [4];
   const phase2 = safeMetrics.consciousnessLevel < 2.5 ? [3] : [3];
@@ -745,7 +764,10 @@ const handleDiscoveryMode = async ({
     const content = (m.content || "").trim();
     const wordCount = content.split(/\s+/).length;
     // Consider substantial if: 2+ words OR short meaningful responses
-    return wordCount >= 2 || /^(yes|no|maybe|idk|okay|sure|fine|good|bad|better|worse)$/i.test(content);
+    return (
+      wordCount >= 2 ||
+      /^(yes|no|maybe|idk|okay|sure|fine|good|bad|better|worse)$/i.test(content)
+    );
   }).length;
 
   // Count questions asked by assistant (messages ending with "?" or containing question words)
@@ -796,17 +818,20 @@ const handleDiscoveryMode = async ({
   // If user has given 2+ non-answers in last 3 messages, treat as wanting to end
   const hasRepeatedNonAnswers = nonAnswerCount >= 2;
 
-  const lastDeclinedExchanges = existingState.exchangesAtLastDeclinedEndChat || 0;
+  const lastDeclinedExchanges =
+    existingState.exchangesAtLastDeclinedEndChat || 0;
   const exchangesSinceLastAsked = substantialExchanges - lastDeclinedExchanges;
 
   // Check if we should ask user to end chat (every 5 substantial exchanges)
-  const shouldAskToEndChat = exchangesSinceLastAsked >= MIN_EXCHANGES_BEFORE_ASK_END &&
+  const shouldAskToEndChat =
+    exchangesSinceLastAsked >= MIN_EXCHANGES_BEFORE_ASK_END &&
     !userConfirmedEndChat &&
     !userDeclinedEndChat &&
     !req.body.skipEndChatPrompt;
 
   // Force ask to end after 8 exchanges
-  const shouldForceAskToEnd = exchangesSinceLastAsked >= MAX_EXCHANGES_BEFORE_FORCE_ASK &&
+  const shouldForceAskToEnd =
+    exchangesSinceLastAsked >= MAX_EXCHANGES_BEFORE_FORCE_ASK &&
     !userConfirmedEndChat &&
     !userDeclinedEndChat &&
     !req.body.skipEndChatPrompt;
@@ -833,14 +858,18 @@ const handleDiscoveryMode = async ({
   if (userConfirmedEndChat) {
     wantsToGenerateReport = true;
     wantsToEndOrGenerate = true;
-    console.log("[handleDiscoveryMode] User confirmed end via modal - generating report");
+    console.log(
+      "[handleDiscoveryMode] User confirmed end via modal - generating report",
+    );
   }
 
   // If user declined ending via modal, continue chatting normally
   if (userDeclinedEndChat) {
     wantsToGenerateReport = false;
     wantsToEndOrGenerate = false;
-    console.log("[handleDiscoveryMode] User declined end via modal - continuing chat");
+    console.log(
+      "[handleDiscoveryMode] User declined end via modal - continuing chat",
+    );
     // Mark that we've already asked so we don't ask again immediately
     req.body.skipEndChatPrompt = true;
 
@@ -848,14 +877,23 @@ const handleDiscoveryMode = async ({
     if (!nextMessage) {
       nextMessage = {
         role: "assistant",
-        content: "Understood. We'll let it land. What else would you like to explore or update regarding your patterns?",
+        content:
+          "Understood. We'll let it land. What else would you like to explore or update regarding your patterns?",
       };
     }
   }
 
   // If we should ask to end chat (after 5+ substantial exchanges), return modal trigger
-  if ((shouldAskToEndChat || shouldForceAskToEnd) && !userConfirmedEndChat && !userDeclinedEndChat) {
-    console.log("[handleDiscoveryMode] Triggering end chat modal after", substantialExchanges, "exchanges");
+  if (
+    (shouldAskToEndChat || shouldForceAskToEnd) &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat
+  ) {
+    console.log(
+      "[handleDiscoveryMode] Triggering end chat modal after",
+      substantialExchanges,
+      "exchanges",
+    );
 
     // Save current state
     if (appUser?.id) {
@@ -878,7 +916,8 @@ const handleDiscoveryMode = async ({
       retrieved: [],
       resumeNotice: null,
       status: "ask_end_chat",
-      statusMessage: "Would you like to end the chat and generate your discovery report?",
+      statusMessage:
+        "Would you like to end the chat and generate your discovery report?",
       substantialExchanges,
       canResume: true,
     });
@@ -898,7 +937,9 @@ const handleDiscoveryMode = async ({
     // If user has repeated non-answers, ask to end instead of auto-generating
     if (!wantsToGenerateReport && hasRepeatedNonAnswers) {
       // Don't auto-generate, but still might trigger modal
-      console.log("[handleDiscoveryMode] Repeated non-answers detected - user may want to end");
+      console.log(
+        "[handleDiscoveryMode] Repeated non-answers detected - user may want to end",
+      );
     }
 
     wantsToEndOrGenerate = wantsToEndChat || wantsToGenerateReport;
@@ -967,12 +1008,12 @@ const handleDiscoveryMode = async ({
 
       const qs =
         discoveryReadiness?.nextQuestions &&
-          discoveryReadiness.nextQuestions.length > 0
+        discoveryReadiness.nextQuestions.length > 0
           ? discoveryReadiness.nextQuestions
           : [
-            "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
-            "What’s the main loop/friction you keep noticing this week?",
-          ];
+              "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
+              "What’s the main loop/friction you keep noticing this week?",
+            ];
 
       const userText = (lastUser?.content || "").toLowerCase();
       const isAskingHowManyQuestions =
@@ -980,14 +1021,16 @@ const handleDiscoveryMode = async ({
 
       nextMessage = {
         role: "assistant",
-        content: `${isAskingHowManyQuestions
-          ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
-          : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${qs.length === 1 ? "" : "s"
-          } first:\n\n`
-          }${qs
-            .slice(0, 2)
-            .map((q, idx) => `${idx + 1}) ${q}`)
-            .join("\n")}`,
+        content: `${
+          isAskingHowManyQuestions
+            ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
+            : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${
+                qs.length === 1 ? "" : "s"
+              } first:\n\n`
+        }${qs
+          .slice(0, 2)
+          .map((q, idx) => `${idx + 1}) ${q}`)
+          .join("\n")}`,
       };
 
       // IMPORTANT:
@@ -1085,16 +1128,20 @@ const handleDiscoveryMode = async ({
 
     // Format user session summaries for report generation
     const sessionSummariesForReport = (
-      Array.isArray(allUserSessions) ? allUserSessions : latestUserSession ? [latestUserSession] : []
+      Array.isArray(allUserSessions)
+        ? allUserSessions
+        : latestUserSession
+          ? [latestUserSession]
+          : []
     )
       .filter((s) => s?.summery && s.summery.trim().length > 0)
       .map((s, idx) => {
         const sessionDate = s.sessionDate
           ? new Date(s.sessionDate).toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-          })
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
           : "Date not specified";
         return `Session ${idx + 1} (${sessionDate}):\n${s.summery}`;
       })
@@ -1120,79 +1167,82 @@ Evidence: ${discoveryReadiness?.stageEvidence || "N/A (readiness check disabled)
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-        ? `Previous discovery report (reference):
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
 ${truncateForContext(
-          previousDiscovery.data?.newReport ||
-          previousDiscovery.data?.previousReport ||
-          previousDiscovery.newReportSnippet ||
-          previousDiscovery.data?.newReportSnippet ||
-          "",
-          4000,
-        )}`
-        : ""
-      }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000,
+)}`
+    : ""
+}
 
-${sessionSummariesForReport
-        ? `============================
+${
+  sessionSummariesForReport
+    ? `============================
 USER SESSION SUMMARIES (Admin-uploaded 1:1 coaching session summaries - USE THESE FOR CONTEXT):
 ============================
 ${sessionSummariesForReport}
 ============================`
-        : ""
-      }
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(updatedTranscript, null, 2)}
 
-${(allUserSessions && allUserSessions.length > 0) ||
-        latestUserSession?.transcript
-        ? `All 1:1 Coaching Sessions (use these for additional context):
+${
+  (allUserSessions && allUserSessions.length > 0) ||
+  latestUserSession?.transcript
+    ? `All 1:1 Coaching Sessions (use these for additional context):
 
 ${(() => {
-          const sessionsToUse =
-            allUserSessions && allUserSessions.length > 0
-              ? allUserSessions
-              : latestUserSession
-                ? [latestUserSession]
-                : [];
-          // Limit to most recent 5 sessions to avoid token overflow
-          const sessionsToInclude = sessionsToUse.slice(0, 5);
-          const hasMoreSessions = sessionsToUse.length > 5;
+  const sessionsToUse =
+    allUserSessions && allUserSessions.length > 0
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : [];
+  // Limit to most recent 5 sessions to avoid token overflow
+  const sessionsToInclude = sessionsToUse.slice(0, 5);
+  const hasMoreSessions = sessionsToUse.length > 5;
 
-          return (
-            sessionsToInclude
-              .map((session, index) => {
-                const sessionNum =
-                  sessionsToUse.length > 1
-                    ? `Session ${index + 1} (${sessionsToUse.length} total)`
-                    : "Session";
-                const sessionDate = session.sessionDate
-                  ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-                    month: "long",
-                    day: "numeric",
-                    year: "numeric",
-                  })
-                  : "Date not specified";
+  return (
+    sessionsToInclude
+      .map((session, index) => {
+        const sessionNum =
+          sessionsToUse.length > 1
+            ? `Session ${index + 1} (${sessionsToUse.length} total)`
+            : "Session";
+        const sessionDate = session.sessionDate
+          ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "Date not specified";
 
-                // Prioritize summaries - only include full transcript for most recent session
-                const isMostRecent = index === 0;
-                const hasSummary = session.summery && session.summery.trim().length > 0;
+        // Prioritize summaries - only include full transcript for most recent session
+        const isMostRecent = index === 0;
+        const hasSummary = session.summery && session.summery.trim().length > 0;
 
-                if (hasSummary) {
-                  if (isMostRecent) {
-                    // Most recent: summary + brief transcript preview
-                    const transcriptPreview = Array.isArray(session.transcript)
-                      ? session.transcript
-                        .slice(0, 10)
-                        .map(
-                          (msg) =>
-                            `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
-                        )
-                        .join("\n")
-                      : "";
+        if (hasSummary) {
+          if (isMostRecent) {
+            // Most recent: summary + brief transcript preview
+            const transcriptPreview = Array.isArray(session.transcript)
+              ? session.transcript
+                  .slice(0, 10)
+                  .map(
+                    (msg) =>
+                      `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
+                  )
+                  .join("\n")
+              : "";
 
-                    return `--- ${sessionNum} ---
+            return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
@@ -1200,34 +1250,34 @@ ${session.summery}
 
 TRANSCRIPT PREVIEW (first 10 messages):
 ${transcriptPreview || "Full transcript available if needed"}`;
-                  } else {
-                    // Older sessions: summary only
-                    return `--- ${sessionNum} ---
+          } else {
+            // Older sessions: summary only
+            return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
 ${session.summery}`;
-                  }
-                } else {
-                  // No summary - include truncated transcript
-                  const transcriptText = Array.isArray(session.transcript)
-                    ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
-                    (session.transcript.length > 20 ? "\n...[truncated]" : "")
-                    : JSON.stringify(session.transcript, null, 2);
+          }
+        } else {
+          // No summary - include truncated transcript
+          const transcriptText = Array.isArray(session.transcript)
+            ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
+              (session.transcript.length > 20 ? "\n...[truncated]" : "")
+            : JSON.stringify(session.transcript, null, 2);
 
-                  return `--- ${sessionNum} ---
+          return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 TRANSCRIPT (${isMostRecent ? "full" : "truncated"}):
 ${transcriptText}`;
-                }
-              })
-              .join("\n\n") +
-            (hasMoreSessions
-              ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
-              : "")
-          );
-        })()}
+        }
+      })
+      .join("\n\n") +
+    (hasMoreSessions
+      ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
+      : "")
+  );
+})()}
 
 ⚠️ IMPORTANT: Use these 1:1 coaching session${(allUserSessions && allUserSessions.length > 1) || (!allUserSessions && latestUserSession) ? "s" : ""} data to:
 - Understand their current state and what's happening in their life
@@ -1239,8 +1289,8 @@ ${transcriptText}`;
 - ${(allUserSessions && allUserSessions.some((s) => s.summery)) || latestUserSession?.summery ? "The summaries above provide key insights; use the full transcripts for specific details" : ""}
 
 `
-        : ""
-      }
+    : ""
+}
 
 Client Name: ${userName}
 Client ID: N/A
@@ -1277,11 +1327,15 @@ ABSOLUTE REQUIREMENTS:
 
 **METRICS CALCULATION RULE:**
 - Calculate UPDATED metrics based on the NEW conversation transcript above
-- Compare previous metrics (Gravity: ~${diagnosticMetrics.gravity || "N/A"
-      }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%, Signal Coherence: ~${diagnosticMetrics.signalCoherence || "N/A"
-      }%, Signal Output: ~${diagnosticMetrics.signalOutput || "N/A"
-      }%) with evidence from the new conversation
+- Compare previous metrics (Gravity: ~${
+      diagnosticMetrics.gravity || "N/A"
+    }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%, Signal Coherence: ~${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%, Signal Output: ~${
+      diagnosticMetrics.signalOutput || "N/A"
+    }%) with evidence from the new conversation
 - Calculate what changed based on the new responses
 - Output updated metrics in the METRICS GAUGE section with actual calculated values
 - DO NOT use placeholders - calculate actual values based on evidence from the new conversation
@@ -1368,8 +1422,9 @@ Marker of shift:
 
 ### 7. SIGNAL COHERENCE
 
-**Signal Coherence:** [Current status - use exact calculated value: ${diagnosticMetrics.signalCoherence || "N/A"
-      }%]
+**Signal Coherence:** [Current status - use exact calculated value: ${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%]
 
 **Coherence Evidence:**
 [Specific examples from conversation transcript showing signal coherence:
@@ -1417,20 +1472,21 @@ That's it.
 
 ## METRICS GAUGE (Current Snapshot)
 
-* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%
 * **Consciousness Level:** ${renderGauge(
-        (diagnosticMetrics.consciousnessLevel || 0) * 20,
-      )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+      (diagnosticMetrics.consciousnessLevel || 0) * 20,
+    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
 * **Gravity:** ${renderGauge(
-        diagnosticMetrics.gravity || 0,
-      )}  [Current status with arrow if changed]
+      diagnosticMetrics.gravity || 0,
+    )}  [Current status with arrow if changed]
 * **Signal Coherence:** ${renderGauge(
-        diagnosticMetrics.signalCoherence || 0,
-      )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+      diagnosticMetrics.signalCoherence || 0,
+    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
 * **Signal Output:** ${renderGauge(
-        diagnosticMetrics.signalOutput || 0,
-      )}  [Current status]
+      diagnosticMetrics.signalOutput || 0,
+    )}  [Current status]
 
 ---
 
@@ -1863,9 +1919,9 @@ METRICS_JSON_END`;
         message: `Discovery report generated. PDF are being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together`,
         nextMessage: finalBotMessage
           ? {
-            role: "assistant",
-            content: finalBotMessage,
-          }
+              role: "assistant",
+              content: finalBotMessage,
+            }
           : nextMessage, // Include bot's final completion message + system message
         discoveryReport: discoveryReport || null,
         pdfPath: null, // Will be generated in background
@@ -1874,10 +1930,11 @@ METRICS_JSON_END`;
         status: "completed",
         statusMessage:
           "Report generated. PDF and email processing in background.",
-        userMessage: `Your discovery report has been generated. ${shouldEmail
-          ? "Email will be sent shortly."
-          : "You can access it in your account."
-          }`,
+        userMessage: `Your discovery report has been generated. ${
+          shouldEmail
+            ? "Email will be sent shortly."
+            : "You can access it in your account."
+        }`,
         emailed: false, // Will be updated in background
         // Don't include answeredCount or pendingQuestion in discovery mode - those are for diagnostic mode only
       });
@@ -1911,8 +1968,9 @@ METRICS_JSON_END`;
               const buffer = await fs.promises.readFile(pdfPath);
               const upload = await uploadBufferToSupabase({
                 buffer,
-                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                  }-${Date.now()}.pdf`,
+                objectPath: `discoveries/discovery-${
+                  existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
                 contentType: "application/pdf",
               });
 
@@ -2001,7 +2059,9 @@ METRICS_JSON_END`;
     const discoveryIntakeState = {
       transcript: updatedTranscript,
       discoveryType: discoveryType || "integrated",
-      exchangesAtLastDeclinedEndChat: userDeclinedEndChat ? substantialExchanges : (existingState.exchangesAtLastDeclinedEndChat || 0),
+      exchangesAtLastDeclinedEndChat: userDeclinedEndChat
+        ? substantialExchanges
+        : existingState.exchangesAtLastDeclinedEndChat || 0,
       updatedAt: new Date().toISOString(),
       mode: "discovery",
     };
@@ -2021,8 +2081,9 @@ METRICS_JSON_END`;
       await Diagnostic.create({
         userId: appUser.id || null,
         email,
-        title: `Discovery Chat (Draft) – ${name || email?.split("@")[0] || "User"
-          }`,
+        title: `Discovery Chat (Draft) – ${
+          name || email?.split("@")[0] || "User"
+        }`,
         data: {
           profile: { name, email },
           intakeState: discoveryIntakeState,
@@ -2034,7 +2095,7 @@ METRICS_JSON_END`;
   // Get updated state after saving
   const updatedState = existingDiagnostic
     ? (await Diagnostic.findByPk(existingDiagnostic.id))?.data?.intakeState ||
-    existingState
+      existingState
     : existingState;
 
   // Intercept nextMessage if we've asked 6+ questions and it's asking another question
@@ -2184,16 +2245,20 @@ const handleDiscoveryFinalize = async ({
 
   // Format user session summaries for report generation
   const sessionSummariesForFinalize = (
-    Array.isArray(allUserSessions) ? allUserSessions : latestUserSession ? [latestUserSession] : []
+    Array.isArray(allUserSessions)
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : []
   )
     .filter((s) => s?.summery && s.summery.trim().length > 0)
     .map((s, idx) => {
       const sessionDate = s.sessionDate
         ? new Date(s.sessionDate).toLocaleDateString("en-US", {
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        })
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
         : "Date not specified";
       return `Session ${idx + 1} (${sessionDate}):\n${s.summery}`;
     })
@@ -2227,62 +2292,65 @@ Where previous reports offered a sentence, this report offers a full analytical 
 **Previous Diagnostic (Baseline - DO NOT COPY STYLE):**
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-      ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
+${
+  previousDiscovery
+    ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
 ${truncateForContext(
-        previousDiscovery.data?.newReport ||
-        previousDiscovery.data?.previousReport ||
-        previousDiscovery.newReportSnippet ||
-        previousDiscovery.data?.newReportSnippet ||
-        "",
-        4000,
-      )}`
-      : ""
-    }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000,
+)}`
+    : ""
+}
 
-${sessionSummariesForFinalize
-      ? `============================
+${
+  sessionSummariesForFinalize
+    ? `============================
 **USER SESSION SUMMARIES (Admin-uploaded 1:1 coaching session summaries):**
 ============================
 ${sessionSummariesForFinalize}
 ============================`
-      : ""
-    }
+    : ""
+}
  
-${(allUserSessions && allUserSessions.length > 0) ||
-      latestUserSession?.transcript
-      ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
+${
+  (allUserSessions && allUserSessions.length > 0) ||
+  latestUserSession?.transcript
+    ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
 *Use this data to build your 300-word analysis sections. Analyze the user's specific language, fears, and breakthroughs.*
 
 ${(() => {
-        const sessionsToUse =
-          allUserSessions && allUserSessions.length > 0
-            ? allUserSessions
-            : latestUserSession
-              ? [latestUserSession]
-              : [];
-        return sessionsToUse
-          .map((session, index) => {
-            const sessionNum =
-              sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
-            const sessionDate = session.sessionDate
-              ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })
-              : "Unknown Date";
+  const sessionsToUse =
+    allUserSessions && allUserSessions.length > 0
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : [];
+  return sessionsToUse
+    .map((session, index) => {
+      const sessionNum =
+        sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
+      const sessionDate = session.sessionDate
+        ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Unknown Date";
 
-            return `--- ${sessionNum} (${sessionDate}) ---
+      return `--- ${sessionNum} (${sessionDate}) ---
 Summary: ${session.summery || "N/A"}
 Transcript Data: ${JSON.stringify(session.transcript)}
 `;
-          })
-          .join("\n\n");
-      })()}
+    })
+    .join("\n\n");
+})()}
 `
-      : ""
-    }
+    : ""
+}
 
 **Current Discovery Chat Transcript (Latest Data):**
 ${JSON.stringify(transcriptForFinal, null, 2)}
@@ -2707,8 +2775,9 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
       try {
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Diagnostics Chat Report – ${name || email?.split("@")[0] || "User"
-            }`,
+          title: `Diagnostics Chat Report – ${
+            name || email?.split("@")[0] || "User"
+          }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
           data: {
             profile: {
@@ -2730,8 +2799,9 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             const buffer = await fs.promises.readFile(pdfPath);
             const upload = await uploadBufferToSupabase({
               buffer,
-              objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                }-${Date.now()}.pdf`,
+              objectPath: `discoveries/discovery-${
+                existingDiagnostic?.id || Date.now()
+              }-${Date.now()}.pdf`,
               contentType: "application/pdf",
             });
             pdfUrl = upload.url || null;
@@ -3437,10 +3507,10 @@ const handleDiagnosticMode = async ({
   // Optimization: Pass wantsNewDiagnostic to avoid redundant LLM call
   const userWantsToGenerateReport = lastUser?.content
     ? await detectUserWantsToEndOrGenerateReport({
-      userMessage: lastUser.content,
-      transcript: transcript,
-      wantsNewDiagnosticVal: wantsNewDiagnostic, // Pass pre-calculated value
-    })
+        userMessage: lastUser.content,
+        transcript: transcript,
+        wantsNewDiagnosticVal: wantsNewDiagnostic, // Pass pre-calculated value
+      })
     : false;
 
   // Calculate confidence after 25 questions to determine if we need clarifier questions
@@ -3586,20 +3656,32 @@ const handleDiagnosticMode = async ({
 
   // HARD STOP: If we've already asked 6 CB questions, force finalization regardless of confidence
   if (existingCBCount >= 6) {
-    console.log("[diagnostic] 🛑 Maximum 6 CB questions reached - forcing finalization");
+    console.log(
+      "[diagnostic] 🛑 Maximum 6 CB questions reached - forcing finalization",
+    );
     // Set shouldAutoFinalize to true to trigger report generation
     needsClarifierQuestions = false;
     // Fall through to the shouldAutoFinalize block below
-  } else if (needsClarifierQuestions && !shouldAutoFinalize && hasMetMinimumQuestions) {
-    console.log("[diagnostic] 🎯 Generating clarifier question (CB) using AI with brain prompt");
+  } else if (
+    needsClarifierQuestions &&
+    !shouldAutoFinalize &&
+    hasMetMinimumQuestions
+  ) {
+    console.log(
+      "[diagnostic] 🎯 Generating clarifier question (CB) using AI with brain prompt",
+    );
 
     // Get the suggested focus from confidence calculation
     const suggestedFocus = confidenceResult?.suggestedFocus || "";
 
     // Fetch brain prompt from DB for clarifier question generation
     const { PromptType } = require("../utils/types");
-    const brainPromptObjForCB = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
-    const diagnosticPromptObjForCB = await getLatestPromptFromDb(PromptType.DIAGNOSTIC);
+    const brainPromptObjForCB = await getLatestPromptFromDb(
+      PromptType.BRAINPROMPT,
+    );
+    const diagnosticPromptObjForCB = await getLatestPromptFromDb(
+      PromptType.DIAGNOSTIC,
+    );
     const brainPromptForCB = brainPromptObjForCB?.content || "";
     const diagnosticPromptForCB = diagnosticPromptObjForCB?.content || "";
 
@@ -3610,9 +3692,13 @@ const handleDiagnosticMode = async ({
       .join("\n\n");
 
     // Get recent Q&A context (last 10 exchanges)
-    const recentContext = updatedTranscript.slice(-20).map((m) =>
-      `${m.role === "assistant" ? "AI" : "User"}: ${m.content?.substring(0, 300)}`
-    ).join("\n");
+    const recentContext = updatedTranscript
+      .slice(-20)
+      .map(
+        (m) =>
+          `${m.role === "assistant" ? "AI" : "User"}: ${m.content?.substring(0, 300)}`,
+      )
+      .join("\n");
 
     // Generate CB question using AI
     const cbSystemPrompt = `${brainPromptForCB}\n\n${diagnosticPromptForCB}\n\n---
@@ -3675,7 +3761,9 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
         };
       }
 
-      console.log(`[diagnostic] AI generated CB${nextCBNumber} question successfully`);
+      console.log(
+        `[diagnostic] AI generated CB${nextCBNumber} question successfully`,
+      );
     } catch (err) {
       console.error("[diagnostic] AI CB question generation failed:", err);
       // Fallback to a simple clarifier question
@@ -3687,7 +3775,10 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
         "If someone was watching your behaviour (not your intentions), what would they see you do repeatedly?",
         "What's the thing you know you should do but keep not doing?",
       ];
-      const fallbackIndex = Math.min(nextCBNumber - 1, fallbackQuestions.length - 1);
+      const fallbackIndex = Math.min(
+        nextCBNumber - 1,
+        fallbackQuestions.length - 1,
+      );
       cbMessage = {
         role: "assistant",
         content: `I hear you.\n\n**CB${nextCBNumber}:** ${fallbackQuestions[fallbackIndex]}`,
@@ -4394,7 +4485,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     }
 
     // CRITICAL: Check if diagnostic report already exists
-    const hasExistingReportGenerated = existingDiagnostic?.data?.aiReport || existingDiagnostic?.report;
+    const hasExistingReportGenerated =
+      existingDiagnostic?.data?.aiReport || existingDiagnostic?.report;
 
     const hasIncompleteChat =
       transcriptInternal &&
@@ -4404,8 +4496,14 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     // If user has a completed diagnostic report and no messages (empty request),
     // and they don't have an ongoing discovery chat, start a NEW discovery chat
-    if (hasExistingReportGenerated && (!messages || messages.length === 0) && transcriptInternal.length === 0) {
-      console.log("[diagnostic] User has existing report - generating AI welcome message for discovery chat");
+    if (
+      hasExistingReportGenerated &&
+      (!messages || messages.length === 0) &&
+      transcriptInternal.length === 0
+    ) {
+      console.log(
+        "[diagnostic] User has existing report - generating AI welcome message for discovery chat",
+      );
 
       // Clear any old diagnostic transcript so discovery starts fresh
       if (existingDiagnostic) {
@@ -4414,7 +4512,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
             ...(existingDiagnostic.data || {}),
             intakeState: {
               transcript: [], // Clear old diagnostic transcript
-              completedAt: existingDiagnostic.data?.intakeState?.completedAt || new Date().toISOString(),
+              completedAt:
+                existingDiagnostic.data?.intakeState?.completedAt ||
+                new Date().toISOString(),
               mode: "discovery",
             },
           },
@@ -4423,16 +4523,27 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
       // Generate AI welcome message using brain prompt + discovery chat prompt
       const { PromptType } = require("../utils/types");
-      const { buildDiscoveryChatPrompt, getDiscoverySystemPrompt, getLatestPromptFromDb } = require("../helpers/euphoriamChatbot");
+      const {
+        buildDiscoveryChatPrompt,
+        getDiscoverySystemPrompt,
+        getLatestPromptFromDb,
+      } = require("../helpers/euphoriamChatbot");
 
-      const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
-      const discoveryChatPromptObj = await getLatestPromptFromDb(PromptType.DIAGNOSTIC_CHAT);
+      const brainPromptObj = await getLatestPromptFromDb(
+        PromptType.BRAINPROMPT,
+      );
+      const discoveryChatPromptObj = await getLatestPromptFromDb(
+        PromptType.DIAGNOSTIC_CHAT,
+      );
       const brainPrompt = brainPromptObj?.content || "";
       const discoveryChatPrompt = discoveryChatPromptObj?.content || "";
 
       // Get prior report snippet for context
-      const priorReport = existingDiagnostic?.data?.aiReport || existingDiagnostic?.report || "";
-      const priorReportSnippetForWelcome = priorReport ? truncateForContext(priorReport, 12000) : null;
+      const priorReport =
+        existingDiagnostic?.data?.aiReport || existingDiagnostic?.report || "";
+      const priorReportSnippetForWelcome = priorReport
+        ? truncateForContext(priorReport, 12000)
+        : null;
 
       // Build system prompt with brain prompt
       const systemPromptForWelcome = getDiscoverySystemPrompt(
@@ -4468,7 +4579,12 @@ const chatbotDiagnosticFreeform = async (req, res) => {
             content: `Previous report for ${name}:\n${priorReportSnippetForWelcome}`,
           });
         }
-        welcomeAiMessages.push({ role: "user", content: userPromptForWelcome || "Generate a warm welcome message for this returning user in discovery mode." });
+        welcomeAiMessages.push({
+          role: "user",
+          content:
+            userPromptForWelcome ||
+            "Generate a warm welcome message for this returning user in discovery mode.",
+        });
 
         const welcomeResponse = await withTimeout(
           openai.chat.completions.create({
@@ -4482,7 +4598,10 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         welcomeMessage = welcomeResponse.choices[0].message;
         console.log("[diagnostic] AI welcome message generated successfully");
       } catch (err) {
-        console.error("[diagnostic] AI welcome message generation failed:", err);
+        console.error(
+          "[diagnostic] AI welcome message generation failed:",
+          err,
+        );
       }
 
       isNewDiscoverySession = true;
@@ -4529,7 +4648,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     if (allQuestionsAnswered && !hasExistingReportGenerated) {
       // 25 questions answered but NO report generated yet
       // Return the transcript so the flow can calculate confidence and generate report
-      console.log("[diagnostic] 25 questions answered but no report yet - need to calculate confidence and generate report");
+      console.log(
+        "[diagnostic] 25 questions answered but no report yet - need to calculate confidence and generate report",
+      );
 
       const {
         distinctQuestionNumbers: qNums,
@@ -4537,26 +4658,31 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         distinctQuestionsAnswered: ansCount,
       } = trackQuestionNumbers(transcriptInternal);
 
-      return successResponse(res, "Ready for confidence check and report generation", {
-        hasIncompleteChat: true, // Keep it as incomplete so it processes
-        hasExistingReport: false,
-        mode: "diagnostic", // Stay in diagnostic mode
-        needsConfidenceCheck: true, // Flag to indicate confidence needs to be calculated
-        transcript: transcriptInternal,
-        intakeState: {
-          ...intakeStateInternal,
-          answeredCount: ansCount,
-          pendingQuestion: false,
-          distinctQuestionNumbers: qNums,
-          maxQuestionNumber: maxQ,
-          distinctQuestionsAnswered: ansCount,
+      return successResponse(
+        res,
+        "Ready for confidence check and report generation",
+        {
+          hasIncompleteChat: true, // Keep it as incomplete so it processes
+          hasExistingReport: false,
+          mode: "diagnostic", // Stay in diagnostic mode
+          needsConfidenceCheck: true, // Flag to indicate confidence needs to be calculated
+          transcript: transcriptInternal,
+          intakeState: {
+            ...intakeStateInternal,
+            answeredCount: ansCount,
+            pendingQuestion: false,
+            distinctQuestionNumbers: qNums,
+            maxQuestionNumber: maxQ,
+            distinctQuestionsAnswered: ansCount,
+          },
+          diagnosticMetrics: metricsForResponse,
+          questionsAnswered: ansCount,
+          targetCount: 25,
+          status: "needs_finalization",
+          statusMessage:
+            "25 questions completed - calculating confidence for report generation",
         },
-        diagnosticMetrics: metricsForResponse,
-        questionsAnswered: ansCount,
-        targetCount: 25,
-        status: "needs_finalization",
-        statusMessage: "25 questions completed - calculating confidence for report generation",
-      });
+      );
     } else if (hasIncompleteChat) {
       const isIncompleteDiscovery =
         hasExistingReport && intakeStateInternal.mode === "discovery";
@@ -4608,7 +4734,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           pendingQuestions: Math.max(
             0,
             25 -
-            transcriptInternal.filter((m) => m.role === "assistant").length,
+              transcriptInternal.filter((m) => m.role === "assistant").length,
           ),
         },
         diagnosticMetrics: metricsForResponse,
@@ -4778,9 +4904,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-          question: lastAssistant.content,
-          reply: lastUser.content,
-        })
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          })
         : false;
 
     const qStats = trackQuestionNumbers(transcript);
@@ -4802,7 +4928,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     const isIncompleteChatDiscoveryMode =
       hasIncompleteChat &&
       hasExistingReport &&
-      (existingState?.mode === "discovery" || intakeStateInternal2?.mode === "discovery");
+      (existingState?.mode === "discovery" ||
+        intakeStateInternal2?.mode === "discovery");
 
     console.log("[diagnostic] Mode determination:", {
       hasIncompleteChat,
@@ -4832,16 +4959,20 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     // CRITICAL CHECK: Has a diagnostic REPORT actually been generated?
     // This is different from hasExistingReport which checks for diagnostic record existence
-    const hasActualReportGenerated = !!(existingDiagnostic?.data?.aiReport || existingDiagnostic?.report);
+    const hasActualReportGenerated = !!(
+      existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
+    );
 
     // SAFETY: If user has existing report and didn't explicitly ask for new diagnostic,
     // they should be in discovery mode (unless they have an incomplete DIAGNOSTIC chat)
-    const hasIncompleteDiagnosticChat = hasIncompleteChat && !isIncompleteChatDiscoveryMode;
+    const hasIncompleteDiagnosticChat =
+      hasIncompleteChat && !isIncompleteChatDiscoveryMode;
 
-    // CRITICAL: If 25 questions answered but no ACTUAL report generated, 
+    // CRITICAL: If 25 questions answered but no ACTUAL report generated,
     // STAY in diagnostic mode to calculate confidence and generate report
     // DO NOT switch to discovery mode until report is generated
-    const needsReportGeneration = distinctQuestionsAnswered >= 25 && !hasActualReportGenerated;
+    const needsReportGeneration =
+      distinctQuestionsAnswered >= 25 && !hasActualReportGenerated;
 
     // Only allow discovery mode if:
     // 1. Report has actually been generated (not just diagnostic record exists)
@@ -4853,7 +4984,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       hasActualReportGenerated && // ONLY discovery if report actually exists
       !wantsNewDiagnostic && // User didn't ask for new diagnostic
       !hasIncompleteDiagnosticChat && // No incomplete diagnostic chat
-      (isIncompleteChatDiscoveryMode || shouldShowExistingReportFirst || !intakeInProgress);
+      (isIncompleteChatDiscoveryMode ||
+        shouldShowExistingReportFirst ||
+        !intakeInProgress);
 
     console.log("[diagnostic] Final mode decision:", {
       isDiscoveryMode,
@@ -4896,9 +5029,13 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
   // SAFETY OVERRIDE: Double-check that we don't enter discovery mode without an actual report
   // This prevents the bug where 25 questions are answered but system switches to discovery
-  const actualReportExists = !!(existingDiagnostic?.data?.aiReport || existingDiagnostic?.report);
+  const actualReportExists = !!(
+    existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
+  );
   if (isDiscoveryMode && !actualReportExists) {
-    console.log("[diagnostic] ⚠️ SAFETY OVERRIDE: isDiscoveryMode was true but no actual report exists. Forcing diagnostic mode.");
+    console.log(
+      "[diagnostic] ⚠️ SAFETY OVERRIDE: isDiscoveryMode was true but no actual report exists. Forcing diagnostic mode.",
+    );
     isDiscoveryMode = false;
   }
 
@@ -5063,8 +5200,14 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
   // Fallback for Discovery First Message or AI Failure
   // SAFETY: Only generate discovery welcome if an actual report exists
-  const reportActuallyExists = !!(existingDiagnostic?.data?.aiReport || existingDiagnostic?.report);
-  if (isDiscoveryMode && (!nextMessage || !nextMessage.content) && reportActuallyExists) {
+  const reportActuallyExists = !!(
+    existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
+  );
+  if (
+    isDiscoveryMode &&
+    (!nextMessage || !nextMessage.content) &&
+    reportActuallyExists
+  ) {
     // Merge metrics intelligently: use latestDiscoveryMetrics as base, fill missing from diagnosticMetrics
     let metricsToUse = {};
 
@@ -5134,22 +5277,22 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         : undefined;
     const signalCoherence =
       metricsToUse.signalCoherence !== undefined &&
-        metricsToUse.signalCoherence !== null
+      metricsToUse.signalCoherence !== null
         ? metricsToUse.signalCoherence
         : undefined;
     const signalOutput =
       metricsToUse.signalOutput !== undefined &&
-        metricsToUse.signalOutput !== null
+      metricsToUse.signalOutput !== null
         ? metricsToUse.signalOutput
         : undefined;
     const consciousnessLevel =
       metricsToUse.consciousnessLevel !== undefined &&
-        metricsToUse.consciousnessLevel !== null
+      metricsToUse.consciousnessLevel !== null
         ? metricsToUse.consciousnessLevel
         : undefined;
     const qgcActivation =
       metricsToUse.qgcActivation !== undefined &&
-        metricsToUse.qgcActivation !== null
+      metricsToUse.qgcActivation !== null
         ? metricsToUse.qgcActivation
         : undefined;
 
@@ -5233,10 +5376,12 @@ ${formatPercentage(signalOutput)}`
     }
 
     const qText = correction
-      ? `Since this report (${reportDate || "recently"
-      }), have you made any progress on ${correction}?`
-      : `Since this report (${reportDate || "recently"
-      }), what has changed or stayed the same?`;
+      ? `Since this report (${
+          reportDate || "recently"
+        }), have you made any progress on ${correction}?`
+      : `Since this report (${
+          reportDate || "recently"
+        }), what has changed or stayed the same?`;
 
     nextMessage = {
       role: "assistant",
@@ -5247,19 +5392,21 @@ I want to reflect it back to you first — simply and cleanly — before we move
 Your structure at the last check-in was very clear:
 ${metricsSection}
 
-${keySentence
-          ? `This is the key sentence from your map, distilled:
+${
+  keySentence
+    ? `This is the key sentence from your map, distilled:
 > *"${keySentence}"*
 
 `
-          : ""
-        }${correction
+    : ""
+}${
+        correction
           ? `Your **entire correction** was about one thing only:
 **${correction}**
 
 `
           : ""
-        }Before I update anything, I need to check one thing — slowly.
+      }Before I update anything, I need to check one thing — slowly.
 
 **Since this report (${reportDate || "recently"}):**
 
@@ -5313,14 +5460,20 @@ Take your time and share what feels true for you.`,
   const intakeState = {
     transcript: updatedTranscript,
     acceptedAnswers,
-    answeredCount: Math.max(0, (distinctQuestionsAnswered || 0) - (pendingQuestion ? 1 : 0)),
+    answeredCount: Math.max(
+      0,
+      (distinctQuestionsAnswered || 0) - (pendingQuestion ? 1 : 0),
+    ),
     lastQuestionNumber: maxQuestionNumber,
     pendingQuestion,
     updatedAt: new Date().toISOString(),
     requestingNewDiagnostic: shouldShowExistingReportFirst
       ? false
       : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
-    exchangesAtLastDeclinedEndChat: (req.body.userConfirmedEndChat === false) ? substantialExchanges : (existingState.exchangesAtLastDeclinedEndChat || 0),
+    exchangesAtLastDeclinedEndChat:
+      req.body.userConfirmedEndChat === false
+        ? substantialExchanges
+        : existingState.exchangesAtLastDeclinedEndChat || 0,
   };
 
   const intakeStateForDiag = {
@@ -5421,7 +5574,7 @@ Take your time and share what feels true for you.`,
   if (finalize) {
     const transcriptForFinal =
       (Array.isArray(existingState.transcript) &&
-        existingState.transcript.length
+      existingState.transcript.length
         ? existingState.transcript
         : transcript) || [];
     const finalUser = [...transcriptForFinal]

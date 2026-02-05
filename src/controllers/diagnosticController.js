@@ -5482,6 +5482,19 @@ Take your time and share what feels true for you.`,
     }
   }
 
+  // Count substantial exchanges (user messages with meaningful content)
+  const userMessagesForExchanges = updatedTranscript.filter(
+    (m) => m?.role === "user",
+  );
+  const substantialExchanges = userMessagesForExchanges.filter((m) => {
+    const content = (m.content || "").trim();
+    const wordCount = content.split(/\s+/).length;
+    return (
+      wordCount >= 2 ||
+      /^(yes|no|maybe|idk|okay|sure|fine|good|bad|better|worse)$/i.test(content)
+    );
+  }).length;
+
   const intakeState = {
     transcript: updatedTranscript,
     acceptedAnswers,

@@ -1076,6 +1076,7 @@ export async function buildKajabiDiagnosticContext({
 }) {
   const customerInfo = await getCustomerByEmail(email);
   if (!customerInfo) {
+    console.warn("❌ No customer found for email", email);
     return null;
   }
   const customerDetails = await getCustomerFullDetails(customerInfo.id);
@@ -1093,6 +1094,10 @@ export async function buildKajabiDiagnosticContext({
 
   const site = siteId ? await getSiteById(siteId) : null;
   const contact = contactId ? await getContactById(contactId) : null;
+
+  if (!siteId) console.warn("⚠️ No site linked to customer");
+  if (!contactId) console.warn("⚠️ No contact linked to customer");
+
   const offers = await Promise.all(offerIds.map((id) => getOfferById(id)));
   const products = await Promise.all(
     productIds.map((id) => getProductWithCourse(id)),
@@ -1102,6 +1107,7 @@ export async function buildKajabiDiagnosticContext({
 
   for (const product of products) {
     const productData = product?.data;
+    const productTitle = productData?.attributes?.title;
     const productType = productData?.attributes?.product_type_name;
 
     // Only process COURSE products
@@ -1129,6 +1135,11 @@ export async function buildKajabiDiagnosticContext({
     // Fetch course with posts
     const courseData = await getCourseWithPosts(courseId);
 
+    if (!courseData) {
+      console.error("❌ Failed to fetch course data", courseId);
+      continue;
+    }
+
     // Extract assessments from posts
     const assessments = extractAssessmentsFromCourse(courseData);
 
@@ -1137,7 +1148,7 @@ export async function buildKajabiDiagnosticContext({
       continue;
     }
 
-    // Get customer progress (completed / passed / failed)
+    // Get customer progress
     const progress = await getAssessmentProgressForCustomer(
       customerData.id,
       assessments,
@@ -1145,7 +1156,7 @@ export async function buildKajabiDiagnosticContext({
 
     courseAssessments.push({
       courseId,
-      courseTitle: productData.attributes.title,
+      courseTitle: productTitle,
       assessmentCount: assessments.length,
       ...progress,
     });

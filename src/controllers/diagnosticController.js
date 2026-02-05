@@ -28,6 +28,7 @@ const {
   trackQuestionNumbers,
   buildChatPrompts,
   buildFreeformIntakePrompt,
+  getDiagnosticNewUserWelcomeMessage,
   extractQuestionNumber,
   validateChatbotRequest,
   SUPPORT_LOCK_PROMPT,
@@ -5134,8 +5135,32 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     const safeSystemPrompt =
       systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
-    // Only call OpenAI if we don't have a modal confirmation/declination in progress
-    if (safeSystemPrompt && req.body.userConfirmedEndChat === undefined) {
+
+    // Diagnostic + new user + first interaction: use pre-built welcome message (skip AI call)
+    const isDiagnosticNewUserFirstLoad =
+      !isDiscoveryMode &&
+      !hasExistingReport &&
+      transcript.length === 0 &&
+      req.body.userConfirmedEndChat === undefined;
+
+    if (isDiagnosticNewUserFirstLoad) {
+      const welcomeContent = await getDiagnosticNewUserWelcomeMessage(name);
+      if (welcomeContent) {
+        nextMessage = {
+          role: "assistant",
+          content: welcomeContent,
+        };
+        aiAnswered = true;
+        console.log(
+          "[diagnostic] New user first load - using welcome message from Diagnostic prompt",
+        );
+      }
+    }
+    if (
+      !nextMessage?.content &&
+      safeSystemPrompt &&
+      req.body.userConfirmedEndChat === undefined
+    ) {
       let aiMessages = [{ role: "system", content: safeSystemPrompt }];
       if (priorReportSnippet) {
         aiMessages.push({

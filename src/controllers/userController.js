@@ -173,6 +173,32 @@ const createUser = async (req, res) => {
   const user = await userModel.create(payload);
   return successResponse(res, "User created", user, 201);
 };
+const updateTheme = async (req, res) => {
+  try {
+    const { email, lightTheme } = req.body;
+
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+    if (typeof lightTheme !== "boolean") {
+      return errorResponse(res, "lightTheme must be true or false", 400);
+    }
+
+    const findUser = await userModel.findOne(email);
+
+    if (!findUser) {
+      return errorResponse(res, "User not found", 404);
+    }
+
+    const user = await findUser.update({
+      lightTheme,
+    });
+
+    return successResponse(res, "Theme updated", user);
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
 
 const getMe = async (req, res) => {
   const user = await User.findByPk(req.user.sub, {
@@ -625,6 +651,7 @@ const getUserProfile = async (req, res) => {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       metadata: user.metadata || {},
+      lightTheme: user.lightTheme,
     };
 
     // Extract membership level
@@ -798,6 +825,7 @@ const verifyOTP = async (req, res) => {
     return successResponse(res, "OTP verified successfully", {
       token,
       expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
+      lightTheme: user.lightTheme,
     });
   } catch (error) {
     console.error("[verifyOTP] Error:", error);
@@ -885,4 +913,5 @@ module.exports = {
   verifyOTP,
   resendOTP,
   isCreatorClubMember,
+  updateTheme,
 };

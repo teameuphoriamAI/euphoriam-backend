@@ -273,6 +273,15 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
         ) THEN
           ALTER TABLE "users" ADD COLUMN "requestedOTP" BOOLEAN NOT NULL DEFAULT false;
         END IF;
+
+        -- Add lightTheme column if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' 
+          AND column_name = 'lightTheme'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "lightTheme" BOOLEAN DEFAULT true;
+        END IF;
       END $$;
     `);
     console.log("Users table OTP columns migration completed");

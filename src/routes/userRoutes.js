@@ -10,36 +10,29 @@ router.get(
   "/",
   auth,
   requireRole(["admin"]),
-  asyncHandler(userController.listUsers)
+  asyncHandler(userController.listUsers),
 );
 router.post(
   "/",
   auth,
   requireRole(["admin"]),
-  asyncHandler(userController.createUser)
+  asyncHandler(userController.createUser),
 );
 router.post(
   "/",
   auth,
   requireRole(["admin"]),
-  asyncHandler(userController.createUser)
+  asyncHandler(userController.createUser),
 );
 router.get(
   "/report/:id",
   auth,
   requireRole(["admin"]),
-  asyncHandler(userController.userReport)
+  asyncHandler(userController.userReport),
 );
-router.post(
-  "/profile",
-  auth,
-  asyncHandler(userController.getUserProfile)
-);router.post(
-  "/verifyOTP",
-  asyncHandler(userController.verifyOTP)
-);
-router.post(
-  "/resendOTP",
-  asyncHandler(userController.resendOTP)
-);
+router.post("/profile", auth, asyncHandler(userController.getUserProfile));
+router.post("/verifyOTP", asyncHandler(userController.verifyOTP));
+router.post("/resendOTP", asyncHandler(userController.resendOTP));
+router.post("/updateTheme", asyncHandler(userController.updateTheme));
+
 module.exports = router;

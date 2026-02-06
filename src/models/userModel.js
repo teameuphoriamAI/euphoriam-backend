@@ -39,7 +39,10 @@ const User = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
-
+    lightTheme: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
     //Resend OTP Tracking
     resendOTPCount: {
       type: DataTypes.INTEGER,

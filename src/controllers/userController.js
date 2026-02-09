@@ -699,7 +699,7 @@ const getUserProfile = async (req, res) => {
       qgcActivation: hasQgcActivation
         ? Number(currentMetrics.qgcActivation) || 0
         : 0,
-      consciousnessLevel: formattedConsciousnessLevel,
+      consciousnessLevel: Math.round(formattedConsciousnessLevel),
       gravity: hasGravity ? Number(currentMetrics.gravity) || 0 : 0,
       signalCoherence: hasSignalCoherence
         ? Number(currentMetrics.signalCoherence) || 0

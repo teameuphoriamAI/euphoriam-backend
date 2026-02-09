@@ -296,6 +296,78 @@ RULES:
   }
 };
 
+/** True if message is the discovery "Welcome back... I've loaded your last report" block */
+const isDiscoveryWelcomeMessage = (msg) =>
+  msg?.role === "assistant" &&
+  typeof msg?.content === "string" &&
+  /welcome back/i.test(msg.content) &&
+  /(loaded your last report|loaded your previous diagnostic report)/i.test(
+    msg.content,
+  );
+
+/**
+ * Remove duplicate discovery-welcome block from transcript (e.g. after refresh
+ * frontend can send duplicate leading to [welcome, user, asst, welcome, user, asst, ...]).
+ * Keeps the first welcome block and strips the second.
+ */
+const removeDuplicateDiscoveryWelcomeBlock = (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length < 4) return transcript;
+  const firstIdx = transcript.findIndex(isDiscoveryWelcomeMessage);
+  if (firstIdx === -1) return transcript;
+  const secondIdx = transcript.findIndex(
+    (m, i) => i > firstIdx && isDiscoveryWelcomeMessage(m),
+  );
+  if (secondIdx === -1) return transcript;
+  // Remove second welcome and the next (user, assistant) pair so we don't leave a stray welcome
+  const removeEnd = Math.min(
+    secondIdx + 3,
+    transcript.length,
+  ); // welcome + user + asst = 3
+  return [
+    ...transcript.slice(0, secondIdx),
+    ...transcript.slice(removeEnd),
+  ];
+};
+
+/** Returns true if content is gibberish or too short/invalid for diagnostic intake */
+const isDiagnosticInputInvalid = (userContent) => {
+  if (!userContent || typeof userContent !== "string") return true;
+  const text = userContent.trim();
+  const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
+  const validShortResponses =
+    /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+
+  if (text.length <= 1) return true;
+  if (wordCount === 0 && text.length <= 2) return true;
+  if (
+    wordCount === 1 &&
+    text.length <= 3 &&
+    !validShortResponses.test(text) &&
+    !/[aeiou]/i.test(text)
+  )
+    return true;
+
+  const lowerText = text.toLowerCase();
+  const vowels = (lowerText.match(/[aeiou]/gi) || []).length;
+  const consonants = (lowerText.match(
+    /[bcdfghjklmnpqrstvwxyz]/gi,
+  ) || []).length;
+  const totalLetters = vowels + consonants;
+  if (totalLetters > 0 && vowels === 0) return true;
+  if (totalLetters >= 8 && vowels / totalLetters < 0.15) return true;
+  if (/^(.{1,3})\1{3,}$/i.test(text)) return true;
+  if (
+    wordCount === 1 &&
+    text.length >= 6 &&
+    consonants > 0 &&
+    vowels === 0
+  )
+    return true;
+  if (/^[bcdfghjklmnpqrstvwxyz]{6,}$/i.test(text)) return true;
+
+  return false;
+};
+
 const buildDiscoveryEmail = ({ transcript = [], email }) => {
   const lastMessages = transcript.slice(-10);
   const body = lastMessages
@@ -731,6 +803,214 @@ const handleDiscoveryMode = async ({
   latestUserSession, // Latest 1:1 coaching session (for backward compatibility)
   allUserSessions = null, // All 1:1 coaching sessions (preferred)
 }) => {
+  // // Validate user input for incomplete/invalid messages
+  // if (lastUser && lastUser.content) {
+  //   const userContent = lastUser.content.trim();
+  //   const wordCount = userContent.split(/\s+/).filter((w) => w.length > 0).length;
+
+  //   // Valid short responses that should be accepted
+  //   const validShortResponses = /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+
+  //   // Helper function to detect gibberish/nonsensical input
+  //   const isGibberish = (text) => {
+  //     if (text.length < 4) return false; // Too short to judge
+
+  //     const lowerText = text.toLowerCase();
+  //     const vowels = (lowerText.match(/[aeiou]/gi) || []).length;
+  //     const consonants = (lowerText.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length;
+  //     const totalLetters = vowels + consonants;
+
+  //     // Check 1: No vowels at all (like "kjtghjgjghjg")
+  //     if (totalLetters > 0 && vowels === 0) return true;
+
+  //     // Check 2: Very low vowel ratio (less than 15% vowels) for longer strings
+  //     if (totalLetters >= 8 && vowels / totalLetters < 0.15) return true;
+
+  //     // Check 3: Repetitive character patterns (same 2-3 chars repeating)
+  //     const repetitivePattern = /^(.{1,3})\1{3,}$/i;
+  //     if (repetitivePattern.test(text)) return true;
+
+  //     // Check 4: All consonants with no spaces (for single "word" gibberish)
+  //     if (wordCount === 1 && text.length >= 6 && consonants > 0 && vowels === 0) return true;
+
+  //     // Check 5: Random keyboard mashing pattern (alternating consonants with no vowels)
+  //     const consonantOnlyPattern = /^[bcdfghjklmnpqrstvwxyz]{6,}$/i;
+  //     if (consonantOnlyPattern.test(text)) return true;
+
+  //     return false;
+  //   };
+
+  //   // Check if input is too short or incomplete (single character, single letter, etc.)
+  //   const isIncompleteInput =
+  //     userContent.length <= 1 || // Single character like "g"
+  //     (wordCount === 0 && userContent.length <= 2) || // Very short fragments like "g " or "g."
+  //     (wordCount === 1 && userContent.length <= 3 && !validShortResponses.test(userContent)); // Single very short word that's not a valid response
+
+  //   // Check for gibberish/nonsensical input
+  //   const isInvalidGibberish = isGibberish(userContent);
+
+  //   if (isIncompleteInput || isInvalidGibberish) {
+  //     console.log("[handleDiscoveryMode] Invalid/incomplete input detected:", {
+  //       content: userContent,
+  //       length: userContent.length,
+  //       wordCount,
+  //       isIncomplete: isIncompleteInput,
+  //       isGibberish: isInvalidGibberish,
+  //     });
+
+  //     // Use the last *real* question (skip our own validation messages) so "Here's the question again" is correct
+  //     const ourValidationPrefix = "I see your message came through incomplete or unclear.";
+  //     const lastRealAssistant = [...transcript]
+  //       .reverse()
+  //       .find(
+  //         (m) =>
+  //           m?.role === "assistant" &&
+  //           m.content &&
+  //           !String(m.content).trim().startsWith(ourValidationPrefix),
+  //       );
+  //     const lastQuestion = (lastRealAssistant?.content || lastAssistant?.content || "").trim();
+  //     const questionSnippet =
+  //       lastQuestion &&
+  //       lastQuestion.length > 0 &&
+  //       !lastQuestion.startsWith(ourValidationPrefix)
+  //         ? lastQuestion.length > 300
+  //           ? lastQuestion.slice(0, 297).trim() + "..."
+  //           : lastQuestion
+  //         : null;
+  //     const withQuestion =
+  //       questionSnippet
+  //         ? `I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?\n\nHere's the question again:\n\n${questionSnippet}`
+  //         : "I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?";
+
+  //     const incompleteResponse = {
+  //       role: "assistant",
+  //       content: withQuestion,
+  //     };
+
+  //     const incompleteTranscript = [...transcript, incompleteResponse];
+
+  //     // Save, overwriting the transcript that may have already been saved with the AI response
+  //     if (appUser?.id) {
+  //       await saveChatIncrementally({
+  //         userId: appUser.id,
+  //         diagnosticId: existingDiagnostic?.id || null,
+  //         chatType: "discovery",
+  //         transcript: incompleteTranscript,
+  //         isChatEnded: false,
+  //       });
+  //     }
+
+  //     // Use same shape as normal discovery chat so frontend displays nextMessage
+  //     return successResponse(res, "Next chatbot message", {
+  //       nextMessage: incompleteResponse,
+  //       introPageText: introText,
+  //       transcript: transcript,
+  //       intakeState: {
+  //         ...existingState,
+  //         transcript: incompleteTranscript,
+  //         mode: "discovery",
+  //       },
+  //       retrieved: [],
+  //       resumeNotice: null,
+  //       status: "chatting",
+  //       statusMessage: "Chatting in progress",
+  //       canResume: true,
+  //       incompleteInput: true,
+  //     });
+  //   }
+  // }
+
+  // Validate user input for incomplete/invalid messages (discovery mode)
+  if (lastUser && lastUser.content) {
+    const userContent = lastUser.content.trim();
+    const wordCount = userContent
+      .split(/\s+/)
+      .filter((w) => w.length > 0).length;
+
+    // Valid short responses that should be accepted
+    const validShortResponses =
+      /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+
+    // Treat ultra-short, non-standard replies (like "l") as incomplete
+    const isIncompleteInput =
+      userContent.length <= 1 ||
+      (wordCount === 0 && userContent.length <= 2) ||
+      (wordCount === 1 &&
+        userContent.length <= 3 &&
+        !validShortResponses.test(userContent));
+
+    if (isIncompleteInput) {
+      console.log("[handleDiscoveryMode] Invalid/incomplete input detected:", {
+        content: userContent,
+        length: userContent.length,
+        wordCount,
+        isIncomplete: isIncompleteInput,
+      });
+
+      // Use the last *real* question (skip our own validation messages)
+      const ourValidationPrefix =
+        "I see your message came through incomplete or unclear.";
+      const lastRealAssistant = [...transcript]
+        .reverse()
+        .find(
+          (m) =>
+            m?.role === "assistant" &&
+            m.content &&
+            !String(m.content).trim().startsWith(ourValidationPrefix),
+        );
+      const lastQuestion = (
+        lastRealAssistant?.content || lastAssistant?.content || ""
+      ).trim();
+      const questionSnippet =
+        lastQuestion &&
+        lastQuestion.length > 0 &&
+        !lastQuestion.startsWith(ourValidationPrefix)
+          ? lastQuestion.length > 300
+            ? lastQuestion.slice(0, 297).trim() + "..."
+            : lastQuestion
+          : null;
+      const withQuestion = questionSnippet
+        ? `I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?\n\nHere's the question again:\n\n${questionSnippet}`
+        : "I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?";
+
+      const incompleteResponse = {
+        role: "assistant",
+        content: withQuestion,
+      };
+
+      const incompleteTranscript = [...transcript, incompleteResponse];
+
+      // Save corrected transcript
+      if (appUser?.id) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "discovery",
+          transcript: incompleteTranscript,
+          isChatEnded: false,
+        });
+      }
+
+      // Return validation message in normal discovery shape
+      return successResponse(res, "Next chatbot message", {
+        nextMessage: incompleteResponse,
+        introPageText: introText,
+        transcript: transcript,
+        intakeState: {
+          ...existingState,
+          transcript: incompleteTranscript,
+          mode: "discovery",
+        },
+        retrieved: [],
+        resumeNotice: null,
+        status: "chatting",
+        statusMessage: "Chatting in progress",
+        canResume: true,
+        incompleteInput: true,
+      });
+    }
+  }
+
   // Check if user has confirmed ending via frontend modal
   const userConfirmedEndChat = req.body.userConfirmedEndChat === true;
   const userDeclinedEndChat = req.body.userConfirmedEndChat === false;
@@ -881,10 +1161,22 @@ const handleDiscoveryMode = async ({
         content:
           "Understood. We'll let it land. What else would you like to explore or update regarding your patterns?",
       };
+      // Keep transcript and nextMessage in sync: append this message to transcript
+      updatedTranscript = [...(updatedTranscript || []), nextMessage];
+      if (appUser?.id) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "discovery",
+          transcript: updatedTranscript,
+          isChatEnded: false,
+        });
+      }
     }
   }
 
   // If we should ask to end chat (after 5+ substantial exchanges), return modal trigger
+  // Do NOT add the bot's "ready to generate" message yet: ask for user choice first, then send the next message.
   if (
     (shouldAskToEndChat || shouldForceAskToEnd) &&
     !userConfirmedEndChat &&
@@ -896,24 +1188,25 @@ const handleDiscoveryMode = async ({
       "exchanges",
     );
 
-    // Save current state
+    // Save transcript WITHOUT the new assistant message so state matches "modal only, no new bubble"
     if (appUser?.id) {
       await saveChatIncrementally({
         userId: appUser.id,
         diagnosticId: existingDiagnostic?.id || null,
         chatType: "discovery",
-        transcript: updatedTranscript,
+        transcript: transcript,
         isChatEnded: false,
       });
     }
 
-    // Return response with modal trigger
+    // Return modal only: no nextMessage so the UI doesn't show a new bot message or "typing".
+    // After user clicks End chat or Continue chat, we'll return the appropriate single response.
     return successResponse(res, "End chat confirmation required", {
       showEndChatModal: true,
-      nextMessage: nextMessage,
+      nextMessage: null,
       introPageText: introText,
-      transcript: updatedTranscript,
-      intakeState: existingState,
+      transcript: transcript,
+      intakeState: { ...existingState, transcript },
       retrieved: [],
       resumeNotice: null,
       status: "ask_end_chat",
@@ -1892,45 +2185,17 @@ METRICS_JSON_END`;
       });
 
       // Send response immediately - don't wait for PDF/email
-      // Include the bot's final message (nextMessage) with system message appended
-      let finalBotMessage = nextMessage?.content || "";
       const closingMessage =
         "Discovery report generated. Your PDF is being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together";
 
-      const isWelcomeBackMessage =
-        /welcome back/i.test(finalBotMessage) &&
-        /(loaded your last report|loaded your previous diagnostic report)/i.test(
-          finalBotMessage,
-        );
-
-      if (finalBotMessage) {
-        // If the final bot message ends with a "One more question — last for now:" block,
-        // strip that trailing question so the closing message doesn't ask for more input.
-        const pivotQuestionRegex =
-          /One more question\s*—\s*last for now:[\s\S]*$/i;
-        if (pivotQuestionRegex.test(finalBotMessage)) {
-          finalBotMessage = finalBotMessage
-            .replace(pivotQuestionRegex, "")
-            .trimEnd();
-        }
-      }
-
-      if (!finalBotMessage || isWelcomeBackMessage) {
-        finalBotMessage = closingMessage;
-      } else if (!finalBotMessage.includes("Discovery report generated")) {
-        // Append the system message to the bot's final message
-        finalBotMessage = `${finalBotMessage}\n\n${closingMessage}`;
-      }
-
+      // When report is generated (user ended chat), show only the closing message — no prior AI reply or questions.
       const response = successResponse(res, "Discovery chat saved", {
         discovery: true,
         message: closingMessage,
-        nextMessage: finalBotMessage
-          ? {
-              role: "assistant",
-              content: finalBotMessage,
-            }
-          : nextMessage, // Include bot's final completion message + system message
+        nextMessage: {
+          role: "assistant",
+          content: closingMessage,
+        },
         discoveryReport: discoveryReport || null,
         pdfPath: null, // Will be generated in background
         pdfUrl: null, // Will be updated after PDF is generated
@@ -3564,12 +3829,12 @@ const handleDiagnosticMode = async ({
       hasCBQuestions,
     });
 
-  // Count clarifying questions asked so far
-  const cbQuestionsAsked = assistantMessages.filter((m) =>
-    /CB\d+/i.test(m.content || ""),
-  ).length;
+    // Count clarifying questions asked so far
+    const cbQuestionsAsked = assistantMessages.filter((m) =>
+      /CB\d+/i.test(m.content || ""),
+    ).length;
     const totalQuestionsAsked = questionsAnswered; // This includes both Q and CB questions
-  const hasReachedMaxClarifiers = cbQuestionsAsked >= maxClarifierQuestions;
+    const hasReachedMaxClarifiers = cbQuestionsAsked >= maxClarifierQuestions;
 
     // If confidence < 85% and we haven't asked all clarifiers yet, need more questions
     // Also check if we're still in clarifying phase (have CB questions but confidence still low)
@@ -3766,7 +4031,7 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       if (generatedContent && !generatedContent.includes(`CB${nextCBNumber}`)) {
         cbMessage = {
           role: "assistant",
-          content: `I hear you.\n\n**CB${nextCBNumber}:** ${generatedContent.replace(/^\*\*CB\d+:\*\*\s*/i, "").trim()}`,
+          content: `Got it.\n\n**CB${nextCBNumber}:** ${generatedContent.replace(/^\*\*CB\d+:\*\*\s*/i, "").trim()}`,
         };
       } else {
         cbMessage = {
@@ -3795,7 +4060,7 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       );
       cbMessage = {
         role: "assistant",
-        content: `I hear you.\n\n**CB${nextCBNumber}:** ${fallbackQuestions[fallbackIndex]}`,
+        content: `Got it.\n\n**CB${nextCBNumber}:** ${fallbackQuestions[fallbackIndex]}`,
       };
     }
 
@@ -4652,10 +4917,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
         if (hasAllNumericMetrics) {
           const createProgressBar = (value, max = 100, length = 12) => {
-            const clamped = Math.max(
-              0,
-              Math.min(max, Number(value) || 0),
-            );
+            const clamped = Math.max(0, Math.min(max, Number(value) || 0));
             const filled = Math.max(
               0,
               Math.min(length, Math.round((clamped / max) * length)),
@@ -4689,10 +4951,11 @@ ${Math.round(signalOutput)}%`;
           // First, remove any existing METRICS GAUGE blocks the model may have generated
           const gaugeRegex =
             /## METRICS GAUGE \(Current Snapshot\)[\s\S]*?(?:Signal Output:[\s\S]*?(?:\n{2,}|$))/gi;
-          let cleanedContent = welcomeMessage.content.replace(gaugeRegex, "").trim();
+          let cleanedContent = welcomeMessage.content
+            .replace(gaugeRegex, "")
+            .trim();
 
-          const marker =
-            "Your structure at the last check-in was very clear:";
+          const marker = "Your structure at the last check-in was very clear:";
 
           if (cleanedContent.includes(marker)) {
             const parts = cleanedContent.split(marker);
@@ -4903,6 +5166,24 @@ ${Math.round(signalOutput)}%`;
   const incomingMessages = Array.isArray(messages) ? messages : [];
   const incomingHasFullHistory = incomingMessages.length > 5; // More than 5 messages = likely full history
 
+  // CLEANUP: Remove stacked "invalid input" validation messages from DB transcript.
+  // Only the most recent one should remain so the user's next valid answer goes through.
+  const _validationPrefix =
+    "That didn't come through clearly. Please share a bit more";
+  const _isValidationMsg = (m) =>
+    m?.role === "assistant" &&
+    typeof m?.content === "string" &&
+    m.content.startsWith(_validationPrefix);
+
+  // Strip consecutive trailing validation messages, keeping at most one
+  while (
+    transcriptInternal2.length >= 2 &&
+    _isValidationMsg(transcriptInternal2[transcriptInternal2.length - 1]) &&
+    _isValidationMsg(transcriptInternal2[transcriptInternal2.length - 2])
+  ) {
+    transcriptInternal2.pop();
+  }
+
   if (incomingHasFullHistory) {
     // Frontend sent full history - use it directly, find only truly new messages
     // Compare with existing transcript to find what's new
@@ -4910,7 +5191,24 @@ ${Math.round(signalOutput)}%`;
 
     if (incomingMessages.length > existingLength) {
       // Only take messages that are new (beyond what we already have)
-      const newMessages = incomingMessages.slice(existingLength);
+      let newMessages = incomingMessages.slice(existingLength);
+      // If newMessages starts with a duplicate discovery welcome, strip it
+      const existingHasWelcome = transcriptInternal2.some(
+        isDiscoveryWelcomeMessage,
+      );
+      if (
+        existingHasWelcome &&
+        newMessages[0] &&
+        isDiscoveryWelcomeMessage(newMessages[0])
+      ) {
+        newMessages = newMessages.slice(1);
+        if (
+          newMessages[0]?.role === "user" &&
+          newMessages[1]?.role === "assistant"
+        ) {
+          newMessages = newMessages.slice(2);
+        }
+      }
       transcript = [...transcriptInternal2, ...newMessages];
       console.log(
         "[diagnostic] Frontend sent full history, extracted new messages:",
@@ -4921,27 +5219,57 @@ ${Math.round(signalOutput)}%`;
         },
       );
     } else {
-      // Incoming is same or smaller - just use existing
-      transcript = transcriptInternal2;
-      console.log(
-        "[diagnostic] Using existing transcript (incoming not larger)",
-      );
+      // Incoming is same or smaller — use existing BUT check if the last incoming message
+      // is a NEW user message not in the DB transcript. This happens when the DB has more
+      // messages (e.g. stacked validation) and the frontend appends a new user message.
+      const lastIncoming = incomingMessages[incomingMessages.length - 1];
+      const lastExisting =
+        transcriptInternal2[transcriptInternal2.length - 1];
+      if (
+        lastIncoming?.role === "user" &&
+        (!lastExisting ||
+          lastExisting.role !== "user" ||
+          lastExisting.content !== lastIncoming.content)
+      ) {
+        transcript = [...transcriptInternal2, lastIncoming];
+        console.log(
+          "[diagnostic] DB transcript longer but incoming has new user message — appended it",
+        );
+      } else {
+        transcript = transcriptInternal2;
+        console.log(
+          "[diagnostic] Using existing transcript (incoming not larger)",
+        );
+      }
     }
   } else if (hasIncompleteChat && incomingMessages.length > 0) {
     // Frontend sent only new message(s) - merge with existing transcript
     const lastExistingMsg = transcriptInternal2[transcriptInternal2.length - 1];
     const firstNewMsg = incomingMessages[0];
 
-    // Avoid duplicates
+    // Avoid adding a duplicate discovery welcome when frontend resends full-ish history
+    const existingHasWelcome = transcriptInternal2.some(
+      isDiscoveryWelcomeMessage,
+    );
+    let toAppend = incomingMessages;
+    if (
+      existingHasWelcome &&
+      firstNewMsg &&
+      isDiscoveryWelcomeMessage(firstNewMsg)
+    ) {
+      toAppend = incomingMessages.slice(1); // drop leading welcome duplicate
+    }
+
+    // Avoid duplicates (same last message)
     if (
       !lastExistingMsg ||
-      !firstNewMsg ||
-      lastExistingMsg.content !== firstNewMsg.content ||
-      lastExistingMsg.role !== firstNewMsg.role
+      !toAppend[0] ||
+      lastExistingMsg.content !== toAppend[0].content ||
+      lastExistingMsg.role !== toAppend[0].role
     ) {
-      transcript = [...transcriptInternal2, ...incomingMessages];
+      transcript = [...transcriptInternal2, ...toAppend];
     } else {
-      transcript = [...transcriptInternal2, ...incomingMessages.slice(1)];
+      transcript = [...transcriptInternal2, ...toAppend.slice(1)];
     }
     console.log("[diagnostic] Merged new messages with existing transcript:", {
       existingLength: transcriptInternal2.length,
@@ -4968,6 +5296,9 @@ ${Math.round(signalOutput)}%`;
     );
     transcript = transcript.slice(-MAX_TRANSCRIPT_LENGTH);
   }
+
+  // Remove duplicate discovery welcome block (e.g. after refresh frontend can send duplicate)
+  transcript = removeDuplicateDiscoveryWelcomeBlock(transcript);
 
   lastUser = [...transcript].reverse().find((m) => m?.role === "user");
   lastAssistant = [...transcript]
@@ -5194,6 +5525,115 @@ ${Math.round(signalOutput)}%`;
           `[diagnostic] ✅ Confidence reached ${confidenceResult.confidence}% after clarifying question. Should trigger report generation.`,
         );
       }
+    }
+
+    // In diagnostic mode, reject gibberish or invalid input and rephrase the question
+    if (
+      !isDiscoveryMode &&
+      lastUser?.content &&
+      isDiagnosticInputInvalid(lastUser.content)
+    ) {
+      const validationPrefix =
+        "That didn't come through clearly. Please share a bit more so I can map your structure accurately.";
+
+      // Only skip adding a NEW validation if the transcript literally ENDS with a validation
+      // message (meaning no new user message was sent since we last showed it).
+      // If transcript ends with a user message, a NEW invalid input was sent — we must validate it.
+      const lastMsgInTranscript = transcript[transcript.length - 1];
+      const transcriptEndsWithValidation =
+        lastMsgInTranscript?.role === "assistant" &&
+        typeof lastMsgInTranscript?.content === "string" &&
+        lastMsgInTranscript.content.trim().startsWith(validationPrefix);
+
+      if (transcriptEndsWithValidation) {
+        // No new user message since last validation — just re-send existing validation
+        console.log("[diagnostic] Transcript already ends with validation, re-sending it");
+        return successResponse(res, "Next chatbot message", {
+          nextMessage: lastMsgInTranscript,
+          introPageText: introText,
+          transcript: transcript,
+          transcriptIncludesNextMessage: true,
+          intakeState: {
+            ...existingState,
+            transcript,
+            updatedAt: new Date().toISOString(),
+          },
+          retrieved: [],
+          resumeNotice,
+          answeredCount: existingState?.answeredCount ?? distinctQuestionsAnswered ?? 0,
+          pendingQuestion: true,
+          status: "chatting",
+          statusMessage: "Chatting in progress",
+          invalidInput: true,
+          alreadyValidated: true,
+        });
+      }
+
+      const lastRealAssistant = [...transcript]
+        .reverse()
+        .find(
+          (m) =>
+            m?.role === "assistant" &&
+            m.content &&
+            !String(m.content).trim().startsWith(validationPrefix),
+        );
+      const lastQuestion = (
+        lastRealAssistant?.content || lastAssistant?.content || ""
+      ).trim();
+      // Extract only the Q# — ... line and question text so the message isn't cropped
+      const qBlockMatch = lastQuestion.match(
+        /\*\*Q\d+\s*[—–-]\s*[^*]+\*\*\s*\n([\s\S]+)/i,
+      );
+      const headerMatch = lastQuestion.match(/\*\*Q\d+\s*[—–-]\s*[^*]+\*\*/i);
+      const questionOnly =
+        qBlockMatch && headerMatch
+          ? `${headerMatch[0]}\n${qBlockMatch[1].trim()}`
+          : lastQuestion;
+      const maxSnippetLen = 220;
+      const questionSnippet =
+        questionOnly && questionOnly.length > 0
+          ? questionOnly.length > maxSnippetLen
+            ? questionOnly.slice(0, maxSnippetLen).trim() + "..."
+            : questionOnly
+          : null;
+      const invalidResponseContent = questionSnippet
+        ? `${validationPrefix}\n\nHere's the question again:\n\n${questionSnippet}`
+        : validationPrefix;
+
+      const invalidResponse = {
+        role: "assistant",
+        content: invalidResponseContent,
+      };
+      const transcriptWithValidation = [...transcript, invalidResponse];
+
+      if (appUser?.id) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "dignostic",
+          transcript: transcriptWithValidation,
+          isChatEnded: false,
+        });
+      }
+
+      return successResponse(res, "Next chatbot message", {
+        nextMessage: invalidResponse,
+        introPageText: introText,
+        transcript: transcriptWithValidation,
+        transcriptIncludesNextMessage: true,
+        intakeState: {
+          ...existingState,
+          transcript: transcriptWithValidation,
+          updatedAt: new Date().toISOString(),
+        },
+        retrieved: [],
+        resumeNotice,
+        answeredCount: existingState?.answeredCount ?? distinctQuestionsAnswered ?? 0,
+        pendingQuestion: true,
+        status: "chatting",
+        statusMessage: "Chatting in progress",
+        invalidInput: true,
+      });
     }
 
     // Log the mode being used for prompts

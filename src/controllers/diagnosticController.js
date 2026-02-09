@@ -1894,6 +1894,14 @@ METRICS_JSON_END`;
       // Send response immediately - don't wait for PDF/email
       // Include the bot's final message (nextMessage) with system message appended
       let finalBotMessage = nextMessage?.content || "";
+      const closingMessage =
+        "Discovery report generated. Your PDF is being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together";
+
+      const isWelcomeBackMessage =
+        /welcome back/i.test(finalBotMessage) &&
+        /(loaded your last report|loaded your previous diagnostic report)/i.test(
+          finalBotMessage,
+        );
 
       if (finalBotMessage) {
         // If the final bot message ends with a "One more question — last for now:" block,
@@ -1907,17 +1915,16 @@ METRICS_JSON_END`;
         }
       }
 
-      if (
-        finalBotMessage &&
-        !finalBotMessage.includes("Discovery report generated")
-      ) {
+      if (!finalBotMessage || isWelcomeBackMessage) {
+        finalBotMessage = closingMessage;
+      } else if (!finalBotMessage.includes("Discovery report generated")) {
         // Append the system message to the bot's final message
-        finalBotMessage = `${finalBotMessage}\n\nDiscovery report generated. Your PDF is being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together`;
+        finalBotMessage = `${finalBotMessage}\n\n${closingMessage}`;
       }
 
       const response = successResponse(res, "Discovery chat saved", {
         discovery: true,
-        message: `Discovery report generated. PDF are being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together`,
+        message: closingMessage,
         nextMessage: finalBotMessage
           ? {
               role: "assistant",
@@ -3518,6 +3525,7 @@ const handleDiagnosticMode = async ({
   // Note: confidenceResult is already a parameter, so we don't redeclare it
   let needsClarifierQuestions = false;
   const MAX_TOTAL_QUESTIONS = 31; // 25 core + 6 clarifiers max
+  const maxClarifierQuestions = 6;
 
   // Check if we're in clarifying phase: have answered Q25 and there are CB questions
   const assistantMessages = transcript.filter(
@@ -3556,17 +3564,19 @@ const handleDiagnosticMode = async ({
       hasCBQuestions,
     });
 
-    // Count clarifying questions asked so far
-    const cbQuestionsAsked = assistantMessages.filter((m) =>
-      /CB\d+/i.test(m.content || ""),
-    ).length;
+  // Count clarifying questions asked so far
+  const cbQuestionsAsked = assistantMessages.filter((m) =>
+    /CB\d+/i.test(m.content || ""),
+  ).length;
     const totalQuestionsAsked = questionsAnswered; // This includes both Q and CB questions
+  const hasReachedMaxClarifiers = cbQuestionsAsked >= maxClarifierQuestions;
 
     // If confidence < 85% and we haven't asked all clarifiers yet, need more questions
     // Also check if we're still in clarifying phase (have CB questions but confidence still low)
     if (
       confidenceResult.confidence < 85 &&
-      totalQuestionsAsked < MAX_TOTAL_QUESTIONS
+      totalQuestionsAsked < MAX_TOTAL_QUESTIONS &&
+      !hasReachedMaxClarifiers
     ) {
       needsClarifierQuestions = true;
       console.log(
@@ -3656,12 +3666,15 @@ const handleDiagnosticMode = async ({
   const nextCBNumber = existingCBCount + 1;
 
   // HARD STOP: If we've already asked 6 CB questions, force finalization regardless of confidence
-  if (existingCBCount >= 6) {
+  if (existingCBCount >= maxClarifierQuestions) {
     console.log(
       "[diagnostic] 🛑 Maximum 6 CB questions reached - forcing finalization",
     );
     // Set shouldAutoFinalize to true to trigger report generation
     needsClarifierQuestions = false;
+    if (hasMetMinimumQuestions) {
+      shouldAutoFinalize = true;
+    }
     // Fall through to the shouldAutoFinalize block below
   } else if (
     needsClarifierQuestions &&
@@ -3837,7 +3850,11 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
   }
 
   // FORCE FINALIZATION after 6 CB questions regardless of confidence
-  if (existingCBCount >= 6 && hasMetMinimumQuestions && !shouldAutoFinalize) {
+  if (
+    existingCBCount >= maxClarifierQuestions &&
+    hasMetMinimumQuestions &&
+    !shouldAutoFinalize
+  ) {
     console.log("[diagnostic] 🛑 Forcing finalization after 6 CB questions");
     shouldAutoFinalize = true;
   }
@@ -5228,10 +5245,26 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   const reportActuallyExists = !!(
     existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
   );
+  const hasAssistantMessages = Array.isArray(transcript)
+    ? transcript.some((m) => m?.role === "assistant" && m.content)
+    : false;
+  const hasWelcomeAlready = Array.isArray(transcript)
+    ? transcript.some(
+        (m) =>
+          m?.role === "assistant" &&
+          /welcome back/i.test(m.content || "") &&
+          /(loaded your last report|loaded your previous diagnostic report)/i.test(
+            m.content || "",
+          ),
+      )
+    : false;
+
   if (
     isDiscoveryMode &&
     (!nextMessage || !nextMessage.content) &&
-    reportActuallyExists
+    reportActuallyExists &&
+    !hasAssistantMessages &&
+    !hasWelcomeAlready
   ) {
     // Merge metrics intelligently: use latestDiscoveryMetrics as base, fill missing from diagnosticMetrics
     let metricsToUse = {};

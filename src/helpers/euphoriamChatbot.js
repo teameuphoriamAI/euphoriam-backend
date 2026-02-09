@@ -228,11 +228,11 @@ const buildFinalReportPrompt = ({
   const introBlock = introPageText || DEFAULT_INTRO_PAGE_TEXT;
   const contextBlock = retrieved.length
     ? `\nReference context(use only if relevant; if unrelated, ignore): \n${retrieved
-      .map(
-        (r, idx) =>
-          `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 800)}`,
-      )
-      .join("\n")} \n`
+        .map(
+          (r, idx) =>
+            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 800)}`,
+        )
+        .join("\n")} \n`
     : "";
   const previousReportBlock = previousReport
     ? `\nPrevious diagnostic report(reference; keep continuity and update with any new answers): \n${previousReport} \n`
@@ -240,10 +240,10 @@ const buildFinalReportPrompt = ({
 
   const userSessionBlock = userSession?.transcript
     ? `\n🎯 LATEST 1: 1 COACHING SESSION TRANSCRIPT(use for deeper context and updated metrics): \n${JSON.stringify(
-      userSession.transcript,
-      null,
-      2,
-    )} \n\nSession Date: ${userSession.sessionDate ? new Date(userSession.sessionDate).toLocaleDateString() : "Not specified"} \n`
+        userSession.transcript,
+        null,
+        2,
+      )} \n\nSession Date: ${userSession.sessionDate ? new Date(userSession.sessionDate).toLocaleDateString() : "Not specified"} \n`
     : "";
 
   // Determine if this is a first-time user or returning user
@@ -254,17 +254,18 @@ You are Euphoriam AI generating a HIGH-DEPTH, ELITE-LEVEL diagnostic report foll
 
   ${userSessionBlock}
 
-${isFirstTimeUser
-      ? `FIRST-TIME USER: This is a foundational diagnostic. Use the 25-Question Q&A answers from the transcript below to calculate ALL metrics using the Formulaic Map.
+${
+  isFirstTimeUser
+    ? `FIRST-TIME USER: This is a foundational diagnostic. Use the 25-Question Q&A answers from the transcript below to calculate ALL metrics using the Formulaic Map.
 Diagnostic Q&A Answers:
 ${JSON.stringify(intakeAnswers, null, 2)}`
-      : `RETURNING USER: This is an update. Use BOTH the previous report AND the new Q&A to calculate updated metrics.
+    : `RETURNING USER: This is an update. Use BOTH the previous report AND the new Q&A to calculate updated metrics.
 Previous Report (use existing metrics as baseline):
 ${previousReport}
 
 New Q&A/Updates (use these along with previous report to calculate updated metrics):
 ${JSON.stringify(intakeAnswers, null, 2)}`
-    }
+}
 
 🚨🚨🚨 STRUCTURAL PHYSICS FORMULAS (FOR YOUR INTERNAL CALCULATION):
 Use these relationships to explain findings, but NEVER reveal the mathematical formula "Signal = (QGC × CL) × Gravity" directly.
@@ -406,12 +407,14 @@ const formatFactsContext = (context = {}) => {
  */
 const getDiagnosticNewUserWelcomeMessage = async (userName) => {
   const { PromptType } = require("../utils/types");
-  const diagnosticPromptObj = await getLatestPromptFromDb(PromptType.DIAGNOSTIC);
+  const diagnosticPromptObj = await getLatestPromptFromDb(
+    PromptType.DIAGNOSTIC,
+  );
   const diagnosticPromptContent = diagnosticPromptObj?.content || "";
 
   // Extract Q1 block from prompt (supports Q1:, Q1 —, Q1., **Q1 —**, etc.; stops at Q2)
   const q1Match = diagnosticPromptContent.match(
-    /(?:^|\n)((?:\*\*)?Q1\s*[—–\-\.\):]\s*[\s\S]*?)(?=\n\s*(?:\*\*)?Q2\s*[—–\-\.\):]|$)/im
+    /(?:^|\n)((?:\*\*)?Q1\s*[—–\-\.\):]\s*[\s\S]*?)(?=\n\s*(?:\*\*)?Q2\s*[—–\-\.\):]|$)/im,
   );
   const q1Block = q1Match ? q1Match[1].trim() : null;
 
@@ -527,7 +530,7 @@ EXAMPLE OF CORRECT OUTPUT FORMAT:
 User says: "In the head"
 
 Your response:
-"I hear you.
+"Got it.
 'In the head' is very clear.
 
 That tells me the pressure is **internal**, not circumstantial — like the mind is looping, compressing, holding everything.
@@ -553,7 +556,7 @@ Next, we look at what happens when this gets triggered.
 When the money pressure hits, what's the first thing that changes — your thoughts, your body, or your behaviour?"
 
 User says: "I procrastinate"
-→ "I hear you.
+→ "That tracks.
 So the pattern is avoidance — the system delays action, probably to protect from something. That's useful data.
 
 We don't analyse it yet. We just map it.
@@ -571,16 +574,16 @@ What specifically are you putting off? Is it a task, a conversation, a decision 
 📝 MORE REFLECTION EXAMPLES (adapt to context):
 
 For short/single-word answers:
-- "purpose" → "I hear you. So the pull is toward **meaning** — the structure is asking for direction, not just activity. That's the first thread."
+- "purpose" → "Got it. So the pull is toward **meaning** — the structure is asking for direction, not just activity. That's the first thread."
 - "money" → "Got it. So the field is reading **security** — resources, survival, stability. That's where the weight sits."
-- "nothing" → "I hear you. 'Nothing' is actually data — it tells me the response is **inaction**, which is itself a pattern. We map that."
+- "nothing" → "Noted. 'Nothing' is actually data — it tells me the response is **inaction**, which is itself a pattern. We map that."
 - "idk" / "i don't know" → "That's okay. 'I don't know' often means the answer is deeper than the mind can reach right now. Let me rephrase..."
 - "yes" / "no" → "Clear. That confirms the pattern is [interpret what yes/no means in context]."
 
 For emotional/body answers:
-- "chest" → "I hear you. The chest is where we hold grief, longing, and unspoken truth. That's where the signal is getting compressed."
+- "chest" → "The chest is where we hold grief, longing, and unspoken truth. That's where the signal is getting compressed."
 - "head" → "That tells me the pressure is **internal** — the mind is looping, compressing, holding. Not external circumstances."
-- "anxious" → "I hear you. Anxiety is the system running simulations — trying to control what it can't predict. We note that."
+- "anxious" → "Anxiety is the system running simulations — trying to control what it can't predict. We note that."
 - "tired" → "Tiredness is often the system in **collapse** — it's been running too long. That's structural, not laziness."
 
 For longer answers:
@@ -633,7 +636,9 @@ const buildDiscoveryChatPrompt = ({
   const substantialExchanges = userMessages.filter((m) => {
     const content = (m.content || "").trim();
     const wordCount = content.split(/\s+/).length;
-    return wordCount >= 2 || /^(yes|no|maybe|idk|okay|sure|fine)$/i.test(content);
+    return (
+      wordCount >= 2 || /^(yes|no|maybe|idk|okay|sure|fine)$/i.test(content)
+    );
   }).length;
 
   // Use LLM to detect if user wants a new diagnostic - no regex patterns
@@ -655,11 +660,11 @@ const buildDiscoveryChatPrompt = ({
 
   const contextBlock = retrieved.length
     ? `Reference context (use only if relevant):\n${retrieved
-      .map(
-        (r, idx) =>
-          `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`,
-      )
-      .join("\n")}`
+        .map(
+          (r, idx) =>
+            `[${idx + 1}] ${r.title || "Doc"}: ${r.chunk?.slice(0, 500)}`,
+        )
+        .join("\n")}`
     : "";
 
   const factsBlock = factsContext
@@ -712,10 +717,10 @@ NEVER say "I don't have" this data - it's ALL in the report above. Extract and u
             : "Session";
         const sessionDate = session.sessionDate
           ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-          })
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
           : "Date not specified";
 
         // Prioritize summaries - only include full transcript for most recent session or if no summary
@@ -729,12 +734,12 @@ NEVER say "I don't have" this data - it's ALL in the report above. Extract and u
             // Most recent: include summary + brief transcript preview (first 10 messages)
             const transcriptPreview = Array.isArray(session.transcript)
               ? session.transcript
-                .slice(0, 10)
-                .map(
-                  (msg) =>
-                    `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
-                )
-                .join("\n")
+                  .slice(0, 10)
+                  .map(
+                    (msg) =>
+                      `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
+                  )
+                  .join("\n")
               : "";
 
             return `\n--- ${sessionNum} ---
@@ -757,9 +762,9 @@ ${session.summery}`;
           // No summary available - include truncated transcript
           const transcriptText = Array.isArray(session.transcript)
             ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
-            (session.transcript.length > 20
-              ? "\n...[truncated - showing first 20 messages]"
-              : "")
+              (session.transcript.length > 20
+                ? "\n...[truncated - showing first 20 messages]"
+                : "")
             : JSON.stringify(session.transcript, null, 2);
 
           return `\n--- ${sessionNum} ---
@@ -784,11 +789,12 @@ ${transcriptText}`;
       ? `\n🎯🎯🎯 ALL 1:1 COACHING SESSIONS - YOU HAVE ACCESS TO THESE:
 🚨🚨🚨🚨🚨 THESE ARE THE USER'S 1:1 COACHING SESSIONS - THEY ARE PROVIDED BELOW AND YOU CAN ACCESS THEM
 
-${sessionsToUse.length > 1
-        ? `TOTAL SESSIONS: ${sessionsToUse.length}
+${
+  sessionsToUse.length > 1
+    ? `TOTAL SESSIONS: ${sessionsToUse.length}
 ${formatUserSessions(sessionsToUse)}`
-        : formatUserSessions(sessionsToUse)
-      }
+    : formatUserSessions(sessionsToUse)
+}
 
 🚨🚨🚨🚨🚨 ABSOLUTE REQUIREMENT - READ THIS CAREFULLY:
 - These session data IS available to you RIGHT NOW in this prompt - you CAN and MUST use it
@@ -808,7 +814,7 @@ ${formatUserSessions(sessionsToUse)}`
   // Discovery type context
   const discoveryTypeContext = discoveryType
     ? {
-      alignment: `\n🎯 DISCOVERY FOCUS: ALIGNMENT (What They Want to Create)
+        alignment: `\n🎯 DISCOVERY FOCUS: ALIGNMENT (What They Want to Create)
 You are exploring the first half of the Euphoriam formula - their authentic genius and what they want to create.
 Focus on:
 - Their desired reality
@@ -818,7 +824,7 @@ Focus on:
 - What feels true and aligned
 - Their signal to the field when aligned
 Link all insights to the Euphoriam formula's alignment/authentic genius half.\n`,
-      freedom: `\n🎯 DISCOVERY FOCUS: FREEDOM (Energetic & Strategic)
+        freedom: `\n🎯 DISCOVERY FOCUS: FREEDOM (Energetic & Strategic)
 You are exploring freedom - both energetic and strategic - to act, move, and create.
 Focus on:
 - Energetic blocks and constraints
@@ -827,7 +833,7 @@ Focus on:
 - What's preventing full expression
 - Energetic and strategic liberation
 Link insights to how freedom (or lack of it) affects their signal and gravity.\n`,
-      prosperity: `\n🎯 DISCOVERY FOCUS: PROSPERITY (Integration)
+        prosperity: `\n🎯 DISCOVERY FOCUS: PROSPERITY (Integration)
 You are exploring prosperity - the integration of alignment + freedom.
 Focus on:
 - How they're bringing alignment and freedom together
@@ -836,14 +842,14 @@ Focus on:
 - How prosperity shows up
 - The integration of the two halves of the formula
 Link insights to the full Euphoriam formula and how both halves work together.\n`,
-      integrated: `\n🎯 DISCOVERY FOCUS: INTEGRATED (All Three Pillars)
+        integrated: `\n🎯 DISCOVERY FOCUS: INTEGRATED (All Three Pillars)
 You are exploring all three discovery pillars: Alignment, Freedom, and Prosperity.
 Focus on:
 - What they want to create (Alignment)
 - Freedom to do so (energetic & strategic)
 - Integration and prosperity (bringing it all together)
 Link all insights to the Euphoriam formula - both halves: Alignment/Authentic Genius and Resistance/3D Vortex Codes.\n`,
-    }[discoveryType] || ""
+      }[discoveryType] || ""
     : `\n🎯 DISCOVERY MODE: Three Pillars Framework
 You are having a discovery conversation that can explore three main pillars:
 1. ALIGNMENT - What they want to create (first half of Euphoriam formula: authentic genius)
@@ -904,19 +910,20 @@ All discoveries should link to the Euphoriam formula and help them understand th
     // Format metrics for display
     const metricsBlock =
       gravity !== null ||
-        signalCoherence !== null ||
-        signalOutput !== null ||
-        consciousnessLevel !== null ||
-        qgcActivation !== null
+      signalCoherence !== null ||
+      signalOutput !== null ||
+      consciousnessLevel !== null ||
+      qgcActivation !== null
         ? `
 ACTUAL METRICS DATA FROM DIAGNOSTIC:
 ${gravity !== null ? `- Gravity: ${gravity}%` : ""}
 ${signalCoherence !== null ? `- Signal Coherence: ${signalCoherence}%` : ""}
 ${signalOutput !== null ? `- Signal Output: ${signalOutput}%` : ""}
-${consciousnessLevel !== null
-          ? `- Consciousness Level (CL): ${consciousnessLevel}`
-          : ""
-        }
+${
+  consciousnessLevel !== null
+    ? `- Consciousness Level (CL): ${consciousnessLevel}`
+    : ""
+}
 ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
 `
         : "";
@@ -953,10 +960,10 @@ ${qgcActivation !== null ? `- QGC Activation: ${qgcActivation}%` : ""}
 
     const formattedMetricsSection =
       gravity !== null &&
-        signalCoherence !== null &&
-        signalOutput !== null &&
-        consciousnessLevel !== null &&
-        qgcActivation !== null
+      signalCoherence !== null &&
+      signalOutput !== null &&
+      consciousnessLevel !== null &&
+      qgcActivation !== null
         ? `QGC Activation:
 ${createProgressBar(qgcActivation)}
 ${qgcActivation}%
@@ -982,9 +989,10 @@ ${signalOutput}%`
 
 🚨 CRITICAL: This is the FIRST message after their diagnostic. You MUST follow this EXACT format. Do NOT use generic greetings like "I'm here" or "What would you like to explore today?". You MUST start with structure reflection.
 
-${metricsBlock
-        ? `\n📊 ACTUAL METRICS DATA (USE THESE EXACT VALUES):\n${metricsBlock}\n`
-        : `\n⚠️⚠️⚠️ CRITICAL: Metrics are NOT provided directly above. You MUST extract them from the REPORT PROVIDED IN YOUR SYSTEM CONTEXT.
+${
+  metricsBlock
+    ? `\n📊 ACTUAL METRICS DATA (USE THESE EXACT VALUES):\n${metricsBlock}\n`
+    : `\n⚠️⚠️⚠️ CRITICAL: Metrics are NOT provided directly above. You MUST extract them from the REPORT PROVIDED IN YOUR SYSTEM CONTEXT.
     
 Look for the report in your system messages (it will say "🚨🚨🚨 CRITICAL: Previous diagnostic report" or "Previous diagnostic report for [name]").
     
@@ -996,23 +1004,28 @@ In that report, search for:
 - "QGC" or "QGC Activation" followed by a percentage
 
 Extract the ACTUAL numbers from the report and use them. NEVER say "not stated in the provided context" - the report IS in your system context.`
-      }
+}
 
 REQUIRED FORMAT - Follow this EXACTLY:
 
 1. Start with: "Welcome back ${displayName}!. I've loaded your last report." (include the user's name with an exclamation mark)
 
 2. Reflect back their structure FIRST using the ACTUAL METRICS DATA provided above:
-   - Use the Gravity % value provided (${gravity !== null ? gravity + "%" : "extract from report"
-      }) - interpret what it means (high gravity = old identity has powerful pull)
-   - Use the Signal Coherence % value provided (${signalCoherence !== null ? signalCoherence + "%" : "extract from report"
-      }) - interpret what it means (perfect = no fragmentation, no inner chaos)
-   - Use the Signal Output % value provided (${signalOutput !== null ? signalOutput + "%" : "extract from report"
-      }) - interpret what it means (low = entry hasn't happened yet, not weakness)
-   - Use the CL value provided (${consciousnessLevel !== null ? consciousnessLevel : "extract from report"
-      }) - interpret what phase they're in
-   - Use the QGC % value provided (${qgcActivation !== null ? qgcActivation + "%" : "extract from report"
-      }) - interpret what it indicates
+   - Use the Gravity % value provided (${
+     gravity !== null ? gravity + "%" : "extract from report"
+   }) - interpret what it means (high gravity = old identity has powerful pull)
+   - Use the Signal Coherence % value provided (${
+     signalCoherence !== null ? signalCoherence + "%" : "extract from report"
+   }) - interpret what it means (perfect = no fragmentation, no inner chaos)
+   - Use the Signal Output % value provided (${
+     signalOutput !== null ? signalOutput + "%" : "extract from report"
+   }) - interpret what it means (low = entry hasn't happened yet, not weakness)
+   - Use the CL value provided (${
+     consciousnessLevel !== null ? consciousnessLevel : "extract from report"
+   }) - interpret what phase they're in
+   - Use the QGC % value provided (${
+     qgcActivation !== null ? qgcActivation + "%" : "extract from report"
+   }) - interpret what it indicates
    
 3. Identify the KEY SENTENCE/PATTERN from their report - the distilled essence (extract from report text below)
 
@@ -1032,11 +1045,12 @@ REQUIRED FORMAT - Follow this EXACTLY:
 
    Your structure at the last check-in was very clear:
 
-${formattedMetricsSection
-        ? `## METRICS GAUGE (Current Snapshot)
+${
+  formattedMetricsSection
+    ? `## METRICS GAUGE (Current Snapshot)
 
 ${formattedMetricsSection}`
-        : `   ⚠️ CRITICAL: Metrics are NOT provided above. You MUST extract them from the REPORT IN YOUR SYSTEM CONTEXT.
+    : `   ⚠️ CRITICAL: Metrics are NOT provided above. You MUST extract them from the REPORT IN YOUR SYSTEM CONTEXT.
    
    Look in your system messages for "🚨🚨🚨 CRITICAL: Previous diagnostic report" or "Previous diagnostic report for [name]".
    
@@ -1048,7 +1062,7 @@ ${formattedMetricsSection}`
    * **QGC: [EXTRACT ACTUAL % FROM REPORT]** → [what it indicates]
    
    NEVER say "not stated" - the report IS in your system context. Extract the actual numbers.`
-      }
+}
 
    This is the key sentence from your map, distilled:
 
@@ -1067,15 +1081,19 @@ ${formattedMetricsSection}`
 
   Take your time and share what feels true for you."
 
-⚠️ IMPORTANT: The metrics above (${gravity !== null ? `Gravity: ${gravity}%` : "Gravity"
-      }, ${signalCoherence !== null
+⚠️ IMPORTANT: The metrics above (${
+      gravity !== null ? `Gravity: ${gravity}%` : "Gravity"
+    }, ${
+      signalCoherence !== null
         ? `Signal Coherence: ${signalCoherence}%`
         : "Signal Coherence"
-      }, ${signalOutput !== null
+    }, ${
+      signalOutput !== null
         ? `Signal Output: ${signalOutput}%`
         : "Signal Output"
-      }, ${consciousnessLevel !== null ? `CL: ${consciousnessLevel}` : "CL"}, ${qgcActivation !== null ? `QGC: ${qgcActivation}%` : "QGC"
-      }) are the ACTUAL values. Use them directly in your response. Do NOT output "[Extract metrics...]" - use the actual numbers.
+    }, ${consciousnessLevel !== null ? `CL: ${consciousnessLevel}` : "CL"}, ${
+      qgcActivation !== null ? `QGC: ${qgcActivation}%` : "QGC"
+    }) are the ACTUAL values. Use them directly in your response. Do NOT output "[Extract metrics...]" - use the actual numbers.
 
 🚨 CRITICAL REQUIREMENTS - YOU MUST ACTUALLY EXTRACT REAL VALUES:
 
@@ -1116,13 +1134,15 @@ STEP-BY-STEP EXTRACTION PROCESS:
    - If correction is about "avoidance", ask about avoidance patterns
    - Make it specific to their structure, not generic
 
-${metricsBlock
-        ? `\n📊 ACTUAL METRICS TO USE IN YOUR RESPONSE:\n${metricsBlock}\n\n⚠️ CRITICAL: Use these EXACT values in your response. Copy the formatted metrics section below directly. Do NOT use placeholders like "[Extract metrics...]".`
-        : ""
-      }
+${
+  metricsBlock
+    ? `\n📊 ACTUAL METRICS TO USE IN YOUR RESPONSE:\n${metricsBlock}\n\n⚠️ CRITICAL: Use these EXACT values in your response. Copy the formatted metrics section below directly. Do NOT use placeholders like "[Extract metrics...]".`
+    : ""
+}
 
-${formattedMetricsSection
-        ? `✅ COMPLETE TEMPLATE WITH METRICS - YOU MUST USE THIS EXACT FORMAT:
+${
+  formattedMetricsSection
+    ? `✅ COMPLETE TEMPLATE WITH METRICS - YOU MUST USE THIS EXACT FORMAT:
 
 🚨🚨🚨 ABSOLUTE REQUIREMENT: You MUST output EXACTLY this format. Do NOT use a simpler format like "Hi Yashal, I've loaded your last diagnostic report so we can build on it. What has shifted since that report?" - that is WRONG and FORBIDDEN.
 
@@ -1178,7 +1198,7 @@ Take your time and share what feels true for you."
 5. For the question: Use this EXACT format: "Since this report ([date]), have you made any progress on [correction]?" - repeat the date, then ask about the correction. DO NOT output placeholder text.
 
 ⚠️ ABSOLUTE RULE: If you output ANY text in square brackets like "[YOU MUST READ..." or "[EXTRACT..." or "[FORMULATE...", you have FAILED. You must output ONLY actual extracted content from the report.`
-        : `EXAMPLE OF CORRECT OUTPUT (NOTE: This is an EXAMPLE showing the STRUCTURE - you must use ACTUAL content from the report, not copy this example):
+    : `EXAMPLE OF CORRECT OUTPUT (NOTE: This is an EXAMPLE showing the STRUCTURE - you must use ACTUAL content from the report, not copy this example):
 
 "Welcome back. I've loaded your last report.
 
@@ -1250,25 +1270,29 @@ This format is COMPLETELY FORBIDDEN. You MUST use the detailed format with ALL s
 🚨🚨🚨 CRITICAL: Sections 5 and 6 are MANDATORY - you MUST include them. Do NOT skip the key sentence or correction sections.
 
 If you use the simple format or skip sections 5 or 6, you have FAILED.`
-      }
+}
 
 🚨 CRITICAL FINAL INSTRUCTIONS:
 
-${formattedMetricsSection
-        ? `1. ✅ THE METRICS ARE ALREADY FORMATTED ABOVE - COPY THEM EXACTLY AS SHOWN. DO NOT MODIFY THEM. DO NOT USE PLACEHOLDERS.
+${
+  formattedMetricsSection
+    ? `1. ✅ THE METRICS ARE ALREADY FORMATTED ABOVE - COPY THEM EXACTLY AS SHOWN. DO NOT MODIFY THEM. DO NOT USE PLACEHOLDERS.
 
 2. `
-        : "1. "
-      }Extract the key sentence from the report below (look for identity patterns, avoidance patterns, or structural statements) - OUTPUT THE ACTUAL SENTENCE, NOT A PLACEHOLDER
+    : "1. "
+}Extract the key sentence from the report below (look for identity patterns, avoidance patterns, or structural statements) - OUTPUT THE ACTUAL SENTENCE, NOT A PLACEHOLDER
 
-${formattedMetricsSection ? "3. " : "2. "
-      }Extract what the correction was about from the report (look for "First Correction" or recommendations section) - OUTPUT THE ACTUAL TEXT, NOT A PLACEHOLDER
+${
+  formattedMetricsSection ? "3. " : "2. "
+}Extract what the correction was about from the report (look for "First Correction" or recommendations section) - OUTPUT THE ACTUAL TEXT, NOT A PLACEHOLDER
 
-${formattedMetricsSection ? "4. " : "3. "
-      }Extract the date from the report - OUTPUT THE ACTUAL DATE, NOT A PLACEHOLDER
+${
+  formattedMetricsSection ? "4. " : "3. "
+}Extract the date from the report - OUTPUT THE ACTUAL DATE, NOT A PLACEHOLDER
 
-${formattedMetricsSection ? "5. " : "4. "
-      }Formulate ONE specific question based on the correction - OUTPUT THE ACTUAL QUESTION, NOT A PLACEHOLDER
+${
+  formattedMetricsSection ? "5. " : "4. "
+}Formulate ONE specific question based on the correction - OUTPUT THE ACTUAL QUESTION, NOT A PLACEHOLDER
 
 ⚠️⚠️⚠️ ABSOLUTE RULE - FINAL WARNING: DO NOT OUTPUT ANY TEXT IN SQUARE BRACKETS LIKE "[Extract...]", "[Ask...]", "[YOU MUST READ...]", "[EXTRACT...]", "[FORMULATE...]", "[REPLACE THIS...]", or ANY placeholder text.
 
@@ -1279,20 +1303,23 @@ You MUST:
 2. Extract ACTUAL content from the report
 3. Output ONLY the actual extracted content
 
-${formattedMetricsSection
-        ? "✅ For metrics: Use the formatted section above exactly as shown."
-        : "✅ For metrics: Extract from report."
-      }
+${
+  formattedMetricsSection
+    ? "✅ For metrics: Use the formatted section above exactly as shown."
+    : "✅ For metrics: Extract from report."
+}
 ✅ For key sentence: READ THE REPORT BELOW and extract the ACTUAL sentence that captures their identity/avoidance pattern. Output the actual sentence, not a placeholder.
 ✅ For correction: READ THE REPORT BELOW and find the "First Correction" section. Extract the ACTUAL correction text. Output the actual text, not a placeholder.
-✅ For date: Use the date provided (${reportDate || "extract from report"
-      }), or if not provided, extract from the report. Output the actual date, not a placeholder.
+✅ For date: Use the date provided (${
+      reportDate || "extract from report"
+    }), or if not provided, extract from the report. Output the actual date, not a placeholder.
 ✅ For question: Based on the ACTUAL correction you extracted, formulate ONE specific question. Output the actual question, not a placeholder.
 
-${priorReportBlock
-        ? `\nUSER'S DIAGNOSTIC REPORT (READ THIS AND EXTRACT ACTUAL CONTENT):\n${priorReportBlock}`
-        : ""
-      }
+${
+  priorReportBlock
+    ? `\nUSER'S DIAGNOSTIC REPORT (READ THIS AND EXTRACT ACTUAL CONTENT):\n${priorReportBlock}`
+    : ""
+}
 ${factsBlock ? `\nCustomer Context:\n${factsBlock}` : ""}
 
 🚨 FINAL REMINDER: The report is provided above. You MUST read it and extract actual content. Never output placeholder text in square brackets. If you cannot find specific content, make a reasonable inference, but NEVER output "[Extract...]" or similar placeholder text.
@@ -1396,20 +1423,20 @@ You are Euphoriam AI working with structure-aware precision.${discoveryTypeConte
 
 🌑 DISCOVERY MODE - ONBOARDING QUESTIONS:
 
-The user has just started a discovery session. After acknowledging their response, you should ask two key questions to understand their current state and desired creation:
+The user has just started a discovery session. You need to understand their current state and desired creation via two key questions — but ask only ONE per message.
 
-1. **What are you experiencing today?**
-   - This helps identify current friction, gravity patterns, and what's blocking them
-   - Listen for: avoidance patterns, protector triggers (Failure/Rejection), gravity depth indicators
-   - Map their experience to the Euphoriam formula: EO, Lack, Avoid, Gravity Depth, CL
+- First question (ask in this message only): **What are you experiencing today?**
+  - This helps identify current friction, gravity patterns, and what's blocking them
+  - Listen for: avoidance patterns, protector triggers (Failure/Rejection), gravity depth indicators
+  - Map their experience to the Euphoriam formula: EO, Lack, Avoid, Gravity Depth, CL
+- Second question (ask only after they answer the first): **What would you like to create in your life versus what you have created?**
+  - This maps HALF 1 of the formula: QGC (Quantum Genius Codes) and authentic genius
+  - Understand their desired reality vs current reality
+  - Identify the gap between potential and received
 
-2. **What would you like to create in your life versus what you have created?**
-   - This maps HALF 1 of the formula: QGC (Quantum Genius Codes) and authentic genius
-   - Understand their desired reality vs current reality
-   - Identify the gap between potential and received
-   - This helps determine QGC activation level
+🚨 ONE QUESTION PER MESSAGE: In this message, ask only "What are you experiencing today?" (and brief context if needed). Do NOT list "1." and "2." with both questions in the same message. After they answer, ask the second question in your next message.
 
-After asking these questions, continue the discovery conversation naturally, helping them:
+After asking the first question, wait for their answer; then continue the discovery conversation naturally, helping them:
 - Increase their CL (Consciousness Level)
 - Reduce gravity (3D codes)
 - Increase their signal to the field
@@ -1418,9 +1445,9 @@ Use their answers to update metrics and recommend appropriate Discoveries (Align
 
 Current conversation:
 ${transcript
-        .slice(-6)
-        .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-        .join("\n\n")}
+  .slice(-6)
+  .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+  .join("\n\n")}
 
 Last user message: "${lastUserMessage}"
 
@@ -1433,14 +1460,16 @@ Ask the onboarding questions naturally in the conversation flow.`;
   const isMidConversation = userMessagesInDiscovery.length > 0;
 
   // Build metrics context for the prompt
-  const metricsContext = metrics ? `
+  const metricsContext = metrics
+    ? `
 Current Metrics:
-- Gravity: ${metrics.gravity || 'N/A'}%
-- Signal Output: ${metrics.signalOutput || 'N/A'}%
-- Signal Coherence: ${metrics.signalCoherence || 'N/A'}%
-- QGC Activation: ${metrics.qgcActivation || 'N/A'}%
-- Consciousness Level: ${metrics.consciousnessLevel || 'N/A'}
-` : '';
+- Gravity: ${metrics.gravity || "N/A"}%
+- Signal Output: ${metrics.signalOutput || "N/A"}%
+- Signal Coherence: ${metrics.signalCoherence || "N/A"}%
+- QGC Activation: ${metrics.qgcActivation || "N/A"}%
+- Consciousness Level: ${metrics.consciousnessLevel || "N/A"}
+`
+    : "";
 
   // If we have a prompt from the database, use it as the main prompt
   // Otherwise, fall back to the hardcoded default prompt
@@ -1487,15 +1516,16 @@ ${discoveryTypeContext}
 ================================================================================
 SESSION STATE
 ================================================================================
-${isMidConversation
-      ? `🚨 MID-CONVERSATION: ${userMessagesInDiscovery.length} user message(s) in transcript.
+${
+  isMidConversation
+    ? `🚨 MID-CONVERSATION: ${userMessagesInDiscovery.length} user message(s) in transcript.
 - Continue the conversation flow naturally.
 - IMPORTANT: You have ALREADY performed the "CHAT OPENING" (Signature, Prediction, Falsifier). DO NOT repeat the signature reflection, predictions, or falsifiers in this turn.
 - Move directly to the SECONDARY LOOP (Needle Move / Discovery / Action).
 - If the user provides a short or non-substantive response (like 'hii', 'k', 'okay'), DO NOT repeat yourself. Acknowledge and ask a new targeted question or invite them to share a specific recent experience.
 - Reference previous answers when relevant.
 - Build on what they've already shared.`
-      : `🚨 FIRST MESSAGE: Open with PREDICT-FIRST opening (see below).
+    : `🚨 FIRST MESSAGE: Open with PREDICT-FIRST opening (see below).
 
 ================================================================================
 CHAT OPENING (MANDATORY - PREDICT-FIRST, 5 lines MAX)
@@ -1509,7 +1539,7 @@ Every session opens like this:
 
 If signature_confidence < 70, add ONE extra line (still keep it tight):
 - "One quick question to confirm: [single discriminating question]."`
-    }
+}
 
 ================================================================================
 SECONDARY LOOP (Follow these for every turn after the Opening)
@@ -1660,10 +1690,11 @@ RESPONSE GUIDELINES
 - If user asks "how is Signal Output calculated?" → "Signal Output is a proprietary Euphoriam metric. Your current Signal Output is [X]%."
 - If user asks "what's the formula?" → "The metrics in your report are calculated using proprietary Euphoriam methods. Your current metrics are [list values]."
 - If user mentions "formula" → redirect to their specific metrics and structure, never explain calculations
-- Example: "I hear you mentioning 'formula' - your Gravity is [X]% and Signal Output is [Y]%. What does that connection mean for you right now?"
+- Example: "When you say 'formula' — your Gravity is [X]% and Signal Output is [Y]%. What does that connection mean for you right now?"
 
 🚨🚨🚨 ABSOLUTE PROHIBITION - NEVER USE THESE PHRASES:
 - NEVER say "I'm here" or "I'm here to help"
+- NEVER say "I hear you" or "I hear you, [name]" or "I hear you mentioning" — use "Got it.", "That tracks.", "When you say [X], that points to…", "Noted.", or "Clear." instead
 - NEVER say "tell me more about that" or "what's on your mind?"
 - NEVER say "What would you like to explore?" or "How can I help?"
 - NEVER use generic, vague responses
@@ -1671,10 +1702,10 @@ RESPONSE GUIDELINES
 - NEVER use generic coaching language - ALWAYS use the structured pivot format when identifying patterns
 - When you spot a pattern, you MUST use the structured pivot format - do NOT fall back to generic responses
 - If the user mentions something unclear (like "formula plase"), work with it structurally:
-  * Acknowledge what you heard: "I hear you mentioning [what they said]"
+  * Acknowledge what you heard: "When you say [what they said], that points to…" or "Got it — [what they said]."
   * Map it to their structure: "That connects to [specific structural element from their report]"
   * Ask ONE specific, targeted question to clarify the structural meaning
-  * Example: "When you mention 'formula,' I'm hearing something about the structure we mapped in your report. What does that word point to in your body or experience right now?"
+  * Example: "When you say 'formula,' that connects to the structure we mapped in your report. What does that word point to in your body or experience right now?"
 
 CRITICAL APPROACH:
 
@@ -1683,7 +1714,7 @@ CRITICAL APPROACH:
    - This is VALID DATA - treat it as meaningful input about their structure
    - NEVER respond with generic phrases like "I'm here" or "tell me more about that"
    - When users use abstract/unclear language:
-     * Acknowledge what you heard: "I hear you mentioning [exactly what they said]"
+     * Acknowledge what you heard: "When you say [exactly what they said], that points to…" or "Got it — [what they said]."
      * Map it to their structure: "That connects to [specific structural element from their report - reference their EO, Lack, Avoid, Gravity, etc.]"
      * Ask ONE specific, targeted question to understand the structural meaning
      * Map abstract concepts to structural elements:
@@ -1735,7 +1766,8 @@ CRITICAL APPROACH:
    - Ask ONE specific, targeted question
    - Not generic - very precise
    - Check specific actions, sensations, or states
-   - Example: "One question only (answer honestly, even if it's 'I don't know' again): [specific question]"
+   - When introducing the question to the user, say "The next question:" or similar 
+   - Example: "The next question (answer honestly, even if it's 'I don't know' again): [specific question]"
 
 7. STOPPING POINTS:
    - Know when to stop: "This is enough for today. No more work is required."
@@ -1761,18 +1793,19 @@ CRITICAL APPROACH:
 
 10. WHEN USER MESSAGE IS UNCLEAR OR HAS TYPOS:
    - NEVER say "I'm here" or "tell me more"
-   - Acknowledge what you heard: "I hear you mentioning [what they said]"
+   - Acknowledge what you heard: "When you say [what they said], that points to…" or "Got it — [what they said]."
    - Reference their structure: "In your report, we mapped [specific element] - does this connect to that?"
    - Ask ONE specific question to clarify the structural meaning
-   - Example: User says "formula plase" → "I hear 'formula' - in your structure, we mapped Gravity at [X]% and Signal Output at [Y]%. What does 'formula' point to for you right now - is it about how those connect, or something else?"
+   - Example: User says "formula plase" → "When you say 'formula' — in your structure we mapped Gravity at [X]% and Signal Output at [Y]%. What does 'formula' point to for you right now - is it about how those connect, or something else?"
 
 ${priorReportBlock ? `\nUSER'S DIAGNOSTIC REPORT:\n${priorReportBlock}` : ""}
 ${userSessionBlock ? `\n${userSessionBlock}` : ""}
 ${factsBlock ? `\nCustomer Context:\n${factsBlock}` : ""}
 ${contextBlock ? `\n${contextBlock}` : ""}
 
-${userSessionBlock
-      ? `\n🚨🚨🚨 CRITICAL: USER HAS A 1:1 COACHING SESSION TRANSCRIPT ABOVE
+${
+  userSessionBlock
+    ? `\n🚨🚨🚨 CRITICAL: USER HAS A 1:1 COACHING SESSION TRANSCRIPT ABOVE
 - If the user asks about their "1:1 session", "session details", "coaching session", "do you have my session details", or similar, you MUST reference the session transcript provided above
 - The session transcript is in JSON format above (look for "🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT") - read it and reference specific things they shared
 - NEVER say "I'm unable to access" or "I don't have access" - the session transcript IS provided above in the prompt
@@ -1780,25 +1813,26 @@ ${userSessionBlock
 - Use the session transcript to answer questions about what happened in their session, what was discussed, or what they shared
 - Reference specific parts of the session when relevant to their question
 - The transcript contains role/content pairs - parse it and use the actual content to answer their questions`
-      : ""
-    }
+    : ""
+}
 
-${userSessionBlock &&
-      /session|1:1|coaching.*session|session.*details/i.test(lastUserMessage)
-      ? `\n🚨🚨🚨 USER IS ASKING ABOUT THEIR SESSION RIGHT NOW
+${
+  userSessionBlock &&
+  /session|1:1|coaching.*session|session.*details/i.test(lastUserMessage)
+    ? `\n🚨🚨🚨 USER IS ASKING ABOUT THEIR SESSION RIGHT NOW
 - The user's message contains: "${lastUserMessage}"
 - You MUST look at the "🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT" section above
 - Read the transcript JSON and answer their question about the session
 - NEVER say "I'm unable to access" - the transcript IS above
 - Reference specific things from the session transcript in your answer`
-      : ""
-    }
+    : ""
+}
 
 Current conversation:
 ${transcript
-      .slice(-6)
-      .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-      .join("\n\n")}
+  .slice(-6)
+  .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+  .join("\n\n")}
 
 Last user message: "${lastUserMessage}"
 
@@ -1808,11 +1842,12 @@ Last user message: "${lastUserMessage}"
 - NEVER say "What question are they asking?" or "can you paste the exact sentence?" - you already have it
 - Read the user's message from the transcript and answer it directly using their report data and conversation context
 
-${userSessionBlock &&
-      /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(
-        lastUserMessage,
-      )
-      ? `\n🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨 USER IS ASKING ABOUT THEIR 1:1 SESSION - YOU MUST ANSWER THIS
+${
+  userSessionBlock &&
+  /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(
+    lastUserMessage,
+  )
+    ? `\n🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨 USER IS ASKING ABOUT THEIR 1:1 SESSION - YOU MUST ANSWER THIS
 - The user asked: "${lastUserMessage}"
 - Look ABOVE in this prompt for "🎯🎯🎯 LATEST 1:1 COACHING SESSION TRANSCRIPT"
 - The session transcript IS provided above in JSON format - it's RIGHT THERE in the prompt
@@ -1827,17 +1862,19 @@ ${userSessionBlock &&
 - If they asked to summarize, provide a summary of what was discussed in the session
 - DO NOT talk about diagnostic reports - they're asking about the 1:1 coaching session transcript above
 - THIS IS A VALID REQUEST - YOU MUST ANSWER IT`
-      : ""
-    }
+    : ""
+}
 
-${isUncertain
-      ? `\n⚠️ USER EXPRESSED UNCERTAINTY - Treat this as valid structural data, not failure. Acknowledge what it means in their system.`
-      : ""
-    }
-${isSomaticResponse
-      ? `\n⚠️ USER MENTIONED BODY SENSATION - This is critical data. Work with the somatic response structurally.`
-      : ""
-    }
+${
+  isUncertain
+    ? `\n⚠️ USER EXPRESSED UNCERTAINTY - Treat this as valid structural data, not failure. Acknowledge what it means in their system.`
+    : ""
+}
+${
+  isSomaticResponse
+    ? `\n⚠️ USER MENTIONED BODY SENSATION - This is critical data. Work with the somatic response structurally.`
+    : ""
+}
 
 🚨🚨🚨 REMEMBER: Your PRIMARY goal is to ASK QUESTIONS to understand their current state. After gathering sufficient information (3-6 substantial answers), signal readiness to generate the discovery report.
 
@@ -1930,10 +1967,10 @@ const getDiscoverySystemPrompt = (
               : "Session";
           const sessionDate = session.sessionDate
             ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            })
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })
             : "Date not specified";
 
           // Prioritize summaries - only include full transcript for most recent session
@@ -1946,12 +1983,12 @@ const getDiscoverySystemPrompt = (
               // Most recent: summary + brief transcript preview
               const transcriptPreview = Array.isArray(session.transcript)
                 ? session.transcript
-                  .slice(0, 10)
-                  .map(
-                    (msg) =>
-                      `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
-                  )
-                  .join("\n")
+                    .slice(0, 10)
+                    .map(
+                      (msg) =>
+                        `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
+                    )
+                    .join("\n")
                 : "";
 
               return `--- ${sessionNum} ---
@@ -1974,7 +2011,7 @@ ${session.summery}`;
             // No summary - include truncated transcript
             const transcriptText = Array.isArray(session.transcript)
               ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
-              (session.transcript.length > 20 ? "\n...[truncated]" : "")
+                (session.transcript.length > 20 ? "\n...[truncated]" : "")
               : JSON.stringify(session.transcript, null, 2);
 
             return `--- ${sessionNum} ---
@@ -2039,7 +2076,7 @@ ${userSession?.transcript ? `\n🚨🚨🚨🚨🚨 IMMEDIATE ATTENTION: The use
 - Your tone must match Euphoriam discovery: **direct, structural, high-precision**.
 - Do NOT default to generic therapy/coaching language.
 - 🚫 ABSOLUTELY FORBIDDEN PHRASES / PATTERNS (do not use):
-  - "I understand" / "I hear you" as the opener
+  - "I understand" / "I hear you" / "I hear you, [name]" / "I hear you mentioning" — use natural alternatives instead: "Got it.", "That tracks.", "So [X] is showing up.", "When you say [X], that points to…", "Noted.", "Clear."
   - "it's a journey" / "self-awareness" / "build confidence" / "gradually"
   - "Let's make this practical" / "small daily action" / "daily reminder" / "actionable step"
   - "once we have this, I'll proceed" (sounds robotic)
@@ -2069,7 +2106,7 @@ Judgement means: (bullets...)
 ...pivot...
 > **Take an action that cannot be used to define you.**
 ...examples...
-One more question — last for now:
+The next question:
 **Who does it feel like gets to decide who you are if you’re judged?**
 
 If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
@@ -2163,9 +2200,11 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
    - Example BAD: "I'm here. You mentioned 'what it means?' - tell me more about that, or what's on your mind right now?" ❌ NEVER DO THIS
 
 3. QUESTION STYLE:
-   - Ask ONE question at a time
+   - Ask ONE question at a time — one message must contain exactly one question for the user to answer
+   - Never list two or more numbered questions (e.g. "1. ... 2. ...") in the same message; if you need to explore two areas, ask the first now and the second only after they answer
    - Very specific, targeted questions (not generic)
    - Questions should check specific actions, sensations, or states
+   - When introducing your question, use "The next question:" or "Next question"
    - Examples: "Have you crossed the threshold at all — even once — in the way we defined it (3 minutes, private, no performance)?" or "Does the idea of doing even that create any tightness in your body right now?"
 
 4. RESPONDING TO ANSWERS:
@@ -2272,6 +2311,7 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
 
 13. ABSOLUTE PROHIBITION - NEVER USE THESE PHRASES:
     - NEVER say "I'm here" or "I'm here to help"
+    - NEVER say "I hear you" or "I hear you, [name]" or "I hear you mentioning" — use "Got it.", "That tracks.", "When you say [X], that points to…", "Noted.", or "Clear." instead
     - NEVER say "tell me more about that" or "what's on your mind?"
     - NEVER say "What would you like to explore?" or "How can I help?"
     - NEVER say "I don't have" or "I don't yet have" or "I'm going to mirror" or "Here's the clean translation"
@@ -2285,10 +2325,10 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
     - NEVER use generic, vague responses
     - NEVER use phrases like "I'm going to" or "Here's the" when responding to user questions
     - If the user mentions something unclear or has typos:
-      * Acknowledge what you heard: "I hear you mentioning [what they said]"
+      * Acknowledge what you heard: "When you say [what they said], that points to…" or "Got it — [what they said]."
       * Map it to their structure: "That connects to [specific structural element from their report]"
       * Ask ONE specific, targeted question to clarify the structural meaning
-      * Example: User says "formula plase" → "I hear 'formula' - in your structure, we mapped Gravity at [X]% and Signal Output at [Y]%. What does 'formula' point to for you right now - is it about how those connect, or something else?"
+      * Example: User says "formula plase" → "When you say 'formula' — in your structure we mapped Gravity at [X]% and Signal Output at [Y]%. What does 'formula' point to for you right now - is it about how those connect, or something else?"
     - Example BAD response: "I'm here. You mentioned 'formula plase' - tell me more about that, or what's on your mind right now?" ❌ NEVER DO THIS
     - Example BAD response: "I don't yet have your metric readout" ❌ NEVER DO THIS - you ALWAYS have the report when it's provided
     - ⚠️ CRITICAL IP PROTECTION: If user asks "what's the formula?" or "how is it calculated?" → NEVER explain calculations. Say: "The metrics are calculated using proprietary Euphoriam methods. Your current metrics are [list values]. What do these numbers mean for you right now?"
@@ -2433,7 +2473,10 @@ const loadDiagnosticState = async (email) => {
       const existingState = {
         ...(associatedDiagnostic?.data?.intakeState || {}),
         transcript: chatTranscript, // Use transcript from Chat model
-        mode: incompleteChat.chatType === "discovery" ? "discovery" : (associatedDiagnostic?.data?.intakeState?.mode || "diagnostic"),
+        mode:
+          incompleteChat.chatType === "discovery"
+            ? "discovery"
+            : associatedDiagnostic?.data?.intakeState?.mode || "diagnostic",
       };
 
       const existingReport = associatedDiagnostic?.data?.aiReport;
@@ -2653,12 +2696,13 @@ Words vs behaviour alignment (PENALTY - lower = more contradiction):
 - 0.6: Medium contradiction
 - 0.2: High contradiction (says one thing, does another)
 
-${clarifyingQuestionsAnswered > 0
-        ? `
+${
+  clarifyingQuestionsAnswered > 0
+    ? `
 CRITICAL: User has answered ${clarifyingQuestionsAnswered} CLARIFYING questions. These provide targeted evidence that should INCREASE scores in weak areas. Re-evaluate all scores accounting for this additional evidence.
 `
-        : ""
-      }
+    : ""
+}
 
 Return ONLY valid JSON:
 {
@@ -2952,7 +2996,8 @@ const extractMetricsFromReport = (reportText) => {
       // Use a more specific pattern that captures the number immediately after progress bar
       const match1 = searchText.match(
         new RegExp(
-          `\\*\\*${pattern}\\*\\*[:\\s]*[█░]+\\s+(\\d+(?:\\.\\d+)?)${isPercentage ? "%" : ""
+          `\\*\\*${pattern}\\*\\*[:\\s]*[█░]+\\s+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
           }(?=\\s+[~↑↓]|\\s+\\d|\\s*\\n|\\s*$|\\s*\\*|\\s*-|\\s*##|\\s*FRICTION)`,
           "i",
         ),
@@ -2968,7 +3013,8 @@ const extractMetricsFromReport = (reportText) => {
       // Pattern 2: Markdown bold format without progress bar
       const match2 = searchText.match(
         new RegExp(
-          `\\*\\*${pattern}\\*\\*[:\\s]+(\\d+(?:\\.\\d+)?)${isPercentage ? "%" : ""
+          `\\*\\*${pattern}\\*\\*[:\\s]+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
           }(?=\\s*[~↑↓]|\\s*\\n|\\s*$|\\s*\\*|\\s*-)`,
           "i",
         ),
@@ -2984,7 +3030,8 @@ const extractMetricsFromReport = (reportText) => {
       // Pattern 3: Direct match with progress bar - get FIRST number
       const match3 = searchText.match(
         new RegExp(
-          `${pattern}[:\\s]+[█░]+\\s+(\\d+(?:\\.\\d+)?)${isPercentage ? "%" : ""
+          `${pattern}[:\\s]+[█░]+\\s+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
           }(?=\\s+[~↑↓]|\\s+\\d|\\s*\\n|\\s*$|\\s*\\*|\\s*-)`,
           "i",
         ),
@@ -3000,7 +3047,8 @@ const extractMetricsFromReport = (reportText) => {
       // Pattern 4: Direct match without progress bar
       const match4 = searchText.match(
         new RegExp(
-          `${pattern}[:\\s]+(\\d+(?:\\.\\d+)?)${isPercentage ? "%" : ""
+          `${pattern}[:\\s]+(\\d+(?:\\.\\d+)?)${
+            isPercentage ? "%" : ""
           }(?=\\s*[~↑↓]|\\s*\\n|\\s*$|\\s*\\*|\\s*-)`,
           "i",
         ),
@@ -3294,51 +3342,53 @@ const loadLatestDiscoveryMetrics = async (
           const extractedMetrics = extractMetricsFromReport(
             latestDiscoveryReport,
           );
-        if (
-          extractedMetrics &&
-          Object.keys(extractedMetrics).some(
-            (key) => extractedMetrics[key] !== undefined,
-          )
-        ) {
-          // Merge carefully: NEVER let extracted 0s overwrite non-zero stored metrics
-          const merged = { ...latestDiscoveryMetrics };
-          const metricKeys = [
-            "gravity",
-            "signalCoherence",
-            "signalOutput",
-            "consciousnessLevel",
-            "qgcActivation",
-          ];
+          if (
+            extractedMetrics &&
+            Object.keys(extractedMetrics).some(
+              (key) => extractedMetrics[key] !== undefined,
+            )
+          ) {
+            // Merge carefully: NEVER let extracted 0s overwrite non-zero stored metrics
+            const merged = { ...latestDiscoveryMetrics };
+            const metricKeys = [
+              "gravity",
+              "signalCoherence",
+              "signalOutput",
+              "consciousnessLevel",
+              "qgcActivation",
+            ];
 
-          for (const key of Object.keys(extractedMetrics)) {
-            const value = extractedMetrics[key];
-            if (!metricKeys.includes(key)) {
-              // Non-metric fields (eo, lack, etc.) can always be overwritten
-              merged[key] = value;
-              continue;
+            for (const key of Object.keys(extractedMetrics)) {
+              const value = extractedMetrics[key];
+              if (!metricKeys.includes(key)) {
+                // Non-metric fields (eo, lack, etc.) can always be overwritten
+                merged[key] = value;
+                continue;
+              }
+
+              const stored = latestDiscoveryMetrics[key];
+              const hasStored =
+                stored !== undefined &&
+                stored !== null &&
+                !Number.isNaN(stored);
+              const isNonZero = Number(value) !== 0;
+
+              if (!hasStored) {
+                // No stored value → accept whatever we extracted (even 0)
+                merged[key] = value;
+              } else if (isNonZero) {
+                // Only overwrite a stored value if the extracted one is non-zero
+                merged[key] = value;
+              }
+              // If we have a stored non-zero and extracted 0 → keep stored
             }
 
-            const stored = latestDiscoveryMetrics[key];
-            const hasStored =
-              stored !== undefined && stored !== null && !Number.isNaN(stored);
-            const isNonZero = Number(value) !== 0;
-
-            if (!hasStored) {
-              // No stored value → accept whatever we extracted (even 0)
-              merged[key] = value;
-            } else if (isNonZero) {
-              // Only overwrite a stored value if the extracted one is non-zero
-              merged[key] = value;
-            }
-            // If we have a stored non-zero and extracted 0 → keep stored
+            latestDiscoveryMetrics = merged;
+            console.log(
+              "[loadLatestDiscoveryMetrics] Using metrics from discovery report (merged with stored metrics, preserving non-zero DB values):",
+              latestDiscoveryMetrics,
+            );
           }
-
-          latestDiscoveryMetrics = merged;
-          console.log(
-            "[loadLatestDiscoveryMetrics] Using metrics from discovery report (merged with stored metrics, preserving non-zero DB values):",
-            latestDiscoveryMetrics,
-          );
-        }
         }
       }
     }
@@ -3558,17 +3608,17 @@ const preparePreviousReports = (existingDiagnostic, existingReport) => {
 
   const previousReportEntry =
     existingReport &&
-      !existingPreviousReports.some(
-        (pr) => pr?.aiReport && pr.aiReport === existingReport,
-      )
+    !existingPreviousReports.some(
+      (pr) => pr?.aiReport && pr.aiReport === existingReport,
+    )
       ? {
-        aiReport: existingReport,
-        savedAt:
-          existingDiagnostic?.data?.intakeState?.finalizedAt ||
-          existingDiagnostic?.updatedAt ||
-          new Date().toISOString(),
-        pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
-      }
+          aiReport: existingReport,
+          savedAt:
+            existingDiagnostic?.data?.intakeState?.finalizedAt ||
+            existingDiagnostic?.updatedAt ||
+            new Date().toISOString(),
+          pdfUrl: existingDiagnostic?.data?.pdf?.url || null,
+        }
       : null;
 
   return previousReportEntry
@@ -4097,7 +4147,9 @@ const buildChatPrompts = async ({
     // Discovery mode: fetch latest prompts from DB (Diagnostic Chat + Brain Prompt)
     const { PromptType } = require("../utils/types");
     const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
-    const discoveryChatPromptObj = await getLatestPromptFromDb(PromptType.DIAGNOSTIC_CHAT);
+    const discoveryChatPromptObj = await getLatestPromptFromDb(
+      PromptType.DIAGNOSTIC_CHAT,
+    );
 
     const brainPrompt = brainPromptObj?.content || "";
     const discoveryChatPrompt = discoveryChatPromptObj?.content || "";

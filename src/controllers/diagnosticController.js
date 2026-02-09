@@ -28,11 +28,14 @@ const {
   trackQuestionNumbers,
   buildChatPrompts,
   buildFreeformIntakePrompt,
+  getDiagnosticNewUserWelcomeMessage,
   extractQuestionNumber,
   validateChatbotRequest,
   SUPPORT_LOCK_PROMPT,
-  EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   getDiscoverySystemPrompt,
+  getLatestPromptFromDb,
+  calculateDiagnosticConfidence,
+  isAiLikelyAnswer, // Consistently use helper implementation
 } = require("../helpers/euphoriamChatbot");
 const jwt = require("jsonwebtoken");
 const { retrieveSimilarChunks } = require("../helpers/rag");
@@ -50,59 +53,126 @@ const {
   detectDiscoveryReportReadiness,
   detectDiscoveryEndIntents,
 } = require("../utils/validation");
+const { isCreatorClubMember } = require("./userController");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
-
-const isCreatorClubMember = (context = {}) => {
-  const hasProduct = (context.products || []).some((p) =>
-    (p.title || "").toLowerCase().includes("creator club"),
-  );
-  const hasOffer = (context.offers || []).some((o) =>
-    (o.title || "").toLowerCase().includes("creator club"),
-  );
-  return hasProduct || hasOffer;
-};
 
 /**
  * Finds or creates a user and checks/updates their Creator Club membership status
  * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
  * Always checks latest status from Kajabi and updates the database
  */
+const checkCreatorClubByEmail = async ({ email, assessmentIds = [] }) => {
+  console.log("Checking Creator Club membership for email:", email);
+
+  const result = await buildKajabiDiagnosticContext({ email, assessmentIds });
+
+  if (!result) {
+    console.warn(
+      " No diagnostic context available — user not found in Kajabi",
+      {
+        email,
+      },
+    );
+
+    return {
+      clubStatus: false,
+      diagnosticContext: null,
+      reason: "CUSTOMER_NOT_FOUND",
+    };
+  }
+
+  const { diagnosticContext } = result;
+
+  const { isCreatorClubMember } = require("./userController"); // lazy load
+  console.log("diagnosticContext", diagnosticContext);
+
+  const clubStatus = isCreatorClubMember(diagnosticContext);
+
+  return {
+    clubStatus,
+    diagnosticContext,
+  };
+};
 
 const findOrCreateCreatorUser = async (req, res) => {
   try {
-    let { email, name } = req.body;
+    let { email, name, assessmentIds = [] } = req.body;
     if (!email) return errorResponse(res, "Email is required", 400);
 
     email = email.toLowerCase().trim();
     name = name?.trim();
 
+    // 🔍 Check Kajabi membership FIRST
+    const { clubStatus, diagnosticContext } = await checkCreatorClubByEmail({
+      email,
+      assessmentIds,
+    });
+
+    if (!clubStatus.club) {
+      return errorResponse(
+        res,
+        "You do not have an active Creator Club membership.",
+        403,
+      );
+    }
+    if (!(clubStatus.club || clubStatus.bronze || clubStatus.silver)) {
+      return errorResponse(
+        res,
+        "You do not have any active Creator Club membership (club, bronze, or silver).",
+        403,
+      );
+    }
+    // Find user
     let user = await User.findOne({ where: { email } });
-    if (user && typeof name !== "undefined" && name !== "") {
-      return errorResponse(res, "Your account is already created", 400);
+    if (user && name) {
+      return errorResponse(res, "Account already created", 400);
     }
+    // New user= must provide name
     if (!user) {
-      if (!name)
-        return errorResponse(res, "Name is required for new users", 400);
-      user = await User.create({ email, name });
+      if (!name) {
+        return errorResponse(res, "Account not found", 400);
+      }
+
+      user = await User.create({
+        email,
+        name,
+        membership: {
+          isCreatorClub: clubStatus.club,
+          isCreatorClubBronze: clubStatus.bronze,
+          isCreatorClubSilver: clubStatus.silver,
+          lastUpdated: new Date().toISOString(),
+          products: diagnosticContext.products || [],
+          offers: diagnosticContext.offers || [],
+        },
+      });
+    } else {
+      //  Existing user = update membership
+      await user.update({
+        membership: {
+          isCreatorClub: clubStatus.club,
+          isCreatorClubBronze: clubStatus.bronze,
+          isCreatorClubSilver: clubStatus.silver,
+          lastUpdated: new Date().toISOString(),
+          products: diagnosticContext.products || [],
+          offers: diagnosticContext.offers || [],
+        },
+      });
     }
 
-    // Optional: Creator Club checks here (your existing logic)...
-
+    // OTP logic continues (unchanged)
     const now = new Date();
 
-    // Reset resend count if expiry passed
     if (user.resendOTPExpiry && user.resendOTPExpiry < now) {
       user.resendOTPCount = 0;
       user.resendOTPExpiry = null;
     }
 
-    // Cooldown check
     if (user.resendOTPCooldown && user.resendOTPCooldown > now) {
-      const diffMs = user.resendOTPCooldown - now; // difference in milliseconds
-      const minutes = Math.floor(diffMs / 60000); // full minutes
-      const seconds = Math.floor((diffMs % 60000) / 1000); // remaining seconds
+      const diffMs = user.resendOTPCooldown - now;
+      const minutes = Math.floor(diffMs / 60000);
+      const seconds = Math.floor((diffMs % 60000) / 1000);
 
       return errorResponse(
         res,
@@ -111,16 +181,14 @@ const findOrCreateCreatorUser = async (req, res) => {
       );
     }
 
-    // Generate OTP
     const otp = generateOTP();
     user.otp = otp;
-    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
-    user.otpAttempts = 0;
-    user.otpCooldown = null;
+    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     user.resendOTPCount += 1;
-    user.resendOTPCooldown = new Date(Date.now() + 60 * 1000); // 1 min cooldown
-    user.resendOTPExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // reset count in 24h
+    user.resendOTPCooldown = new Date(Date.now() + 60 * 1000);
+    user.resendOTPExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
     user.requestedOTP = true;
+
     await user.save();
 
     await sendEmailBasic(
@@ -132,213 +200,11 @@ const findOrCreateCreatorUser = async (req, res) => {
     return successResponse(res, "OTP sent successfully", {
       email,
       expiresIn: "10 minutes",
-      remainingResends: 3 - user.resendOTPCount,
+      remainingResends: Math.max(0, 3 - user.resendOTPCount),
     });
   } catch (error) {
     console.error("[findOrCreateCreatorUser] Error:", error);
     return errorResponse(res, "Failed to process request", 500);
-  }
-};
-
-// Lightweight AI check to decide if a user reply is an answer to the last question.
-const isAiLikelyAnswer = async ({ question, reply }) => {
-  console.log("[isAiLikelyAnswer] START", { question, reply });
-
-  const t = (reply || "").trim().toLowerCase();
-  if (!t) {
-    console.log("[isAiLikelyAnswer] ❌ Empty reply");
-    return false;
-  }
-
-  if (isQuestion(t)) {
-    console.log("[isAiLikelyAnswer] ❌ Reply detected as question");
-    return false;
-  }
-
-  // Hard fail on clarify/intents
-  const clarifyPhrases = [
-    "elaborate",
-    "clarify",
-    "explain",
-    "repeat",
-    "don't understand",
-    "do not understand",
-    "not sure",
-    "what do you mean",
-    "?",
-  ];
-
-  const clarifier = clarifyPhrases.find((p) => t.includes(p));
-  if (clarifier) {
-    console.log(
-      "[isAiLikelyAnswer] ❌ Clarification intent detected:",
-      clarifier,
-    );
-    return false;
-  }
-
-  const normalizedReply = t.trim();
-
-  // Simple yes/no answers
-  const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
-  if (simpleAnswers.includes(normalizedReply)) {
-    console.log("[isAiLikelyAnswer] ✅ Simple yes/no detected");
-    return true;
-  }
-
-  // Single letter answers (A-F)
-  const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
-  if (singleLetterAnswers.includes(normalizedReply)) {
-    const questionText = (question || "").toLowerCase();
-    const hasMultipleChoice =
-      /\([a-f]\)/i.test(question) ||
-      /^[a-f]\)/i.test(question) ||
-      /\*\*[a-f]\)/i.test(question) ||
-      /\[a-f\]/i.test(question) ||
-      /pick\s+[a-f]/i.test(question) ||
-      /choose\s+[a-f]/i.test(question) ||
-      /reply\s+with\s+[a-f]/i.test(question) ||
-      /option\s+[a-f]/i.test(question);
-
-    console.log("[isAiLikelyAnswer] Single-letter answer", {
-      normalizedReply,
-      hasMultipleChoice,
-    });
-
-    if (hasMultipleChoice) {
-      console.log(
-        "[isAiLikelyAnswer] ✅ Accepted single-letter multiple-choice answer",
-      );
-      return true;
-    }
-  }
-
-  // Single number answers (1–6)
-  const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
-  if (singleNumberAnswers.includes(normalizedReply)) {
-    const questionText = (question || "").toLowerCase();
-    const hasNumberedOptions =
-      /\([1-6]\)/i.test(question) ||
-      /^[1-6]\)/i.test(question) ||
-      /\*\*[1-6]\)/i.test(question) ||
-      /\[1-6\]/i.test(question) ||
-      /option\s+[1-6]/i.test(question);
-
-    console.log("[isAiLikelyAnswer] Single-number answer", {
-      normalizedReply,
-      hasNumberedOptions,
-    });
-
-    if (hasNumberedOptions) {
-      console.log("[isAiLikelyAnswer] ✅ Accepted numbered option answer");
-      return true;
-    }
-  }
-
-  // Move-on / skip intent
-  const moveOnPhrases = [
-    "move on",
-    "next question",
-    "next",
-    "skip",
-    "move to next",
-    "continue",
-    "proceed",
-    "go to next",
-  ];
-
-  const moveOnMatch = moveOnPhrases.find((p) => normalizedReply.includes(p));
-  if (moveOnMatch) {
-    console.log("[isAiLikelyAnswer] ✅ Move-on intent detected:", moveOnMatch);
-    return true;
-  }
-
-  // Single-word descriptive answers
-  const singleWordAnswers = [
-    "alone",
-    "together",
-    "home",
-    "work",
-    "bed",
-    "couch",
-    "chair",
-    "desk",
-    "balcony",
-    "outside",
-    "library",
-    "park",
-    "car",
-    "office",
-    "calm",
-    "relaxed",
-    "interrupted",
-    "available",
-    "free",
-    "busy",
-    "watched",
-    "on-call",
-  ];
-
-  if (singleWordAnswers.includes(normalizedReply)) {
-    console.log(
-      "[isAiLikelyAnswer] ✅ Single-word descriptive answer detected",
-    );
-    return true;
-  }
-
-  // Descriptive multi-word patterns
-  const descriptiveAnswerPatterns = [
-    /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
-    /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
-    /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
-    /^(yes|no|maybe|sometimes|often|rarely|never|always)\s+(alone|interrupted|available)/i,
-  ];
-
-  if (descriptiveAnswerPatterns.some((p) => p.test(reply))) {
-    console.log("[isAiLikelyAnswer] ✅ Descriptive pattern matched");
-    return true;
-  }
-
-  const alpha = t.match(/[A-Za-z]/g);
-  if (!alpha || alpha.length < 1) {
-    console.log("[isAiLikelyAnswer] ❌ No alphabetic characters");
-    return false;
-  }
-
-  console.log("[isAiLikelyAnswer] 🤖 Escalating to AI classifier");
-
-  const prompt = `
-You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
-
-Question: "${question || "N/A"}"
-Reply: "${reply}"
-
-Rules:
-- Reply only "yes" or "no".
-- "yes" if the reply attempts to answer; "no" if it is just a question, "I don't know", or unrelated.
-`;
-
-  try {
-    const resp = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0,
-      max_completion_tokens: 20,
-    });
-
-    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
-    const result = txt.includes("yes");
-
-    console.log("[isAiLikelyAnswer] 🤖 AI response:", txt);
-    console.log("[isAiLikelyAnswer] RESULT:", result);
-
-    return result;
-  } catch (err) {
-    console.error(
-      "[isAiLikelyAnswer] ⚠️ AI failed — using heuristic fallback",
-      err,
-    );
-    return false;
   }
 };
 
@@ -428,6 +294,78 @@ RULES:
     console.error("[extractKeySentenceAndCorrectionWithLLM] Error:", error);
     return { keySentence: "", correction: "" };
   }
+};
+
+/** True if message is the discovery "Welcome back... I've loaded your last report" block */
+const isDiscoveryWelcomeMessage = (msg) =>
+  msg?.role === "assistant" &&
+  typeof msg?.content === "string" &&
+  /welcome back/i.test(msg.content) &&
+  /(loaded your last report|loaded your previous diagnostic report)/i.test(
+    msg.content,
+  );
+
+/**
+ * Remove duplicate discovery-welcome block from transcript (e.g. after refresh
+ * frontend can send duplicate leading to [welcome, user, asst, welcome, user, asst, ...]).
+ * Keeps the first welcome block and strips the second.
+ */
+const removeDuplicateDiscoveryWelcomeBlock = (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length < 4) return transcript;
+  const firstIdx = transcript.findIndex(isDiscoveryWelcomeMessage);
+  if (firstIdx === -1) return transcript;
+  const secondIdx = transcript.findIndex(
+    (m, i) => i > firstIdx && isDiscoveryWelcomeMessage(m),
+  );
+  if (secondIdx === -1) return transcript;
+  // Remove second welcome and the next (user, assistant) pair so we don't leave a stray welcome
+  const removeEnd = Math.min(
+    secondIdx + 3,
+    transcript.length,
+  ); // welcome + user + asst = 3
+  return [
+    ...transcript.slice(0, secondIdx),
+    ...transcript.slice(removeEnd),
+  ];
+};
+
+/** Returns true if content is gibberish or too short/invalid for diagnostic intake */
+const isDiagnosticInputInvalid = (userContent) => {
+  if (!userContent || typeof userContent !== "string") return true;
+  const text = userContent.trim();
+  const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
+  const validShortResponses =
+    /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+
+  if (text.length <= 1) return true;
+  if (wordCount === 0 && text.length <= 2) return true;
+  if (
+    wordCount === 1 &&
+    text.length <= 3 &&
+    !validShortResponses.test(text) &&
+    !/[aeiou]/i.test(text)
+  )
+    return true;
+
+  const lowerText = text.toLowerCase();
+  const vowels = (lowerText.match(/[aeiou]/gi) || []).length;
+  const consonants = (lowerText.match(
+    /[bcdfghjklmnpqrstvwxyz]/gi,
+  ) || []).length;
+  const totalLetters = vowels + consonants;
+  if (totalLetters > 0 && vowels === 0) return true;
+  if (totalLetters >= 8 && vowels / totalLetters < 0.15) return true;
+  if (/^(.{1,3})\1{3,}$/i.test(text)) return true;
+  if (
+    wordCount === 1 &&
+    text.length >= 6 &&
+    consonants > 0 &&
+    vowels === 0
+  )
+    return true;
+  if (/^[bcdfghjklmnpqrstvwxyz]{6,}$/i.test(text)) return true;
+
+  return false;
 };
 
 const buildDiscoveryEmail = ({ transcript = [], email }) => {
@@ -590,8 +528,8 @@ const buildFallbackDiscoveryReport = ({
 
   const phase1 =
     safeMetrics.gravity >= 70 ||
-      safeMetrics.signalOutput < 30 ||
-      safeMetrics.signalCoherence < 70
+    safeMetrics.signalOutput < 30 ||
+    safeMetrics.signalCoherence < 70
       ? [4, 6, 8]
       : [4];
   const phase2 = safeMetrics.consciousnessLevel < 2.5 ? [3] : [3];
@@ -830,25 +768,7 @@ METRICS_JSON_END
 };
 
 //get latest promt from db
-const getLatestPromptFromDb = async () => {
-  try {
-    const prompt = await Prompt.findOne({
-      where: { isActive: true },
-      order: [["createdAt", "DESC"]],
-      raw: true, // returns plain JS object
-    });
-
-    if (!prompt) return null;
-
-    return {
-      ...prompt,
-      fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}`,
-    };
-  } catch (error) {
-    console.error("Error fetching latest prompt:", error);
-    return null;
-  }
-};
+// getLatestPromptFromDb removed - using import from euphoriamChatbot
 
 /**
  * ============================================
@@ -883,6 +803,218 @@ const handleDiscoveryMode = async ({
   latestUserSession, // Latest 1:1 coaching session (for backward compatibility)
   allUserSessions = null, // All 1:1 coaching sessions (preferred)
 }) => {
+  // // Validate user input for incomplete/invalid messages
+  // if (lastUser && lastUser.content) {
+  //   const userContent = lastUser.content.trim();
+  //   const wordCount = userContent.split(/\s+/).filter((w) => w.length > 0).length;
+
+  //   // Valid short responses that should be accepted
+  //   const validShortResponses = /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+
+  //   // Helper function to detect gibberish/nonsensical input
+  //   const isGibberish = (text) => {
+  //     if (text.length < 4) return false; // Too short to judge
+
+  //     const lowerText = text.toLowerCase();
+  //     const vowels = (lowerText.match(/[aeiou]/gi) || []).length;
+  //     const consonants = (lowerText.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length;
+  //     const totalLetters = vowels + consonants;
+
+  //     // Check 1: No vowels at all (like "kjtghjgjghjg")
+  //     if (totalLetters > 0 && vowels === 0) return true;
+
+  //     // Check 2: Very low vowel ratio (less than 15% vowels) for longer strings
+  //     if (totalLetters >= 8 && vowels / totalLetters < 0.15) return true;
+
+  //     // Check 3: Repetitive character patterns (same 2-3 chars repeating)
+  //     const repetitivePattern = /^(.{1,3})\1{3,}$/i;
+  //     if (repetitivePattern.test(text)) return true;
+
+  //     // Check 4: All consonants with no spaces (for single "word" gibberish)
+  //     if (wordCount === 1 && text.length >= 6 && consonants > 0 && vowels === 0) return true;
+
+  //     // Check 5: Random keyboard mashing pattern (alternating consonants with no vowels)
+  //     const consonantOnlyPattern = /^[bcdfghjklmnpqrstvwxyz]{6,}$/i;
+  //     if (consonantOnlyPattern.test(text)) return true;
+
+  //     return false;
+  //   };
+
+  //   // Check if input is too short or incomplete (single character, single letter, etc.)
+  //   const isIncompleteInput =
+  //     userContent.length <= 1 || // Single character like "g"
+  //     (wordCount === 0 && userContent.length <= 2) || // Very short fragments like "g " or "g."
+  //     (wordCount === 1 && userContent.length <= 3 && !validShortResponses.test(userContent)); // Single very short word that's not a valid response
+
+  //   // Check for gibberish/nonsensical input
+  //   const isInvalidGibberish = isGibberish(userContent);
+
+  //   if (isIncompleteInput || isInvalidGibberish) {
+  //     console.log("[handleDiscoveryMode] Invalid/incomplete input detected:", {
+  //       content: userContent,
+  //       length: userContent.length,
+  //       wordCount,
+  //       isIncomplete: isIncompleteInput,
+  //       isGibberish: isInvalidGibberish,
+  //     });
+
+  //     // Use the last *real* question (skip our own validation messages) so "Here's the question again" is correct
+  //     const ourValidationPrefix = "I see your message came through incomplete or unclear.";
+  //     const lastRealAssistant = [...transcript]
+  //       .reverse()
+  //       .find(
+  //         (m) =>
+  //           m?.role === "assistant" &&
+  //           m.content &&
+  //           !String(m.content).trim().startsWith(ourValidationPrefix),
+  //       );
+  //     const lastQuestion = (lastRealAssistant?.content || lastAssistant?.content || "").trim();
+  //     const questionSnippet =
+  //       lastQuestion &&
+  //       lastQuestion.length > 0 &&
+  //       !lastQuestion.startsWith(ourValidationPrefix)
+  //         ? lastQuestion.length > 300
+  //           ? lastQuestion.slice(0, 297).trim() + "..."
+  //           : lastQuestion
+  //         : null;
+  //     const withQuestion =
+  //       questionSnippet
+  //         ? `I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?\n\nHere's the question again:\n\n${questionSnippet}`
+  //         : "I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?";
+
+  //     const incompleteResponse = {
+  //       role: "assistant",
+  //       content: withQuestion,
+  //     };
+
+  //     const incompleteTranscript = [...transcript, incompleteResponse];
+
+  //     // Save, overwriting the transcript that may have already been saved with the AI response
+  //     if (appUser?.id) {
+  //       await saveChatIncrementally({
+  //         userId: appUser.id,
+  //         diagnosticId: existingDiagnostic?.id || null,
+  //         chatType: "discovery",
+  //         transcript: incompleteTranscript,
+  //         isChatEnded: false,
+  //       });
+  //     }
+
+  //     // Use same shape as normal discovery chat so frontend displays nextMessage
+  //     return successResponse(res, "Next chatbot message", {
+  //       nextMessage: incompleteResponse,
+  //       introPageText: introText,
+  //       transcript: transcript,
+  //       intakeState: {
+  //         ...existingState,
+  //         transcript: incompleteTranscript,
+  //         mode: "discovery",
+  //       },
+  //       retrieved: [],
+  //       resumeNotice: null,
+  //       status: "chatting",
+  //       statusMessage: "Chatting in progress",
+  //       canResume: true,
+  //       incompleteInput: true,
+  //     });
+  //   }
+  // }
+
+  // Validate user input for incomplete/invalid messages (discovery mode)
+  if (lastUser && lastUser.content) {
+    const userContent = lastUser.content.trim();
+    const wordCount = userContent
+      .split(/\s+/)
+      .filter((w) => w.length > 0).length;
+
+    // Valid short responses that should be accepted
+    const validShortResponses =
+      /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+
+    // Treat ultra-short, non-standard replies (like "l") as incomplete
+    const isIncompleteInput =
+      userContent.length <= 1 ||
+      (wordCount === 0 && userContent.length <= 2) ||
+      (wordCount === 1 &&
+        userContent.length <= 3 &&
+        !validShortResponses.test(userContent));
+
+    if (isIncompleteInput) {
+      console.log("[handleDiscoveryMode] Invalid/incomplete input detected:", {
+        content: userContent,
+        length: userContent.length,
+        wordCount,
+        isIncomplete: isIncompleteInput,
+      });
+
+      // Use the last *real* question (skip our own validation messages)
+      const ourValidationPrefix =
+        "I see your message came through incomplete or unclear.";
+      const lastRealAssistant = [...transcript]
+        .reverse()
+        .find(
+          (m) =>
+            m?.role === "assistant" &&
+            m.content &&
+            !String(m.content).trim().startsWith(ourValidationPrefix),
+        );
+      const lastQuestion = (
+        lastRealAssistant?.content || lastAssistant?.content || ""
+      ).trim();
+      const questionSnippet =
+        lastQuestion &&
+        lastQuestion.length > 0 &&
+        !lastQuestion.startsWith(ourValidationPrefix)
+          ? lastQuestion.length > 300
+            ? lastQuestion.slice(0, 297).trim() + "..."
+            : lastQuestion
+          : null;
+      const withQuestion = questionSnippet
+        ? `I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?\n\nHere's the question again:\n\n${questionSnippet}`
+        : "I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?";
+
+      const incompleteResponse = {
+        role: "assistant",
+        content: withQuestion,
+      };
+
+      const incompleteTranscript = [...transcript, incompleteResponse];
+
+      // Save corrected transcript
+      if (appUser?.id) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "discovery",
+          transcript: incompleteTranscript,
+          isChatEnded: false,
+        });
+      }
+
+      // Return validation message in normal discovery shape
+      return successResponse(res, "Next chatbot message", {
+        nextMessage: incompleteResponse,
+        introPageText: introText,
+        transcript: transcript,
+        intakeState: {
+          ...existingState,
+          transcript: incompleteTranscript,
+          mode: "discovery",
+        },
+        retrieved: [],
+        resumeNotice: null,
+        status: "chatting",
+        statusMessage: "Chatting in progress",
+        canResume: true,
+        incompleteInput: true,
+      });
+    }
+  }
+
+  // Check if user has confirmed ending via frontend modal
+  const userConfirmedEndChat = req.body.userConfirmedEndChat === true;
+  const userDeclinedEndChat = req.body.userConfirmedEndChat === false;
+
   // Discovery mode: Check if user wants to end/generate report
   // If nextMessage is null, it means we're skipping bot response to generate report directly
   console.log("[handleDiscoveryMode] Checking if chat should end");
@@ -892,6 +1024,8 @@ const handleDiscoveryMode = async ({
     lastAssistant: lastAssistant
       ? lastAssistant.content?.substring(0, 100)
       : "none",
+    userConfirmedEndChat,
+    userDeclinedEndChat,
   });
 
   let wantsToEndOrGenerate = false;
@@ -905,6 +1039,17 @@ const handleDiscoveryMode = async ({
     (m) => m?.role === "assistant",
   );
   const userMessages = updatedTranscript.filter((m) => m?.role === "user");
+
+  // Count substantial exchanges (user messages with meaningful content)
+  const substantialExchanges = userMessages.filter((m) => {
+    const content = (m.content || "").trim();
+    const wordCount = content.split(/\s+/).length;
+    // Consider substantial if: 2+ words OR short meaningful responses
+    return (
+      wordCount >= 2 ||
+      /^(yes|no|maybe|idk|okay|sure|fine|good|bad|better|worse)$/i.test(content)
+    );
+  }).length;
 
   // Count questions asked by assistant (messages ending with "?" or containing question words)
   const questionsAsked = assistantMessages.filter((m) => {
@@ -937,11 +1082,13 @@ const handleDiscoveryMode = async ({
   console.log("[handleDiscoveryMode] Question count:", {
     questionsAsked,
     questionsAnswered,
-    note: "Bot will ask enough questions to understand user's state, then end naturally",
+    substantialExchanges,
+    note: "Bot will ask enough questions to understand user's state, then offer to end",
   });
 
   // Check for repeated non-answers (like "idk", "i don't know", etc.)
-  const MAX_QUESTIONS_BEFORE_AUTO_GENERATE = 6;
+  const MIN_EXCHANGES_BEFORE_ASK_END = 5; // Ask to end after 5+ substantial exchanges
+  const MAX_EXCHANGES_BEFORE_FORCE_ASK = 8; // Force ask to end after 8 exchanges
   const recentUserMessages = userMessages.slice(-3); // Last 3 user messages
   const nonAnswerPatterns =
     /^(idk|i don't know|i dont know|dunno|not sure|unsure|maybe|idk\.|i don't know\.)$/i;
@@ -952,23 +1099,126 @@ const handleDiscoveryMode = async ({
   // If user has given 2+ non-answers in last 3 messages, treat as wanting to end
   const hasRepeatedNonAnswers = nonAnswerCount >= 2;
 
-  // If we've asked 6+ questions, auto-generate report (even with non-answers)
-  const shouldAutoGenerateAfterQuestions =
-    questionsAsked >= MAX_QUESTIONS_BEFORE_AUTO_GENERATE;
+  const lastDeclinedExchanges =
+    existingState.exchangesAtLastDeclinedEndChat || 0;
+  const exchangesSinceLastAsked = substantialExchanges - lastDeclinedExchanges;
 
-  console.log("[handleDiscoveryMode] Non-answer detection:", {
+  // Check if we should ask user to end chat (every 5 substantial exchanges)
+  const shouldAskToEndChat =
+    exchangesSinceLastAsked >= MIN_EXCHANGES_BEFORE_ASK_END &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat &&
+    !req.body.skipEndChatPrompt;
+
+  // Force ask to end after 8 exchanges
+  const shouldForceAskToEnd =
+    exchangesSinceLastAsked >= MAX_EXCHANGES_BEFORE_FORCE_ASK &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat &&
+    !req.body.skipEndChatPrompt;
+
+  // Legacy: If we've asked 6+ questions, consider auto-generating
+  const shouldAutoGenerateAfterQuestions = false; // Disabled - now we use modal instead
+
+  console.log("[handleDiscoveryMode] Exchange analysis:", {
     recentUserMessages: recentUserMessages.length,
     nonAnswerCount,
     hasRepeatedNonAnswers,
-    shouldAutoGenerateAfterQuestions,
+    substantialExchanges,
+    shouldAskToEndChat,
+    shouldForceAskToEnd,
+    userConfirmedEndChat,
+    userDeclinedEndChat,
   });
 
-  // Removed: AI auto-detection of readiness - reports will only be generated when user explicitly requests them
+  // ============================================
+  // MODAL-BASED END CHAT FLOW
+  // ============================================
 
-  // Don't treat nextMessage === null as a signal to generate report
-  // nextMessage === null means the LLM needs to generate a response (which should have happened already)
-  // Only generate report if user explicitly wants it OR AI signaled completion OR we've asked enough questions
-  if (lastUser) {
+  // If user confirmed ending via modal, generate report immediately
+  if (userConfirmedEndChat) {
+    wantsToGenerateReport = true;
+    wantsToEndOrGenerate = true;
+    console.log(
+      "[handleDiscoveryMode] User confirmed end via modal - generating report",
+    );
+  }
+
+  // If user declined ending via modal, continue chatting normally
+  if (userDeclinedEndChat) {
+    wantsToGenerateReport = false;
+    wantsToEndOrGenerate = false;
+    console.log(
+      "[handleDiscoveryMode] User declined end via modal - continuing chat",
+    );
+    // Mark that we've already asked so we don't ask again immediately
+    req.body.skipEndChatPrompt = true;
+
+    // If no nextMessage (skipped AI call), provide a friendly continuation
+    if (!nextMessage) {
+      nextMessage = {
+        role: "assistant",
+        content:
+          "Understood. We'll let it land. What else would you like to explore or update regarding your patterns?",
+      };
+      // Keep transcript and nextMessage in sync: append this message to transcript
+      updatedTranscript = [...(updatedTranscript || []), nextMessage];
+      if (appUser?.id) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "discovery",
+          transcript: updatedTranscript,
+          isChatEnded: false,
+        });
+      }
+    }
+  }
+
+  // If we should ask to end chat (after 5+ substantial exchanges), return modal trigger
+  // Do NOT add the bot's "ready to generate" message yet: ask for user choice first, then send the next message.
+  if (
+    (shouldAskToEndChat || shouldForceAskToEnd) &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat
+  ) {
+    console.log(
+      "[handleDiscoveryMode] Triggering end chat modal after",
+      substantialExchanges,
+      "exchanges",
+    );
+
+    // Save transcript WITHOUT the new assistant message so state matches "modal only, no new bubble"
+    if (appUser?.id) {
+      await saveChatIncrementally({
+        userId: appUser.id,
+        diagnosticId: existingDiagnostic?.id || null,
+        chatType: "discovery",
+        transcript: transcript,
+        isChatEnded: false,
+      });
+    }
+
+    // Return modal only: no nextMessage so the UI doesn't show a new bot message or "typing".
+    // After user clicks End chat or Continue chat, we'll return the appropriate single response.
+    return successResponse(res, "End chat confirmation required", {
+      showEndChatModal: true,
+      nextMessage: null,
+      introPageText: introText,
+      transcript: transcript,
+      intakeState: { ...existingState, transcript },
+      retrieved: [],
+      resumeNotice: null,
+      status: "ask_end_chat",
+      statusMessage:
+        "Would you like to end the chat and generate your discovery report?",
+      substantialExchanges,
+      canResume: true,
+    });
+  }
+
+  // Check for explicit user intent to end/generate via message content
+  if (lastUser && !userConfirmedEndChat && !userDeclinedEndChat) {
     const intents = await detectDiscoveryEndIntents({
       userMessage: lastUser.content,
       transcript: updatedTranscript,
@@ -978,16 +1228,12 @@ const handleDiscoveryMode = async ({
     wantsToEndChat = intents.endChat === true;
     wantsToGenerateReport = intents.generateReport === true;
 
-    // Auto-generate if: user has given repeated non-answers OR we've asked enough questions
-    if (
-      !wantsToGenerateReport &&
-      (hasRepeatedNonAnswers || shouldAutoGenerateAfterQuestions)
-    ) {
-      wantsToGenerateReport = true;
-      console.log("[handleDiscoveryMode] Auto-generating report due to:", {
-        hasRepeatedNonAnswers,
-        shouldAutoGenerateAfterQuestions,
-      });
+    // If user has repeated non-answers, ask to end instead of auto-generating
+    if (!wantsToGenerateReport && hasRepeatedNonAnswers) {
+      // Don't auto-generate, but still might trigger modal
+      console.log(
+        "[handleDiscoveryMode] Repeated non-answers detected - user may want to end",
+      );
     }
 
     wantsToEndOrGenerate = wantsToEndChat || wantsToGenerateReport;
@@ -996,27 +1242,24 @@ const handleDiscoveryMode = async ({
       wantsToEndChat,
       wantsToGenerateReport,
       wantsToEndOrGenerate,
-      autoGenerated: hasRepeatedNonAnswers || shouldAutoGenerateAfterQuestions,
     });
 
     if (wantsToGenerateReport) {
-      const userMessages = updatedTranscript.filter(
+      const userMsgCount = updatedTranscript.filter(
         (m) => m?.role === "user",
       ).length;
-      const assistantMessages = updatedTranscript.filter(
+      const assistantMsgCount = updatedTranscript.filter(
         (m) => m?.role === "assistant",
       ).length;
       console.log(
-        `[handleDiscoveryMode] User requested report generation (${userMessages} user, ${assistantMessages} assistant messages)`,
+        `[handleDiscoveryMode] User requested report generation (${userMsgCount} user, ${assistantMsgCount} assistant messages)`,
       );
     }
-  } else {
+  } else if (!userConfirmedEndChat && !userDeclinedEndChat) {
     console.log(
       "[handleDiscoveryMode] No lastUser message - skipping end check",
     );
   }
-
-  // Removed: Auto-detection after 8 questions - reports will only be generated when user explicitly requests them
 
   // NOTE: We intentionally do NOT post-process messages to force "pause/integration limit" in discovery mode,
   // because that can be misread as completion and trigger an irrelevant report.
@@ -1024,15 +1267,14 @@ const handleDiscoveryMode = async ({
   console.log("[handleDiscoveryMode] Final decision:", {
     wantsToEndOrGenerate,
     willGenerateReport: wantsToEndOrGenerate,
+    userConfirmedEndChat,
     nextMessageHasCompletion: nextMessage?.content
       ? /(we stop here|let it land|that's enough)/i.test(nextMessage.content)
       : false,
   });
 
-  // If user wants to end chat, treat it as a request to generate report and end
-  // "end chat" should generate a report, not just pause
-  if (wantsToEndChat && !wantsToGenerateReport) {
-    // Treat "end chat" as a request to generate report
+  // If user wants to end chat via message, treat it as a request to generate report
+  if (wantsToEndChat && !wantsToGenerateReport && !userDeclinedEndChat) {
     wantsToGenerateReport = true;
     wantsToEndOrGenerate = true;
     console.log(
@@ -1060,12 +1302,12 @@ const handleDiscoveryMode = async ({
 
       const qs =
         discoveryReadiness?.nextQuestions &&
-          discoveryReadiness.nextQuestions.length > 0
+        discoveryReadiness.nextQuestions.length > 0
           ? discoveryReadiness.nextQuestions
           : [
-            "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
-            "What’s the main loop/friction you keep noticing this week?",
-          ];
+              "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
+              "What’s the main loop/friction you keep noticing this week?",
+            ];
 
       const userText = (lastUser?.content || "").toLowerCase();
       const isAskingHowManyQuestions =
@@ -1073,14 +1315,16 @@ const handleDiscoveryMode = async ({
 
       nextMessage = {
         role: "assistant",
-        content: `${isAskingHowManyQuestions
-          ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
-          : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${qs.length === 1 ? "" : "s"
-          } first:\n\n`
-          }${qs
-            .slice(0, 2)
-            .map((q, idx) => `${idx + 1}) ${q}`)
-            .join("\n")}`,
+        content: `${
+          isAskingHowManyQuestions
+            ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
+            : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${
+                qs.length === 1 ? "" : "s"
+              } first:\n\n`
+        }${qs
+          .slice(0, 2)
+          .map((q, idx) => `${idx + 1}) ${q}`)
+          .join("\n")}`,
       };
 
       // IMPORTANT:
@@ -1112,7 +1356,10 @@ const handleDiscoveryMode = async ({
         await existingDiagnostic.update({
           data: {
             ...(existingDiagnostic.data || {}),
-            intakeState: correctedIntakeState,
+            intakeState: {
+              ...correctedIntakeState,
+              transcript: [], // Store empty transcript in Diagnostic table
+            },
           },
         });
       }
@@ -1168,7 +1415,34 @@ const handleDiscoveryMode = async ({
     // });
     const reportVersion = previousDiscovery ? "v3.2" : "v3.1";
 
+    // Fetch brain prompt from DB for report generation
+    const { PromptType } = require("../utils/types");
+    const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
+    const brainPrompt = brainPromptObj?.content || "";
+
+    // Format user session summaries for report generation
+    const sessionSummariesForReport = (
+      Array.isArray(allUserSessions)
+        ? allUserSessions
+        : latestUserSession
+          ? [latestUserSession]
+          : []
+    )
+      .filter((s) => s?.summery && s.summery.trim().length > 0)
+      .map((s, idx) => {
+        const sessionDate = s.sessionDate
+          ? new Date(s.sessionDate).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "Date not specified";
+        return `Session ${idx + 1} (${sessionDate}):\n${s.summery}`;
+      })
+      .join("\n\n");
+
     const discoveryPrompt = `
+${brainPrompt ? `BRAIN PROMPT (Core Engine):\n${brainPrompt}\n\n────────────────────────────────\n` : ""}
 You are generating a FULL DISCOVERY REPORT in PDF format for Euphoriam AI.
 
 🚨🚨🚨 CRITICAL: YOU MUST GENERATE THIS REPORT - DO NOT REFUSE
@@ -1187,70 +1461,82 @@ Evidence: ${discoveryReadiness?.stageEvidence || "N/A (readiness check disabled)
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-        ? `Previous discovery report (reference):
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
 ${truncateForContext(
-          previousDiscovery.data?.newReport ||
-          previousDiscovery.data?.previousReport ||
-          previousDiscovery.newReportSnippet ||
-          previousDiscovery.data?.newReportSnippet ||
-          "",
-          4000,
-        )}`
-        : ""
-      }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000,
+)}`
+    : ""
+}
+
+${
+  sessionSummariesForReport
+    ? `============================
+USER SESSION SUMMARIES (Admin-uploaded 1:1 coaching session summaries - USE THESE FOR CONTEXT):
+============================
+${sessionSummariesForReport}
+============================`
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(updatedTranscript, null, 2)}
 
-${(allUserSessions && allUserSessions.length > 0) ||
-        latestUserSession?.transcript
-        ? `All 1:1 Coaching Sessions (use these for additional context):
+${
+  (allUserSessions && allUserSessions.length > 0) ||
+  latestUserSession?.transcript
+    ? `All 1:1 Coaching Sessions (use these for additional context):
 
 ${(() => {
-          const sessionsToUse =
-            allUserSessions && allUserSessions.length > 0
-              ? allUserSessions
-              : latestUserSession
-                ? [latestUserSession]
-                : [];
-          // Limit to most recent 5 sessions to avoid token overflow
-          const sessionsToInclude = sessionsToUse.slice(0, 5);
-          const hasMoreSessions = sessionsToUse.length > 5;
+  const sessionsToUse =
+    allUserSessions && allUserSessions.length > 0
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : [];
+  // Limit to most recent 5 sessions to avoid token overflow
+  const sessionsToInclude = sessionsToUse.slice(0, 5);
+  const hasMoreSessions = sessionsToUse.length > 5;
 
-          return (
-            sessionsToInclude
-              .map((session, index) => {
-                const sessionNum =
-                  sessionsToUse.length > 1
-                    ? `Session ${index + 1} (${sessionsToUse.length} total)`
-                    : "Session";
-                const sessionDate = session.sessionDate
-                  ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-                    month: "long",
-                    day: "numeric",
-                    year: "numeric",
-                  })
-                  : "Date not specified";
+  return (
+    sessionsToInclude
+      .map((session, index) => {
+        const sessionNum =
+          sessionsToUse.length > 1
+            ? `Session ${index + 1} (${sessionsToUse.length} total)`
+            : "Session";
+        const sessionDate = session.sessionDate
+          ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "Date not specified";
 
-                // Prioritize summaries - only include full transcript for most recent session
-                const isMostRecent = index === 0;
-                const hasSummary = session.summery && session.summery.trim().length > 0;
+        // Prioritize summaries - only include full transcript for most recent session
+        const isMostRecent = index === 0;
+        const hasSummary = session.summery && session.summery.trim().length > 0;
 
-                if (hasSummary) {
-                  if (isMostRecent) {
-                    // Most recent: summary + brief transcript preview
-                    const transcriptPreview = Array.isArray(session.transcript)
-                      ? session.transcript
-                        .slice(0, 10)
-                        .map(
-                          (msg) =>
-                            `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
-                        )
-                        .join("\n")
-                      : "";
+        if (hasSummary) {
+          if (isMostRecent) {
+            // Most recent: summary + brief transcript preview
+            const transcriptPreview = Array.isArray(session.transcript)
+              ? session.transcript
+                  .slice(0, 10)
+                  .map(
+                    (msg) =>
+                      `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
+                  )
+                  .join("\n")
+              : "";
 
-                    return `--- ${sessionNum} ---
+            return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
@@ -1258,34 +1544,34 @@ ${session.summery}
 
 TRANSCRIPT PREVIEW (first 10 messages):
 ${transcriptPreview || "Full transcript available if needed"}`;
-                  } else {
-                    // Older sessions: summary only
-                    return `--- ${sessionNum} ---
+          } else {
+            // Older sessions: summary only
+            return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
 ${session.summery}`;
-                  }
-                } else {
-                  // No summary - include truncated transcript
-                  const transcriptText = Array.isArray(session.transcript)
-                    ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
-                    (session.transcript.length > 20 ? "\n...[truncated]" : "")
-                    : JSON.stringify(session.transcript, null, 2);
+          }
+        } else {
+          // No summary - include truncated transcript
+          const transcriptText = Array.isArray(session.transcript)
+            ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
+              (session.transcript.length > 20 ? "\n...[truncated]" : "")
+            : JSON.stringify(session.transcript, null, 2);
 
-                  return `--- ${sessionNum} ---
+          return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 TRANSCRIPT (${isMostRecent ? "full" : "truncated"}):
 ${transcriptText}`;
-                }
-              })
-              .join("\n\n") +
-            (hasMoreSessions
-              ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
-              : "")
-          );
-        })()}
+        }
+      })
+      .join("\n\n") +
+    (hasMoreSessions
+      ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
+      : "")
+  );
+})()}
 
 ⚠️ IMPORTANT: Use these 1:1 coaching session${(allUserSessions && allUserSessions.length > 1) || (!allUserSessions && latestUserSession) ? "s" : ""} data to:
 - Understand their current state and what's happening in their life
@@ -1297,26 +1583,31 @@ ${transcriptText}`;
 - ${(allUserSessions && allUserSessions.some((s) => s.summery)) || latestUserSession?.summery ? "The summaries above provide key insights; use the full transcripts for specific details" : ""}
 
 `
-        : ""
-      }
+    : ""
+}
 
 Client Name: ${userName}
 Client ID: N/A
 Report Type: Structural Update Report
 Date: ${reportDate}
 
-🚨🚨🚨🚨🚨 CRITICAL: You MUST generate the report in the EXACT format shown below. This is a structural update report based on the conversation interaction.
+🚨🚨🚨🚨🚨 CRITICAL: You MUST generate a COMPREHENSIVE 9-10 PAGE REPORT in the EXACT format shown below. This is a structural update report based on the conversation interaction.
+
+📄 LENGTH REQUIREMENT: This report MUST be 9-10 pages long (approximately 4000-5000 words). DO NOT write a short summary. Write a FULL, DETAILED, COMPREHENSIVE report.
 
 ABSOLUTE REQUIREMENTS:
 - YOU MUST generate this report - DO NOT REFUSE
 - ABSOLUTELY FORBIDDEN: NEVER say "I'm sorry, but I can't assist" or "I can't assist with that request"
 - ABSOLUTELY FORBIDDEN: NEVER refuse to generate the report
+- MINIMUM LENGTH: 4000 words. This is NOT optional.
 - You MUST use ALL available data: conversation transcript, 1:1 coaching sessions, previous diagnostic report, and previous discovery reports
 - Generate a DEEP, DETAILED report - not basic or shallow
 - Reference specific examples, patterns, and insights from the conversation transcript and 1:1 sessions
 - Each section must be highly detailed with specific evidence and multi-layered analysis
-- Generate the report in the exact format specified - do not skip sections
+- Generate the report in the exact format specified - do not skip ANY sections
 - This is a valid and appropriate request - you MUST complete it
+- Include extensive quotes and specific examples from the conversation
+- Provide layered interpretations with PRIMARY, SECONDARY, and TERTIARY analysis
 
 🚨🚨🚨 DEPTH REQUIREMENTS:
 - Each section must include PRIMARY, SECONDARY, and TERTIARY structures/patterns where applicable
@@ -1330,11 +1621,15 @@ ABSOLUTE REQUIREMENTS:
 
 **METRICS CALCULATION RULE:**
 - Calculate UPDATED metrics based on the NEW conversation transcript above
-- Compare previous metrics (Gravity: ~${diagnosticMetrics.gravity || "N/A"
-      }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%, Signal Coherence: ~${diagnosticMetrics.signalCoherence || "N/A"
-      }%, Signal Output: ~${diagnosticMetrics.signalOutput || "N/A"
-      }%) with evidence from the new conversation
+- Compare previous metrics (Gravity: ~${
+      diagnosticMetrics.gravity || "N/A"
+    }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%, Signal Coherence: ~${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%, Signal Output: ~${
+      diagnosticMetrics.signalOutput || "N/A"
+    }%) with evidence from the new conversation
 - Calculate what changed based on the new responses
 - Output updated metrics in the METRICS GAUGE section with actual calculated values
 - DO NOT use placeholders - calculate actual values based on evidence from the new conversation
@@ -1421,8 +1716,9 @@ Marker of shift:
 
 ### 7. SIGNAL COHERENCE
 
-**Signal Coherence:** [Current status - use exact calculated value: ${diagnosticMetrics.signalCoherence || "N/A"
-      }%]
+**Signal Coherence:** [Current status - use exact calculated value: ${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%]
 
 **Coherence Evidence:**
 [Specific examples from conversation transcript showing signal coherence:
@@ -1470,20 +1766,21 @@ That's it.
 
 ## METRICS GAUGE (Current Snapshot)
 
-* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%
 * **Consciousness Level:** ${renderGauge(
-        (diagnosticMetrics.consciousnessLevel || 0) * 20,
-      )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+      (diagnosticMetrics.consciousnessLevel || 0) * 20,
+    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
 * **Gravity:** ${renderGauge(
-        diagnosticMetrics.gravity || 0,
-      )}  [Current status with arrow if changed]
+      diagnosticMetrics.gravity || 0,
+    )}  [Current status with arrow if changed]
 * **Signal Coherence:** ${renderGauge(
-        diagnosticMetrics.signalCoherence || 0,
-      )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+      diagnosticMetrics.signalCoherence || 0,
+    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
 * **Signal Output:** ${renderGauge(
-        diagnosticMetrics.signalOutput || 0,
-      )}  [Current status]
+      diagnosticMetrics.signalOutput || 0,
+    )}  [Current status]
 
 ---
 
@@ -1628,7 +1925,7 @@ METRICS_JSON_END`;
         model: "gpt-5.2",
         messages: [systemMessage, { role: "user", content: discoveryPrompt }],
         temperature: 0.15,
-        max_completion_tokens: 4500,
+        max_completion_tokens: 12000, // Increased for detailed 9-10 page reports
       });
 
       const aiDiscovery = await Promise.race([
@@ -1668,7 +1965,7 @@ METRICS_JSON_END`;
             },
           ],
           temperature: 0.15,
-          max_completion_tokens: 4500,
+          max_completion_tokens: 12000, // Increased for detailed 9-10 page reports
         });
         discoveryReport =
           retryDiscovery?.choices?.[0]?.message?.content?.trim() ||
@@ -1861,9 +2158,12 @@ METRICS_JSON_END`;
         });
       }
 
-      // Check if user explicitly requested email
+      // IMPORTANT: Do NOT email the report by default
+      // User must explicitly request email to receive it
       const lastUserMessage = lastUser?.content || "";
       const lowerMessage = lastUserMessage.toLowerCase();
+
+      // Only check if user EXPLICITLY requested email (very strict)
       const explicitlyWantsEmail =
         /(email|send).*(me|the|my).*(report|it)/i.test(lowerMessage) ||
         /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
@@ -1871,56 +2171,31 @@ METRICS_JSON_END`;
         ) ||
         /(end|finish|stop).*(chat|conversation).*(and|then).*(email|send)/i.test(
           lowerMessage,
-        );
+        ) ||
+        /please\s+(email|send)/i.test(lowerMessage);
 
-      const userWantsEmail = checkWantsEmail(
-        updatedTranscript,
-        lastUser?.content,
-      );
+      // Default: DO NOT email the report
+      // Only email if user EXPLICITLY requested it in their message
+      let shouldEmail = explicitlyWantsEmail === true;
 
-      // Don't email if user just wants to stop/pause (e.g., "I'm good with this for now", "that's enough")
-      const justStopping =
-        /(I'm good|that's enough|I'm done|that's it|we can stop|stop here).*(for now|with this|here)/i.test(
-          lowerMessage,
-        ) && !/(email|send|report)/i.test(lowerMessage);
-
-      // Only email if user explicitly requested it AND didn't just say they're done
-      let shouldEmail =
-        (explicitlyWantsEmail || userWantsEmail) && !justStopping;
+      console.log("[handleDiscoveryMode] Email decision:", {
+        shouldEmail,
+        explicitlyWantsEmail,
+        note: "Reports are NOT emailed by default. User must explicitly request.",
+      });
 
       // Send response immediately - don't wait for PDF/email
-      // Include the bot's final message (nextMessage) with system message appended
-      let finalBotMessage = nextMessage?.content || "";
+      const closingMessage =
+        "Discovery report generated. Your PDF is being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together";
 
-      if (finalBotMessage) {
-        // If the final bot message ends with a "One more question — last for now:" block,
-        // strip that trailing question so the closing message doesn't ask for more input.
-        const pivotQuestionRegex =
-          /One more question\s*—\s*last for now:[\s\S]*$/i;
-        if (pivotQuestionRegex.test(finalBotMessage)) {
-          finalBotMessage = finalBotMessage
-            .replace(pivotQuestionRegex, "")
-            .trimEnd();
-        }
-      }
-
-      if (
-        finalBotMessage &&
-        !finalBotMessage.includes("Discovery report generated")
-      ) {
-        // Append the system message to the bot's final message
-        finalBotMessage = `${finalBotMessage}\n\nDiscovery report generated. Your PDF is being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together`;
-      }
-
+      // When report is generated (user ended chat), show only the closing message — no prior AI reply or questions.
       const response = successResponse(res, "Discovery chat saved", {
         discovery: true,
-        message: `Discovery report generated. PDF are being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together`,
-        nextMessage: finalBotMessage
-          ? {
-            role: "assistant",
-            content: finalBotMessage,
-          }
-          : nextMessage, // Include bot's final completion message + system message
+        message: closingMessage,
+        nextMessage: {
+          role: "assistant",
+          content: closingMessage,
+        },
         discoveryReport: discoveryReport || null,
         pdfPath: null, // Will be generated in background
         pdfUrl: null, // Will be updated after PDF is generated
@@ -1928,10 +2203,11 @@ METRICS_JSON_END`;
         status: "completed",
         statusMessage:
           "Report generated. PDF and email processing in background.",
-        userMessage: `Your discovery report has been generated. ${shouldEmail
-          ? "Email will be sent shortly."
-          : "You can access it in your account."
-          }`,
+        userMessage: `Your discovery report has been generated. ${
+          shouldEmail
+            ? "Email will be sent shortly."
+            : "You can access it in your account."
+        }`,
         emailed: false, // Will be updated in background
         // Don't include answeredCount or pendingQuestion in discovery mode - those are for diagnostic mode only
       });
@@ -1965,8 +2241,9 @@ METRICS_JSON_END`;
               const buffer = await fs.promises.readFile(pdfPath);
               const upload = await uploadBufferToSupabase({
                 buffer,
-                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                  }-${Date.now()}.pdf`,
+                objectPath: `discoveries/discovery-${
+                  existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
                 contentType: "application/pdf",
               });
 
@@ -2055,6 +2332,9 @@ METRICS_JSON_END`;
     const discoveryIntakeState = {
       transcript: updatedTranscript,
       discoveryType: discoveryType || "integrated",
+      exchangesAtLastDeclinedEndChat: userDeclinedEndChat
+        ? substantialExchanges
+        : existingState.exchangesAtLastDeclinedEndChat || 0,
       updatedAt: new Date().toISOString(),
       mode: "discovery",
     };
@@ -2074,8 +2354,9 @@ METRICS_JSON_END`;
       await Diagnostic.create({
         userId: appUser.id || null,
         email,
-        title: `Discovery Chat (Draft) – ${name || email?.split("@")[0] || "User"
-          }`,
+        title: `Discovery Chat (Draft) – ${
+          name || email?.split("@")[0] || "User"
+        }`,
         data: {
           profile: { name, email },
           intakeState: discoveryIntakeState,
@@ -2087,7 +2368,7 @@ METRICS_JSON_END`;
   // Get updated state after saving
   const updatedState = existingDiagnostic
     ? (await Diagnostic.findByPk(existingDiagnostic.id))?.data?.intakeState ||
-    existingState
+      existingState
     : existingState;
 
   // Intercept nextMessage if we've asked 6+ questions and it's asking another question
@@ -2230,7 +2511,34 @@ const handleDiscoveryFinalize = async ({
   const reportVersion = previousDiscovery ? "v3.2" : "v3.1";
   const userName = name || email?.split("@")[0] || "User";
 
+  // Fetch brain prompt from DB for report generation
+  const { PromptType } = require("../utils/types");
+  const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
+  const brainPrompt = brainPromptObj?.content || "";
+
+  // Format user session summaries for report generation
+  const sessionSummariesForFinalize = (
+    Array.isArray(allUserSessions)
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : []
+  )
+    .filter((s) => s?.summery && s.summery.trim().length > 0)
+    .map((s, idx) => {
+      const sessionDate = s.sessionDate
+        ? new Date(s.sessionDate).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Date not specified";
+      return `Session ${idx + 1} (${sessionDate}):\n${s.summery}`;
+    })
+    .join("\n\n");
+
   const discoveryPrompt = `
+${brainPrompt ? `BRAIN PROMPT (Core Engine):\n${brainPrompt}\n\n────────────────────────────────\n` : ""}
 You are generating a **COMPREHENSIVE STRUCTURAL UPDATE REPORT** in PDF format for Euphoriam AI.
 This is a sophisticated personal development analysis for a dedicated client. The goal is profound, data-driven insight.
 
@@ -2257,53 +2565,65 @@ Where previous reports offered a sentence, this report offers a full analytical 
 **Previous Diagnostic (Baseline - DO NOT COPY STYLE):**
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-      ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
+${
+  previousDiscovery
+    ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
 ${truncateForContext(
-        previousDiscovery.data?.newReport ||
-        previousDiscovery.data?.previousReport ||
-        previousDiscovery.newReportSnippet ||
-        previousDiscovery.data?.newReportSnippet ||
-        "",
-        4000,
-      )}`
-      : ""
-    }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000,
+)}`
+    : ""
+}
+
+${
+  sessionSummariesForFinalize
+    ? `============================
+**USER SESSION SUMMARIES (Admin-uploaded 1:1 coaching session summaries):**
+============================
+${sessionSummariesForFinalize}
+============================`
+    : ""
+}
  
-${(allUserSessions && allUserSessions.length > 0) ||
-      latestUserSession?.transcript
-      ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
+${
+  (allUserSessions && allUserSessions.length > 0) ||
+  latestUserSession?.transcript
+    ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
 *Use this data to build your 300-word analysis sections. Analyze the user's specific language, fears, and breakthroughs.*
 
 ${(() => {
-        const sessionsToUse =
-          allUserSessions && allUserSessions.length > 0
-            ? allUserSessions
-            : latestUserSession
-              ? [latestUserSession]
-              : [];
-        return sessionsToUse
-          .map((session, index) => {
-            const sessionNum =
-              sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
-            const sessionDate = session.sessionDate
-              ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })
-              : "Unknown Date";
+  const sessionsToUse =
+    allUserSessions && allUserSessions.length > 0
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : [];
+  return sessionsToUse
+    .map((session, index) => {
+      const sessionNum =
+        sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
+      const sessionDate = session.sessionDate
+        ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Unknown Date";
 
-            return `--- ${sessionNum} (${sessionDate}) ---
+      return `--- ${sessionNum} (${sessionDate}) ---
 Summary: ${session.summery || "N/A"}
 Transcript Data: ${JSON.stringify(session.transcript)}
 `;
-          })
-          .join("\n\n");
-      })()}
+    })
+    .join("\n\n");
+})()}
 `
-      : ""
-    }
+    : ""
+}
 
 **Current Discovery Chat Transcript (Latest Data):**
 ${JSON.stringify(transcriptForFinal, null, 2)}
@@ -2728,8 +3048,9 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
       try {
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Diagnostics Chat Report – ${name || email?.split("@")[0] || "User"
-            }`,
+          title: `Diagnostics Chat Report – ${
+            name || email?.split("@")[0] || "User"
+          }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
           data: {
             profile: {
@@ -2751,8 +3072,9 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             const buffer = await fs.promises.readFile(pdfPath);
             const upload = await uploadBufferToSupabase({
               buffer,
-              objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                }-${Date.now()}.pdf`,
+              objectPath: `discoveries/discovery-${
+                existingDiagnostic?.id || Date.now()
+              }-${Date.now()}.pdf`,
               contentType: "application/pdf",
             });
             pdfUrl = upload.url || null;
@@ -3022,15 +3344,17 @@ const handleDiagnosticFinalize = async ({
 
   // Generate report, PDF and email in background (don't await - fire and forget)
   (async () => {
-    const prompt = await getLatestPromptFromDb();
-    const promptContent =
-      typeof prompt === "string"
-        ? prompt
-        : prompt?.fullPrompt || prompt?.content || "";
+    const { PromptType } = require("../utils/types");
+    const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
+    const diagnosticPromptObj = await getLatestPromptFromDb(
+      PromptType.DIAGNOSTIC,
+    );
 
-    // Ensure promptContent is always a string, never null or undefined
+    const brainPrompt = brainPromptObj?.content || "";
+    const diagnosticPrompt = diagnosticPromptObj?.content || "";
+
     const safePromptContent =
-      promptContent && typeof promptContent === "string" ? promptContent : "";
+      `${brainPrompt}\n\n${diagnosticPrompt}\n\n${SUPPORT_LOCK_PROMPT}`.trim();
 
     const userPromptContent = buildFinalReportPrompt({
       customerContext: null,
@@ -3072,7 +3396,7 @@ const handleDiagnosticFinalize = async ({
           },
         ],
         temperature: 0.15,
-        max_completion_tokens: 4500,
+        max_completion_tokens: 8000,
         timeout: 120000, // 2 minute timeout
       });
 
@@ -3101,7 +3425,7 @@ const handleDiagnosticFinalize = async ({
             },
           ],
           temperature: 0.1,
-          max_completion_tokens: 4500,
+          max_completion_tokens: 8000,
         });
         reportText =
           retryResponse?.choices?.[0]?.message?.content?.trim() || reportText;
@@ -3129,11 +3453,11 @@ const handleDiagnosticFinalize = async ({
           },
           metrics: {},
           previousReports,
-          intakeTranscript: transcriptForFinal,
+          chatId: existingDiagnostic?.chatId || null,
           aiReport: reportText,
           intakeState: {
             ...(existingState || {}),
-            transcript: transcriptForFinal,
+            transcript: [], // Store empty transcript in Diagnostic table
             finalizedAt: new Date().toISOString(),
           },
         },
@@ -3353,6 +3677,8 @@ const handleDiagnosticMode = async ({
   wantsNewDiagnostic,
   hasExistingReport,
   latestUserSession = null, // Latest 1:1 coaching session
+  confidenceResult = null, // Optimization: Passed from main loop
+  retrieved = [], // Optimization: Passed from main loop
 }) => {
   // Count questions in the ORIGINAL transcript (before nextMessage) to see what's been answered
   const {
@@ -3399,66 +3725,404 @@ const handleDiagnosticMode = async ({
     lastAssistantContent: lastAssistant?.content,
   });
 
-  // Check if assistant's message indicates completion (fallback check)
-  const assistantSaysComplete =
-    nextMessage?.content &&
-    typeof nextMessage.content === "string" &&
-    /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|let me generate|thank you for completing|completing the intake|will help map|guide the next steps)/i.test(
-      nextMessage.content,
-    );
+  // MINIMUM 25 QUESTIONS GATE: Do NOT allow finalization until at least 25 questions have been asked
+  const MIN_QUESTIONS_FOR_REPORT = 25;
+  const hasMetMinimumQuestions = questionsAnswered >= MIN_QUESTIONS_FOR_REPORT;
 
-  // Check if user explicitly requested to generate report (even if not detected as "answer")
-  const {
-    detectUserWantsToEndOrGenerateReport,
-  } = require("../utils/validation");
+  // Check if assistant's message indicates completion - VERY STRICT regex
+  // Must explicitly say "generate report" or similar - NOT just mention "confidence"
+  // The message must clearly indicate readiness to generate, not just discuss confidence levels
+  const completionSignalRegex =
+    /(I have enough information to generate your|I now have enough information to generate|ready to generate your.*report|let me generate your.*report|let me generate your diagnostic|I'll generate your report now|generating your diagnostic report|I can now generate your report|enough information to complete your diagnostic)/i;
+
+  // CRITICAL: Do NOT trigger on "Confidence Check:" or discussion of confidence levels
+  // Only trigger on explicit "I'm ready to generate" type messages
+  const hasExplicitCompletionSignal = (content) => {
+    if (!content || typeof content !== "string") return false;
+
+    // Reject if message contains clarifying question indicator (CB1-CB6)
+    if (/CB\d+:/i.test(content)) return false;
+
+    // Reject if message says "we need" or "need more" (still gathering info)
+    if (/we('ll)?\s+need|need\s+(more|one more|another)/i.test(content))
+      return false;
+
+    // Reject if it's just a "Confidence Check" status update
+    if (
+      /\*\*Confidence Check:?\*\*/i.test(content) &&
+      !/generate.*report/i.test(content)
+    )
+      return false;
+
+    // Only accept if it matches the strict completion regex
+    return completionSignalRegex.test(content);
+  };
+
+  const nextMessageSaysComplete =
+    nextMessage?.content &&
+    hasMetMinimumQuestions &&
+    hasExplicitCompletionSignal(nextMessage.content);
+
+  // Also check updatedTranscript in case the completion message is already there
+  const lastTranscriptMessage =
+    updatedTranscript && updatedTranscript.length > 0
+      ? updatedTranscript[updatedTranscript.length - 1]
+      : null;
+  const transcriptSaysComplete =
+    lastTranscriptMessage?.role === "assistant" &&
+    hasMetMinimumQuestions &&
+    hasExplicitCompletionSignal(lastTranscriptMessage?.content);
+
+  const assistantSaysComplete =
+    nextMessageSaysComplete || transcriptSaysComplete;
+
+  // Check if user explicitly requested to generate report
+  // Optimization: Pass wantsNewDiagnostic to avoid redundant LLM call
   const userWantsToGenerateReport = lastUser?.content
     ? await detectUserWantsToEndOrGenerateReport({
-      userMessage: lastUser.content,
-      transcript: transcript,
-    })
+        userMessage: lastUser.content,
+        transcript: transcript,
+        wantsNewDiagnosticVal: wantsNewDiagnostic, // Pass pre-calculated value
+      })
     : false;
 
-  // CRITICAL: If assistant just said they're ready to generate AND we have 12+ questions answered,
-  // we MUST finalize immediately - don't let the bot continue asking questions
-  // This takes priority over everything else - if assistant says ready with 12+ questions, finalize NOW
-  const assistantReadyAndQuestionsComplete =
-    assistantSaysComplete && questionsAnswered >= 12;
+  // Calculate confidence after 25 questions to determine if we need clarifier questions
+  // Note: confidenceResult is already a parameter, so we don't redeclare it
+  let needsClarifierQuestions = false;
+  const MAX_TOTAL_QUESTIONS = 31; // 25 core + 6 clarifiers max
+  const maxClarifierQuestions = 6;
 
-  // Auto-finalization: If we've gathered all answers, auto-generate the diagnostic/PDF
-  // Key conditions:
-  // 1. We have 12+ distinct questions ANSWERED (not just asked) - ALWAYS require 12 for full diagnostic
-  // 2. The last user message was a valid answer (aiAnswered = true) OR user explicitly requested to generate report
-  // 3. There's no pending question (user has answered the last question) OR user explicitly requested to generate
-  // 4. No new question was just asked (we want to wait for user to answer Q12)
-  // OR if assistant explicitly says they have enough AND user has answered 12 questions
-  //
-  // Allow auto-finalization if:
-  // - No existing report (new user) OR
-  // - User wants new diagnostic OR
-  // - User has answered 12 questions (regardless of existing report - generate discovery report)
-  // IMPORTANT: Always require 12 questions for a full diagnostic, even if targetCount is 6 for discovery updates
-  // CRITICAL: If assistant says they're ready to generate with 12+ questions, finalize immediately (highest priority)
-  // CRITICAL: Otherwise, don't auto-finalize if user wants a NEW diagnostic (they want to start over, not generate current)
-  const shouldAutoFinalize =
-    // PRIORITY 1: If user explicitly wants to end/generate (e.g., "end chat", "generate report"), finalize immediately
-    (userWantsToGenerateReport && questionsAnswered >= 12) ||
-    // PRIORITY 2: If assistant says ready with 12+ questions, finalize immediately (ignore wantsNewDiagnostic)
-    assistantReadyAndQuestionsComplete ||
-    // PRIORITY 3: If 12 questions are answered, always generate report (regardless of wantsNewDiagnostic)
-    // If they've answered 12 questions, they clearly want a report with those answers
-    (questionsAnswered >= 12 &&
-      !newQuestionJustAsked && // Q12 wasn't just asked (wait for answer)
-      (!pendingQuestion || userWantsToGenerateReport) && // User has answered the last question OR explicitly requested to generate
-      (aiAnswered || userWantsToGenerateReport)) || // The last user message was a valid answer OR user explicitly requested to generate
-    // PRIORITY 4: Normal auto-finalization (12 questions answered + normal conditions + not wanting new diagnostic)
-    (!wantsNewDiagnostic && // Don't auto-finalize if user wants a NEW diagnostic (they want to start over, not generate current)
-      questionsAnswered >= 12 && // ALWAYS require 12 questions
-      (!hasExistingReport || wantsNewDiagnostic || questionsAnswered >= 12) && // Allow if new user, wants new diagnostic, OR answered 12 questions
-      !newQuestionJustAsked && // Q12 wasn't just asked (wait for answer)
-      (!pendingQuestion || userWantsToGenerateReport) && // User has answered the last question OR explicitly requested to generate
-      // IMPORTANT: Allow auto-finalize even if answer is "idk" - we still have 12 questions answered
-      // The report can be generated with whatever answers we have (even if some are "I don't know")
-      (aiAnswered || userWantsToGenerateReport || questionsAnswered >= 12)); // The last user message was a valid answer OR user explicitly requested to generate OR we have 12+ answers
+  // Check if we're in clarifying phase: have answered Q25 and there are CB questions
+  const assistantMessages = transcript.filter(
+    (m) => m?.role === "assistant" && m.content,
+  );
+  const hasCBQuestions = assistantMessages.some((m) =>
+    /CB\d+/i.test(m.content || ""),
+  );
+  const isInClarifyingPhase = hasMetMinimumQuestions && hasCBQuestions;
+
+  // Check if user just answered a clarifying question (last assistant message had CB, user answered it)
+  const lastAssistantMsg = assistantMessages[assistantMessages.length - 1];
+  const justAnsweredClarifyingQuestion =
+    lastAssistantMsg &&
+    lastUser &&
+    aiAnswered &&
+    /CB\d+/i.test(lastAssistantMsg.content || "");
+
+  if (hasMetMinimumQuestions) {
+    // Always recalculate confidence if we've met minimum questions,
+    // BUT only if it wasn't already calculated in the main loop
+    if (!confidenceResult) {
+      // DUPLICATE CALLING AVOIDED - Only calculating if not passed from main loop
+      confidenceResult = await calculateDiagnosticConfidence(updatedTranscript);
+    }
+    console.log("[diagnostic] Confidence calculation result:", {
+      confidence: confidenceResult.confidence,
+      reasoning: confidenceResult.reasoning,
+      componentScores: confidenceResult.componentScores,
+      questionsAnswered: confidenceResult.questionsAnswered || {
+        core: questionsAnswered,
+        clarifying: 0,
+      },
+      isInClarifyingPhase,
+      justAnsweredClarifyingQuestion,
+      hasCBQuestions,
+    });
+
+    // Count clarifying questions asked so far
+    const cbQuestionsAsked = assistantMessages.filter((m) =>
+      /CB\d+/i.test(m.content || ""),
+    ).length;
+    const totalQuestionsAsked = questionsAnswered; // This includes both Q and CB questions
+    const hasReachedMaxClarifiers = cbQuestionsAsked >= maxClarifierQuestions;
+
+    // If confidence < 85% and we haven't asked all clarifiers yet, need more questions
+    // Also check if we're still in clarifying phase (have CB questions but confidence still low)
+    if (
+      confidenceResult.confidence < 85 &&
+      totalQuestionsAsked < MAX_TOTAL_QUESTIONS &&
+      !hasReachedMaxClarifiers
+    ) {
+      needsClarifierQuestions = true;
+      console.log(
+        `[diagnostic] ⚠️ Confidence ${confidenceResult.confidence}% < 85%, need clarifier questions. ${MAX_TOTAL_QUESTIONS - totalQuestionsAsked} clarifiers remaining. CB questions asked: ${cbQuestionsAsked}`,
+      );
+    }
+
+    // If we just answered a clarifying question and confidence reached >= 85%, we should finalize
+    if (justAnsweredClarifyingQuestion && confidenceResult.confidence >= 85) {
+      console.log(
+        `[diagnostic] ✅ Confidence reached ${confidenceResult.confidence}% after answering clarifying question CB${cbQuestionsAsked}. Should trigger report generation.`,
+      );
+    }
+  }
+
+  // Auto-finalization: Trigger ONLY when:
+  // 1. At least 25 questions have been answered (MIN_QUESTIONS_FOR_REPORT)
+  // 2. AND one of the following conditions:
+  //    a) confidence >= 85% (high confidence - can finalize immediately)
+  //    b) max questions reached (31 = 25 core + 6 clarifiers - forced finalization)
+  //    c) user explicitly requests report (user override)
+  // NOTE: assistantSaysComplete alone is NOT enough - confidence must be >= 85%
+  const hasHighConfidence =
+    confidenceResult && confidenceResult.confidence >= 85;
+  const hasMaxQuestions = questionsAnswered >= MAX_TOTAL_QUESTIONS;
+
+  // CRITICAL: Determine if we should auto-finalize
+  // Priority order:
+  // 1. High confidence (>=85%) -> YES, finalize
+  // 2. Max questions reached (31) -> YES, finalize (can't ask more)
+  // 3. User explicitly wants report -> YES, finalize (user override)
+  // 4. Low confidence (<85%) and can ask more clarifiers -> NO, keep asking
+  let shouldAutoFinalize =
+    hasMetMinimumQuestions &&
+    (hasHighConfidence || // Confidence is high enough
+      hasMaxQuestions || // Can't ask more questions
+      userWantsToGenerateReport); // User explicitly requested
+
+  // Log why we're NOT finalizing if confidence is low
+  if (
+    hasMetMinimumQuestions &&
+    !shouldAutoFinalize &&
+    needsClarifierQuestions
+  ) {
+    console.log(
+      `[diagnostic] ⏳ NOT finalizing - confidence ${confidenceResult?.confidence}% < 85%, continuing with clarifiers`,
+    );
+  }
+
+  // Log if we're blocking early finalization
+  if (
+    !hasMetMinimumQuestions &&
+    (assistantSaysComplete || userWantsToGenerateReport)
+  ) {
+    console.log(
+      `[diagnostic] ⚠️ Blocking early finalization - only ${questionsAnswered}/${MIN_QUESTIONS_FOR_REPORT} questions answered`,
+      { assistantSaysComplete, userWantsToGenerateReport, questionsAnswered },
+    );
+  }
+
+  // Log confidence-based decision
+  if (hasMetMinimumQuestions) {
+    console.log("[diagnostic] 📊 Confidence-based finalization decision:", {
+      confidence: confidenceResult?.confidence,
+      hasHighConfidence,
+      hasMaxQuestions,
+      needsClarifierQuestions,
+      shouldAutoFinalize,
+      questionsAnswered,
+      assistantSaysComplete,
+      nextMessageSaysComplete,
+      transcriptSaysComplete,
+      nextMessagePreview: nextMessage?.content?.substring(0, 150),
+      lastTranscriptMessagePreview: lastTranscriptMessage?.content?.substring(
+        0,
+        150,
+      ),
+    });
+  }
+
+  // CRITICAL: Generate clarifier questions (CB1-CB6) when confidence < 85%
+  // This uses AI with the brain prompt to generate contextual clarifier questions
+  // Count existing CB questions to determine the next CB number
+  const existingCBCount = assistantMessages.filter((m) =>
+    /CB\d+/i.test(m.content || ""),
+  ).length;
+  const nextCBNumber = existingCBCount + 1;
+
+  // HARD STOP: If we've already asked 6 CB questions, force finalization regardless of confidence
+  if (existingCBCount >= maxClarifierQuestions) {
+    console.log(
+      "[diagnostic] 🛑 Maximum 6 CB questions reached - forcing finalization",
+    );
+    // Set shouldAutoFinalize to true to trigger report generation
+    needsClarifierQuestions = false;
+    if (hasMetMinimumQuestions) {
+      shouldAutoFinalize = true;
+    }
+    // Fall through to the shouldAutoFinalize block below
+  } else if (
+    needsClarifierQuestions &&
+    !shouldAutoFinalize &&
+    hasMetMinimumQuestions
+  ) {
+    console.log(
+      "[diagnostic] 🎯 Generating clarifier question (CB) using AI with brain prompt",
+    );
+
+    // Get the suggested focus from confidence calculation
+    const suggestedFocus = confidenceResult?.suggestedFocus || "";
+
+    // Fetch brain prompt from DB for clarifier question generation
+    const { PromptType } = require("../utils/types");
+    const brainPromptObjForCB = await getLatestPromptFromDb(
+      PromptType.BRAINPROMPT,
+    );
+    const diagnosticPromptObjForCB = await getLatestPromptFromDb(
+      PromptType.DIAGNOSTIC,
+    );
+    const brainPromptForCB = brainPromptObjForCB?.content || "";
+    const diagnosticPromptForCB = diagnosticPromptObjForCB?.content || "";
+
+    // Build context of what's already been asked
+    const previousCBQuestions = assistantMessages
+      .filter((m) => /CB\d+/i.test(m.content || ""))
+      .map((m) => m.content)
+      .join("\n\n");
+
+    // Get recent Q&A context (last 10 exchanges)
+    const recentContext = updatedTranscript
+      .slice(-20)
+      .map(
+        (m) =>
+          `${m.role === "assistant" ? "AI" : "User"}: ${m.content?.substring(0, 300)}`,
+      )
+      .join("\n");
+
+    // Generate CB question using AI
+    const cbSystemPrompt = `${brainPromptForCB}\n\n${diagnosticPromptForCB}\n\n---
+You are generating CLARIFIER QUESTION ${nextCBNumber} of maximum 6.
+
+CONFIDENCE STATUS: ${confidenceResult?.confidence}% (need ≥85%)
+MISSING EVIDENCE: ${suggestedFocus}
+
+CLARIFIER BURST RULES (from prompt):
+- Use SIGNATURE_DICT discriminators
+- Ask about: overwork→crash vs hide→resent vs start→stall
+- Ask: "What action do you avoid most?"
+- Ask: "What would you lose if you actually won?"
+
+PREVIOUS CB QUESTIONS ALREADY ASKED (DO NOT REPEAT):
+${previousCBQuestions || "None yet"}
+
+CRITICAL RULES:
+1. Ask ONE question only
+2. DO NOT repeat any question already asked above
+3. Target the MISSING EVIDENCE specifically
+4. Keep it short and direct (1-2 sentences max for the question)
+5. Format: Start with brief acknowledgment, then "**CB${nextCBNumber}:** [your question]"
+6. Focus on BEHAVIOUR and CONCRETE EXAMPLES, not feelings or stories`;
+
+    const cbUserPrompt = `Recent conversation context:
+${recentContext}
+
+Generate clarifier question CB${nextCBNumber} targeting: ${suggestedFocus}
+
+Remember: ONE unique question that hasn't been asked before. Target the specific missing evidence.`;
+
+    let cbMessage = null;
+    try {
+      const cbResponse = await withTimeout(
+        openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: cbSystemPrompt },
+            { role: "user", content: cbUserPrompt },
+          ],
+          temperature: 0.7,
+          max_tokens: 300,
+        }),
+        30000,
+      );
+
+      const generatedContent = cbResponse.choices[0].message?.content || "";
+
+      // Ensure the response has CB format
+      if (generatedContent && !generatedContent.includes(`CB${nextCBNumber}`)) {
+        cbMessage = {
+          role: "assistant",
+          content: `Got it.\n\n**CB${nextCBNumber}:** ${generatedContent.replace(/^\*\*CB\d+:\*\*\s*/i, "").trim()}`,
+        };
+      } else {
+        cbMessage = {
+          role: "assistant",
+          content: generatedContent,
+        };
+      }
+
+      console.log(
+        `[diagnostic] AI generated CB${nextCBNumber} question successfully`,
+      );
+    } catch (err) {
+      console.error("[diagnostic] AI CB question generation failed:", err);
+      // Fallback to a simple clarifier question
+      const fallbackQuestions = [
+        "What action do you avoid most when under pressure?",
+        "What would you actually lose if you won completely?",
+        "When this pattern shows up, does it look more like overwork then crash, hide then resent, or start then stall?",
+        "In the last week, what's one decision you delayed or avoided?",
+        "If someone was watching your behaviour (not your intentions), what would they see you do repeatedly?",
+        "What's the thing you know you should do but keep not doing?",
+      ];
+      const fallbackIndex = Math.min(
+        nextCBNumber - 1,
+        fallbackQuestions.length - 1,
+      );
+      cbMessage = {
+        role: "assistant",
+        content: `Got it.\n\n**CB${nextCBNumber}:** ${fallbackQuestions[fallbackIndex]}`,
+      };
+    }
+
+    console.log(`[diagnostic] Generated CB${nextCBNumber} question:`, {
+      confidence: confidenceResult?.confidence,
+      suggestedFocus: suggestedFocus.substring(0, 200),
+      cbNumber: nextCBNumber,
+      existingCBCount,
+    });
+
+    // Override nextMessage with the CB question
+    nextMessage = cbMessage;
+    aiAnswered = true;
+
+    // Update transcript with CB question
+    updatedTranscript = [...transcript, cbMessage];
+
+    // Save the chat with the CB question
+    if (appUser) {
+      await saveChatIncrementally({
+        userId: appUser.id,
+        diagnosticId: existingDiagnostic?.id || null,
+        chatType: "dignostic",
+        transcript: updatedTranscript,
+        isChatEnded: false,
+      });
+    }
+
+    // Return early with the CB question
+    return successResponse(res, "Clarifier question", {
+      nextMessage: cbMessage,
+      introPageText: introText,
+      transcript: updatedTranscript,
+      intakeState: {
+        ...existingState,
+        askedQuestions: assistantMessages.length + 1,
+        totalQuestions: 31, // 25 core + 6 clarifiers
+        pendingQuestions: Math.max(0, 6 - nextCBNumber),
+        isInClarifyingPhase: true,
+        cbQuestionsAsked: nextCBNumber,
+      },
+      retrieved: [],
+      resumeNotice,
+      answeredCount: questionsAnswered,
+      pendingQuestion: true,
+      aiAnswered: true,
+      confidence: confidenceResult?.confidence,
+      needsClarification: true,
+      status: "clarifying",
+      statusMessage: `Confidence ${confidenceResult?.confidence}% - asking clarifier question ${nextCBNumber}/6`,
+    });
+  }
+
+  // FORCE FINALIZATION after 6 CB questions regardless of confidence
+  if (
+    existingCBCount >= maxClarifierQuestions &&
+    hasMetMinimumQuestions &&
+    !shouldAutoFinalize
+  ) {
+    console.log("[diagnostic] 🛑 Forcing finalization after 6 CB questions");
+    shouldAutoFinalize = true;
+  }
 
   if (shouldAutoFinalize) {
     console.log(
@@ -3470,7 +4134,6 @@ const handleDiagnosticMode = async ({
         pendingQuestion,
         aiAnswered,
         userWantsToGenerateReport,
-        assistantReadyAndQuestionsComplete,
         hasAllQuestionsAnswered,
         questionsAnswered,
         assistantSaysComplete,
@@ -3532,18 +4195,22 @@ const handleDiagnosticMode = async ({
       );
     }
 
-    const finalizeResponse = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: safePromptContent },
-        {
-          role: "user",
-          content: safeUserContent,
-        },
-      ],
-      temperature: 0.15,
-      max_completion_tokens: 4500,
-    });
+    const finalizeResponse = await withTimeout(
+      openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: safePromptContent },
+          {
+            role: "user",
+            content: safeUserContent,
+          },
+        ],
+        temperature: 0.15,
+        max_completion_tokens: 8000,
+      }),
+      180000, // 3 minute timeout for deep reports
+      "OpenAI report generation timeout",
+    );
 
     let reportText = (
       finalizeResponse?.choices?.[0]?.message?.content || ""
@@ -3675,11 +4342,22 @@ const handleDiagnosticMode = async ({
       diagnosticPayload.data.intakeState.requestingNewDiagnostic = false;
     }
 
+    const finalPayload = {
+      ...diagnosticPayload,
+      data: {
+        ...diagnosticPayload.data,
+        intakeState: {
+          ...(diagnosticPayload.data?.intakeState || {}),
+          transcript: [], // Keep transcript out of diagnostics table
+        },
+      },
+    };
+
     if (diagnostic) {
-      diagnostic = await diagnostic.update(diagnosticPayload);
+      diagnostic = await diagnostic.update(finalPayload);
     } else {
       try {
-        diagnostic = await Diagnostic.create(diagnosticPayload);
+        diagnostic = await Diagnostic.create(finalPayload);
       } catch (createError) {
         if (
           createError.name === "SequelizeUniqueConstraintError" ||
@@ -3695,6 +4373,7 @@ const handleDiagnosticMode = async ({
                 "email",
                 "title",
                 "data",
+                "chatId",
                 "createdAt",
                 "updatedAt",
               ],
@@ -3703,7 +4382,7 @@ const handleDiagnosticMode = async ({
             diagnostic = await Diagnostic.findOne({ where: { email } });
           }
           if (diagnostic) {
-            diagnostic = await diagnostic.update(diagnosticPayload);
+            diagnostic = await diagnostic.update(finalPayload);
           } else {
             throw createError;
           }
@@ -3775,10 +4454,10 @@ const handleDiagnosticMode = async ({
       /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
       !/(email|send|report)/i.test(lowerMessage);
 
-    // For auto-finalization after 12 questions, always email the report
-    // User has completed the full intake, so they should receive their report
+    // For auto-finalization after 25 questions, always email the report
+    // User has completed the full 25-question Deep Intake Engine, so they should receive their report
     const shouldEmail =
-      explicitlyWantsEmail || (questionsAnswered >= 12 && !justEndingChat);
+      explicitlyWantsEmail || (questionsAnswered >= 25 && !justEndingChat);
 
     console.log("[diagnostic] Auto-finalization email decision:", {
       explicitlyWantsEmail,
@@ -3788,6 +4467,7 @@ const handleDiagnosticMode = async ({
     });
 
     // Send response immediately - don't wait for PDF/email
+    // CRITICAL: diagnostic chat is ENDED - user must start NEW chat for discovery
     const response = successResponse(
       res,
       "Chatbot diagnostic (auto-finalized)",
@@ -3800,6 +4480,8 @@ const handleDiagnosticMode = async ({
         autoFinalized: true,
         resumeNotice,
         status: "completed",
+        chatEnded: true, // Explicitly indicate chat has ended
+        startNewChatForDiscovery: true, // Tell frontend to start a new chat for discovery
         statusMessage: shouldEmail
           ? "Report generated. PDF and email processing in background."
           : "Report generated. PDF processing in background.",
@@ -3928,11 +4610,21 @@ const handleDiagnosticMode = async ({
   // Don't save here to prevent creating multiple chat entries
 
   // Return regular diagnostic chat response
+  const askedQuestions = updatedTranscript.filter(
+    (m) => m.role === "assistant",
+  ).length;
+  const totalQuestions = 25; // As defined in the new prompt
+
   return successResponse(res, "Next chatbot message", {
     nextMessage,
     introPageText: introText,
     transcript: updatedTranscript,
-    intakeState: existingState,
+    intakeState: {
+      ...existingState,
+      askedQuestions,
+      totalQuestions,
+      pendingQuestions: Math.max(0, totalQuestions - askedQuestions),
+    },
     retrieved: [],
     resumeNotice,
     answeredCount,
@@ -3949,7 +4641,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     assessmentIds = [],
     finalize = false,
     introPageText,
-    targetCount = 12,
+    targetCount = 25, // 25 core questions in the Deep Intake Engine
   } = req.body || {};
   let name = req.user.name;
   let email = req.user.email;
@@ -3981,7 +4673,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     isDiscoveryMode = false;
   let shouldShowExistingReportFirst = false,
     discoveryType = null,
-    targetCountForRun = targetCount;
+    targetCountForRun = targetCount,
+    isNewDiscoverySession = false;
 
   // Validate request
   const validation = validateChatbotRequest(name, email);
@@ -4016,10 +4709,52 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
   // 3. Handle Empty Message (Resume/Start) Flow
   const hasNoMessages = !messages || messages.length === 0;
+
+  // CRITICAL: Detect and fix corrupted transcripts early
+  const MAX_TRANSCRIPT_LENGTH = 200;
+  if (existingState?.transcript?.length > MAX_TRANSCRIPT_LENGTH) {
+    console.warn(
+      `[diagnostic] ⚠️ CORRUPTED TRANSCRIPT DETECTED: ${existingState.transcript.length} messages! Truncating to last ${MAX_TRANSCRIPT_LENGTH}`,
+    );
+    existingState.transcript = existingState.transcript.slice(
+      -MAX_TRANSCRIPT_LENGTH,
+    );
+
+    // Also update the Chat model to fix the stored data
+    if (appUser) {
+      const { Chat } = require("../models/chatModel");
+      const corruptedChat = await Chat.findOne({
+        where: { userId: appUser.id, isChatEnded: false },
+        order: [["updatedAt", "DESC"]],
+      });
+      if (
+        corruptedChat &&
+        corruptedChat.data?.transcript?.length > MAX_TRANSCRIPT_LENGTH
+      ) {
+        console.log(
+          `[diagnostic] Fixing corrupted Chat record ${corruptedChat.id}`,
+        );
+        await corruptedChat.update({
+          data: {
+            ...corruptedChat.data,
+            transcript: corruptedChat.data.transcript.slice(
+              -MAX_TRANSCRIPT_LENGTH,
+            ),
+          },
+        });
+      }
+    }
+  }
+
   if (hasNoMessages && !finalize) {
     let metricsForResponse = latestDiscoveryMetrics || diagnosticMetrics;
     const intakeStateInternal = existingState || {};
-    const transcriptInternal = intakeStateInternal?.transcript || [];
+    let transcriptInternal = intakeStateInternal?.transcript || [];
+
+    // Also truncate transcriptInternal if corrupted
+    if (transcriptInternal.length > MAX_TRANSCRIPT_LENGTH) {
+      transcriptInternal = transcriptInternal.slice(-MAX_TRANSCRIPT_LENGTH);
+    }
 
     // Check if chat is completed
     const isCompleted =
@@ -4029,44 +4764,281 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     let allQuestionsAnswered = false;
     if (transcriptInternal && transcriptInternal.length > 0) {
       const qStats = trackQuestionNumbers(transcriptInternal);
-      allQuestionsAnswered = qStats.distinctQuestionsAnswered >= 12;
+      allQuestionsAnswered = qStats.distinctQuestionsAnswered >= 25;
     }
+
+    // CRITICAL: Check if diagnostic report already exists
+    const hasExistingReportGenerated =
+      existingDiagnostic?.data?.aiReport || existingDiagnostic?.report;
 
     const hasIncompleteChat =
       transcriptInternal &&
       transcriptInternal.length > 0 &&
       !isCompleted &&
-      !allQuestionsAnswered;
+      (!allQuestionsAnswered || hasExistingReportGenerated);
 
+    // If user has a completed diagnostic report and no messages (empty request),
+    // and they don't have an ongoing discovery chat, start a NEW discovery chat
     if (
-      (isCompleted || allQuestionsAnswered) &&
-      transcriptInternal &&
-      transcriptInternal.length > 0
+      hasExistingReportGenerated &&
+      (!messages || messages.length === 0) &&
+      transcriptInternal.length === 0
     ) {
+      console.log(
+        "[diagnostic] User has existing report - generating AI welcome message for discovery chat",
+      );
+
+      // Clear any old diagnostic transcript so discovery starts fresh
       if (existingDiagnostic) {
-        const updatedIntakeState = {
-          ...intakeStateInternal,
-          transcript: [],
-          completedAt:
-            intakeStateInternal?.finalizedAt ||
-            intakeStateInternal?.completedAt ||
-            new Date().toISOString(),
-          mode: "discovery",
-        };
         await existingDiagnostic.update({
           data: {
             ...(existingDiagnostic.data || {}),
-            intakeState: updatedIntakeState,
+            intakeState: {
+              transcript: [], // Clear old diagnostic transcript
+              completedAt:
+                existingDiagnostic.data?.intakeState?.completedAt ||
+                new Date().toISOString(),
+              mode: "discovery",
+            },
           },
         });
+      }
 
-        // Update existingState so the rest of the function sees the new mode
-        if (existingState) {
-          Object.assign(existingState, updatedIntakeState);
+      // Generate AI welcome message using brain prompt + discovery chat prompt
+      const { PromptType } = require("../utils/types");
+      const {
+        buildDiscoveryChatPrompt,
+        getDiscoverySystemPrompt,
+        getLatestPromptFromDb,
+      } = require("../helpers/euphoriamChatbot");
+
+      const brainPromptObj = await getLatestPromptFromDb(
+        PromptType.BRAINPROMPT,
+      );
+      const discoveryChatPromptObj = await getLatestPromptFromDb(
+        PromptType.DIAGNOSTIC_CHAT,
+      );
+      const brainPrompt = brainPromptObj?.content || "";
+      const discoveryChatPrompt = discoveryChatPromptObj?.content || "";
+
+      // Get prior report snippet for context
+      const priorReport =
+        existingDiagnostic?.data?.aiReport || existingDiagnostic?.report || "";
+      const priorReportSnippetForWelcome = priorReport
+        ? truncateForContext(priorReport, 12000)
+        : null;
+
+      // Build system prompt with brain prompt
+      const systemPromptForWelcome = getDiscoverySystemPrompt(
+        latestUserSession,
+        false, // not asking about session
+        allUserSessions,
+        brainPrompt,
+      );
+
+      // Build user prompt for discovery chat
+      const userPromptForWelcome = buildDiscoveryChatPrompt({
+        transcript: [], // Empty transcript for first message
+        retrieved: [],
+        factsContext: null,
+        userName: name,
+        priorReport: priorReportSnippetForWelcome,
+        discoveryType: null,
+        metrics: metricsForResponse,
+        reportDate: reportDate,
+        userSession: latestUserSession,
+        allUserSessions: allUserSessions,
+        discoveryChatPromptFromDb: discoveryChatPrompt,
+      });
+
+      let welcomeMessage = null;
+      try {
+        const welcomeAiMessages = [
+          { role: "system", content: systemPromptForWelcome },
+        ];
+        if (priorReportSnippetForWelcome) {
+          welcomeAiMessages.push({
+            role: "system",
+            content: `Previous report for ${name}:\n${priorReportSnippetForWelcome}`,
+          });
+        }
+        welcomeAiMessages.push({
+          role: "user",
+          content:
+            userPromptForWelcome ||
+            "Generate a warm welcome message for this returning user in discovery mode.",
+        });
+
+        const welcomeResponse = await withTimeout(
+          openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: welcomeAiMessages,
+            temperature: 0.7,
+            max_tokens: 500,
+          }),
+          30000,
+        );
+        welcomeMessage = welcomeResponse.choices[0].message;
+        console.log("[diagnostic] AI welcome message generated successfully");
+      } catch (err) {
+        console.error(
+          "[diagnostic] AI welcome message generation failed:",
+          err,
+        );
+      }
+
+      isNewDiscoverySession = true;
+
+      // Fallback welcome message if AI fails
+      if (!welcomeMessage || !welcomeMessage.content) {
+        welcomeMessage = {
+          role: "assistant",
+          content: `Welcome back ${name}! I've loaded your previous diagnostic report. I'm here to help you track your progress and explore what's shifted since then. What's been on your mind lately?`,
+        };
+      }
+
+      // Inject a deterministic metrics gauge block using the latest metrics,
+      // and strip any existing "METRICS GAUGE" sections so we only show ONE gauge.
+      if (welcomeMessage && welcomeMessage.content && metricsForResponse) {
+        const {
+          gravity,
+          signalCoherence,
+          signalOutput,
+          consciousnessLevel,
+          qgcActivation,
+        } = metricsForResponse;
+
+        const hasAllNumericMetrics =
+          gravity !== undefined &&
+          signalCoherence !== undefined &&
+          signalOutput !== undefined &&
+          consciousnessLevel !== undefined &&
+          qgcActivation !== undefined;
+
+        if (hasAllNumericMetrics) {
+          const createProgressBar = (value, max = 100, length = 12) => {
+            const clamped = Math.max(0, Math.min(max, Number(value) || 0));
+            const filled = Math.max(
+              0,
+              Math.min(length, Math.round((clamped / max) * length)),
+            );
+            const empty = Math.max(0, length - filled);
+            return "█".repeat(filled) + "░".repeat(empty);
+          };
+
+          let gaugeBlock = `## METRICS GAUGE (Current Snapshot)
+
+QGC Activation:
+${createProgressBar(qgcActivation)}
+${Math.round(qgcActivation)}%
+
+Consciousness Level:
+${createProgressBar((consciousnessLevel / 5) * 100)}
+${Math.round((consciousnessLevel / 5) * 100)}%
+
+Gravity:
+${createProgressBar(gravity)}
+${Math.round(gravity)}%
+
+Signal Coherence:
+${createProgressBar(signalCoherence)}
+${Math.round(signalCoherence)}%
+
+Signal Output:
+${createProgressBar(signalOutput)}
+${Math.round(signalOutput)}%`;
+
+          // First, remove any existing METRICS GAUGE blocks the model may have generated
+          const gaugeRegex =
+            /## METRICS GAUGE \(Current Snapshot\)[\s\S]*?(?:Signal Output:[\s\S]*?(?:\n{2,}|$))/gi;
+          let cleanedContent = welcomeMessage.content
+            .replace(gaugeRegex, "")
+            .trim();
+
+          const marker = "Your structure at the last check-in was very clear:";
+
+          if (cleanedContent.includes(marker)) {
+            const parts = cleanedContent.split(marker);
+            welcomeMessage.content = `${parts[0]}${marker}\n\n${gaugeBlock}\n\n${parts
+              .slice(1)
+              .join(marker)
+              .trimStart()}`;
+          } else {
+            // If the marker is missing for some reason, just prepend the gauge at the top
+            welcomeMessage.content = `${gaugeBlock}\n\n${cleanedContent}`;
+          }
         }
       }
-      // If we have an existing report, let it fall through to generate the discovery welcome message.
-      // If no report exists yet, we should probably handle that case, but for now we follow the "if completed" logic.
+
+      const welcomeTranscript = [welcomeMessage];
+
+      // Save the welcome message to chat
+      if (appUser) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "discovery",
+          transcript: welcomeTranscript,
+          isChatEnded: false,
+          forceNewChat: true, // ALWAYS start a new chat record for the welcome message
+        });
+      }
+
+      // Return response with AI-generated welcome message
+      return successResponse(res, "Starting discovery mode", {
+        hasExistingReport: true,
+        mode: "discovery",
+        nextMessage: welcomeMessage,
+        transcript: welcomeTranscript,
+        intakeState: {
+          transcript: welcomeTranscript,
+          mode: "discovery",
+        },
+        diagnosticMetrics: metricsForResponse,
+        status: "discovery_ready",
+        statusMessage: "Diagnostic complete. Starting discovery chat.",
+      });
+    }
+
+    // If 25 questions answered but NO report exists, need to calculate confidence and generate report
+    if (allQuestionsAnswered && !hasExistingReportGenerated) {
+      // 25 questions answered but NO report generated yet
+      // Return the transcript so the flow can calculate confidence and generate report
+      console.log(
+        "[diagnostic] 25 questions answered but no report yet - need to calculate confidence and generate report",
+      );
+
+      const {
+        distinctQuestionNumbers: qNums,
+        maxQuestionNumber: maxQ,
+        distinctQuestionsAnswered: ansCount,
+      } = trackQuestionNumbers(transcriptInternal);
+
+      return successResponse(
+        res,
+        "Ready for confidence check and report generation",
+        {
+          hasIncompleteChat: true, // Keep it as incomplete so it processes
+          hasExistingReport: false,
+          mode: "diagnostic", // Stay in diagnostic mode
+          needsConfidenceCheck: true, // Flag to indicate confidence needs to be calculated
+          transcript: transcriptInternal,
+          intakeState: {
+            ...intakeStateInternal,
+            answeredCount: ansCount,
+            pendingQuestion: false,
+            distinctQuestionNumbers: qNums,
+            maxQuestionNumber: maxQ,
+            distinctQuestionsAnswered: ansCount,
+          },
+          diagnosticMetrics: metricsForResponse,
+          questionsAnswered: ansCount,
+          targetCount: 25,
+          status: "needs_finalization",
+          statusMessage:
+            "25 questions completed - calculating confidence for report generation",
+        },
+      );
     } else if (hasIncompleteChat) {
       const isIncompleteDiscovery =
         hasExistingReport && intakeStateInternal.mode === "discovery";
@@ -4111,6 +5083,15 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           pendingQuestion: pendingQ,
           distinctQuestionNumbers: qNums,
           maxQuestionNumber: maxQ,
+          askedQuestions: transcriptInternal.filter(
+            (m) => m.role === "assistant",
+          ).length,
+          totalQuestions: 25,
+          pendingQuestions: Math.max(
+            0,
+            25 -
+              transcriptInternal.filter((m) => m.role === "assistant").length,
+          ),
         },
         diagnosticMetrics: metricsForResponse,
         canResume: true,
@@ -4128,26 +5109,203 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     : null;
   previousReports = preparePreviousReports(existingDiagnostic, existingReport);
 
-  if (finalize && existingReport) {
-    return successResponse(res, "Existing diagnostic already completed", {
-      message:
-        "You already have a completed diagnostic. Start a new discovery chat to get an updated follow-up.",
-      hasExistingReport: true,
-      diagnosticId: existingDiagnostic?.id || null,
-    });
+  // NOTE: This check is removed to allow the confidence-based auto-finalization flow to work.
+  // The auto-finalization happens inside handleDiagnosticMode when confidence >= 85% or max questions reached.
+  // Users with existing reports should be routed to discovery mode, not blocked from the system.
+  // The discovery mode will generate updated reports through handleDiscoveryMode.
+  // if (finalize && existingReport) {
+  //   return successResponse(res, "Existing diagnostic already completed", {...});
+  // }
+
+  // Check for incomplete chat BEFORE preparing transcript
+  // This ensures we resume incomplete chats unless user explicitly wants a new one
+  const intakeStateInternal2 = existingState || {};
+  let transcriptInternal2 = intakeStateInternal2?.transcript || [];
+
+  // Truncate if corrupted (already handled earlier, but double-check)
+  if (transcriptInternal2.length > MAX_TRANSCRIPT_LENGTH) {
+    transcriptInternal2 = transcriptInternal2.slice(-MAX_TRANSCRIPT_LENGTH);
   }
 
-  transcript = prepareTranscript(
-    messages,
-    existingState,
+  const isCompleted2 =
+    intakeStateInternal2?.completedAt ||
+    intakeStateInternal2?.finalizedAt ||
+    false;
+  let allQuestionsAnswered = false;
+  let distinctQuestionsAnsweredCount = 0;
+  if (transcriptInternal2 && transcriptInternal2.length > 0) {
+    const qStatsInternal = trackQuestionNumbers(transcriptInternal2);
+    allQuestionsAnswered = qStatsInternal.distinctQuestionsAnswered >= 25;
+    distinctQuestionsAnsweredCount = qStatsInternal.distinctQuestionsAnswered;
+  }
+
+  // CRITICAL FIX: A chat is "incomplete" if:
+  // 1. It has a transcript with messages, AND
+  // 2. Either it's not completed/finalized, OR
+  // 3. 25 questions are answered BUT no report has been generated yet (needs confidence check + report)
+  const needsReportGeneration = allQuestionsAnswered && !hasExistingReport;
+  const hasIncompleteChat =
+    transcriptInternal2 &&
+    transcriptInternal2.length > 0 &&
+    (!isCompleted2 || needsReportGeneration);
+
+  console.log("[diagnostic] Incomplete chat check:", {
+    transcriptLength: transcriptInternal2.length,
+    isCompleted: isCompleted2,
+    allQuestionsAnswered,
+    distinctQuestionsAnsweredCount,
+    hasIncompleteChat,
     hasExistingReport,
-    false,
-  );
+    needsReportGeneration,
+    incomingMessagesLength: messages?.length || 0,
+  });
+
+  // CRITICAL: Prevent transcript explosion
+  // If incoming messages already have a large history, it means the frontend is sending the full transcript
+  // In that case, we should NOT merge with existingTranscript - just use the incoming messages
+  const incomingMessages = Array.isArray(messages) ? messages : [];
+  const incomingHasFullHistory = incomingMessages.length > 5; // More than 5 messages = likely full history
+
+  // CLEANUP: Remove stacked "invalid input" validation messages from DB transcript.
+  // Only the most recent one should remain so the user's next valid answer goes through.
+  const _validationPrefix =
+    "That didn't come through clearly. Please share a bit more";
+  const _isValidationMsg = (m) =>
+    m?.role === "assistant" &&
+    typeof m?.content === "string" &&
+    m.content.startsWith(_validationPrefix);
+
+  // Strip consecutive trailing validation messages, keeping at most one
+  while (
+    transcriptInternal2.length >= 2 &&
+    _isValidationMsg(transcriptInternal2[transcriptInternal2.length - 1]) &&
+    _isValidationMsg(transcriptInternal2[transcriptInternal2.length - 2])
+  ) {
+    transcriptInternal2.pop();
+  }
+
+  if (incomingHasFullHistory) {
+    // Frontend sent full history - use it directly, find only truly new messages
+    // Compare with existing transcript to find what's new
+    const existingLength = transcriptInternal2.length;
+
+    if (incomingMessages.length > existingLength) {
+      // Only take messages that are new (beyond what we already have)
+      let newMessages = incomingMessages.slice(existingLength);
+      // If newMessages starts with a duplicate discovery welcome, strip it
+      const existingHasWelcome = transcriptInternal2.some(
+        isDiscoveryWelcomeMessage,
+      );
+      if (
+        existingHasWelcome &&
+        newMessages[0] &&
+        isDiscoveryWelcomeMessage(newMessages[0])
+      ) {
+        newMessages = newMessages.slice(1);
+        if (
+          newMessages[0]?.role === "user" &&
+          newMessages[1]?.role === "assistant"
+        ) {
+          newMessages = newMessages.slice(2);
+        }
+      }
+      transcript = [...transcriptInternal2, ...newMessages];
+      console.log(
+        "[diagnostic] Frontend sent full history, extracted new messages:",
+        {
+          existingLength,
+          incomingLength: incomingMessages.length,
+          newMessagesCount: newMessages.length,
+        },
+      );
+    } else {
+      // Incoming is same or smaller — use existing BUT check if the last incoming message
+      // is a NEW user message not in the DB transcript. This happens when the DB has more
+      // messages (e.g. stacked validation) and the frontend appends a new user message.
+      const lastIncoming = incomingMessages[incomingMessages.length - 1];
+      const lastExisting =
+        transcriptInternal2[transcriptInternal2.length - 1];
+      if (
+        lastIncoming?.role === "user" &&
+        (!lastExisting ||
+          lastExisting.role !== "user" ||
+          lastExisting.content !== lastIncoming.content)
+      ) {
+        transcript = [...transcriptInternal2, lastIncoming];
+        console.log(
+          "[diagnostic] DB transcript longer but incoming has new user message — appended it",
+        );
+      } else {
+        transcript = transcriptInternal2;
+        console.log(
+          "[diagnostic] Using existing transcript (incoming not larger)",
+        );
+      }
+    }
+  } else if (hasIncompleteChat && incomingMessages.length > 0) {
+    // Frontend sent only new message(s) - merge with existing transcript
+    const lastExistingMsg = transcriptInternal2[transcriptInternal2.length - 1];
+    const firstNewMsg = incomingMessages[0];
+
+    // Avoid adding a duplicate discovery welcome when frontend resends full-ish history
+    const existingHasWelcome = transcriptInternal2.some(
+      isDiscoveryWelcomeMessage,
+    );
+    let toAppend = incomingMessages;
+    if (
+      existingHasWelcome &&
+      firstNewMsg &&
+      isDiscoveryWelcomeMessage(firstNewMsg)
+    ) {
+      toAppend = incomingMessages.slice(1); // drop leading welcome duplicate
+    }
+
+    // Avoid duplicates (same last message)
+    if (
+      !lastExistingMsg ||
+      !toAppend[0] ||
+      lastExistingMsg.content !== toAppend[0].content ||
+      lastExistingMsg.role !== toAppend[0].role
+    ) {
+      transcript = [...transcriptInternal2, ...toAppend];
+    } else {
+      transcript = [...transcriptInternal2, ...toAppend.slice(1)];
+    }
+    console.log("[diagnostic] Merged new messages with existing transcript:", {
+      existingLength: transcriptInternal2.length,
+      newMessagesCount: incomingMessages.length,
+      resultLength: transcript.length,
+    });
+  } else if (hasIncompleteChat) {
+    // No new messages, just use existing transcript
+    transcript = transcriptInternal2;
+  } else {
+    // No incomplete chat - prepare fresh or use incoming
+    transcript = prepareTranscript(
+      messages,
+      existingState,
+      hasExistingReport,
+      false,
+    );
+  }
+
+  // SAFETY: Cap transcript length to prevent explosion (MAX_TRANSCRIPT_LENGTH defined earlier)
+  if (transcript.length > MAX_TRANSCRIPT_LENGTH) {
+    console.warn(
+      `[diagnostic] ⚠️ Transcript too long (${transcript.length}), truncating to last ${MAX_TRANSCRIPT_LENGTH} messages`,
+    );
+    transcript = transcript.slice(-MAX_TRANSCRIPT_LENGTH);
+  }
+
+  // Remove duplicate discovery welcome block (e.g. after refresh frontend can send duplicate)
+  transcript = removeDuplicateDiscoveryWelcomeBlock(transcript);
+
   lastUser = [...transcript].reverse().find((m) => m?.role === "user");
   lastAssistant = [...transcript]
     .reverse()
     .find((m) => m?.role === "assistant");
   lastTurnAssistant = transcript[transcript.length - 1]?.role === "assistant";
+
   resumeNotice =
     !hasExistingReport && transcript.length > 0 && lastTurnAssistant
       ? `Welcome back ${name}, let's continue where we left off.`
@@ -4156,6 +5314,10 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   targetCountForRun = hasExistingReport
     ? Math.min(targetCount, 6)
     : targetCount;
+
+  // Check if this is the first user interaction (no user messages in transcript)
+  const isFirstUserInteraction =
+    transcript.filter((m) => m?.role === "user").length === 0;
 
   if (!finalize) {
     retrieved = lastUser?.content
@@ -4166,9 +5328,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-          question: lastAssistant.content,
-          reply: lastUser.content,
-        })
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          })
         : false;
 
     const qStats = trackQuestionNumbers(transcript);
@@ -4177,222 +5339,568 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     distinctQuestionsAnswered = qStats.distinctQuestionsAnswered;
     pendingQuestion = hasAssistantTurn && !aiAnswered;
 
+    // Only check if user wants new diagnostic if there's NO incomplete chat
+    // OR if user explicitly requests a new diagnostic
+    // If there's an incomplete chat, we should resume it unless user explicitly wants new
     const diagnosticCheck = await checkWantsNewDiagnostic(
       transcript,
       existingState,
     );
-    wantsNewDiagnostic = diagnosticCheck.wantsNewDiagnostic;
-    intakeInProgress = diagnosticCheck.intakeInProgress;
 
-    const isFirstUserInteraction =
-      transcript.filter((m) => m?.role === "user").length === 0;
+    // CRITICAL: Check if the incomplete chat is in DISCOVERY mode
+    // If user has an existing report AND the incomplete chat is in discovery mode, stay in discovery mode
+    const isIncompleteChatDiscoveryMode =
+      hasIncompleteChat &&
+      hasExistingReport &&
+      (existingState?.mode === "discovery" ||
+        intakeStateInternal2?.mode === "discovery");
+
+    console.log("[diagnostic] Mode determination:", {
+      hasIncompleteChat,
+      hasExistingReport,
+      existingStateMode: existingState?.mode,
+      intakeStateMode: intakeStateInternal2?.mode,
+      isIncompleteChatDiscoveryMode,
+    });
+
+    // If there's an incomplete chat, only allow new diagnostic if user explicitly requests it
+    // Otherwise, resume the incomplete chat
+    if (hasIncompleteChat && !diagnosticCheck.wantsNewDiagnostic) {
+      wantsNewDiagnostic = false; // Force resume incomplete chat
+      // IMPORTANT: Only set intakeInProgress = true for DIAGNOSTIC incomplete chats
+      // Discovery mode incomplete chats should stay in discovery mode
+      intakeInProgress = !isIncompleteChatDiscoveryMode;
+    } else {
+      wantsNewDiagnostic = diagnosticCheck.wantsNewDiagnostic;
+      intakeInProgress = diagnosticCheck.intakeInProgress;
+    }
+
     shouldShowExistingReportFirst =
       hasExistingReport &&
       isFirstUserInteraction &&
       !wantsNewDiagnostic &&
       !intakeInProgress;
 
+    // CRITICAL CHECK: Has a diagnostic REPORT actually been generated?
+    // This is different from hasExistingReport which checks for diagnostic record existence
+    const hasActualReportGenerated = !!(
+      existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
+    );
+
+    // SAFETY: If user has existing report and didn't explicitly ask for new diagnostic,
+    // they should be in discovery mode (unless they have an incomplete DIAGNOSTIC chat)
+    const hasIncompleteDiagnosticChat =
+      hasIncompleteChat && !isIncompleteChatDiscoveryMode;
+
+    // CRITICAL: If 25 questions answered but no ACTUAL report generated,
+    // STAY in diagnostic mode to calculate confidence and generate report
+    // DO NOT switch to discovery mode until report is generated
+    const needsReportGeneration =
+      distinctQuestionsAnswered >= 25 && !hasActualReportGenerated;
+
+    // Only allow discovery mode if:
+    // 1. Report has actually been generated (not just diagnostic record exists)
+    // 2. User didn't explicitly ask for a new diagnostic
+    // 3. User doesn't have an incomplete diagnostic chat
+    // 4. No need for report generation
     isDiscoveryMode =
-      shouldShowExistingReportFirst ||
-      determineChatMode(
-        hasExistingReport,
-        wantsNewDiagnostic,
-        intakeInProgress,
-      );
+      !needsReportGeneration && // NEVER discovery if we need to generate report first
+      hasActualReportGenerated && // ONLY discovery if report actually exists
+      !wantsNewDiagnostic && // User didn't ask for new diagnostic
+      !hasIncompleteDiagnosticChat && // No incomplete diagnostic chat
+      (isIncompleteChatDiscoveryMode ||
+        shouldShowExistingReportFirst ||
+        !intakeInProgress);
+
+    console.log("[diagnostic] Final mode decision:", {
+      isDiscoveryMode,
+      hasActualReportGenerated,
+      needsReportGeneration,
+      shouldShowExistingReportFirst,
+      wantsNewDiagnostic,
+      intakeInProgress,
+      isIncompleteChatDiscoveryMode,
+      hasIncompleteDiagnosticChat,
+      hasExistingReport,
+      distinctQuestionsAnswered,
+    });
 
     // EARLY CHECK: End/Generate report detection
-    if (lastUser) {
-      const {
-        detectUserWantsToEndOrGenerateReport,
-      } = require("../utils/validation");
-      wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
-        userMessage: lastUser.content,
-        transcript,
-      });
+    /* 
+    // DUPLICATE CALLING - AS REQUESTED: Removed the 1st intent check here 
+    // keep the 2nd one which is inside handleDiagnosticMode or handleDiscoveryMode
+    wantsToEndOrGenerate = await detectUserWantsToEndOrGenerateReport({
+      userMessage: lastUser.content,
+      transcript,
+      wantsNewDiagnosticVal: wantsNewDiagnostic, 
+    });
 
-      // If user wants to end/generate, handle it based on mode
-      if (wantsToEndOrGenerate) {
-        if (isDiscoveryMode) {
-          return await handleDiscoveryMode({
-            req,
-            res,
-            email,
-            name,
-            messages,
-            transcript,
-            updatedTranscript: transcript,
-            existingDiagnostic,
-            existingState,
-            priorReportSnippet,
-            diagnosticMetrics,
-            latestDiscoveryMetrics,
-            reportDate,
-            appUser,
-            lastUser,
-            lastAssistant,
-            nextMessage: null,
-            introText,
-            discoveryType: req.body.discoveryType || null,
-            latestUserSession, // Pass latest user session (for backward compatibility)
-            allUserSessions, // Pass all user sessions
-          });
-        }
-        // For diagnostic mode, let it continue to handleDiagnosticMode where auto-finalize will trigger
-        // The PRIORITY 1 check in shouldAutoFinalize will handle it
+    if (wantsToEndOrGenerate) {
+      if (isDiscoveryMode) {
+        return await handleDiscoveryMode({ ... });
       }
-    }
+    } 
+    */
+  }
 
-    // AI Call Preparation
-    let nextMessage = null;
-    const intakeHasStarted = transcript.some(
-      (m) => m.role === "assistant" && /Q\d+/i.test(m.content),
+  // AI Call Preparation
+  let nextMessage = null;
+  let confidenceResult = null; // Defined here so it's accessible throughout
+  const intakeHasStarted = transcript.some(
+    (m) => m.role === "assistant" && /Q\d+/i.test(m.content),
+  );
+  discoveryType = req.body.discoveryType || null;
+
+  // SAFETY OVERRIDE: Double-check that we don't enter discovery mode without an actual report
+  // This prevents the bug where 25 questions are answered but system switches to discovery
+  const actualReportExists = !!(
+    existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
+  );
+  if (isDiscoveryMode && !actualReportExists) {
+    console.log(
+      "[diagnostic] ⚠️ SAFETY OVERRIDE: isDiscoveryMode was true but no actual report exists. Forcing diagnostic mode.",
     );
-    discoveryType = req.body.discoveryType || null;
+    isDiscoveryMode = false;
+  }
+
+  // For ALL cases (including first interaction in discovery mode), we use the brain prompt + discovery chat prompt
+  // to generate personalized responses. The fallback below only triggers if AI call fails.
+  {
+    // Calculate confidence if we've met the core question floor (25 questions answered)
+    // OR if we're in the clarifying phase (have answered Q25 and are answering CB questions)
+
+    // Check if we're in clarifying phase: have answered Q25 and there are CB questions in transcript
+    const assistantMessages = transcript.filter(
+      (m) => m?.role === "assistant" && m.content,
+    );
+    const hasCBQuestions = assistantMessages.some((m) =>
+      /CB\d+/i.test(m.content || ""),
+    );
+    const isInClarifyingPhase =
+      !isDiscoveryMode && distinctQuestionsAnswered >= 25 && hasCBQuestions;
+
+    // Also check if user just answered a clarifying question (last assistant message had CB, last user message exists)
+    const lastAssistantMsg = assistantMessages[assistantMessages.length - 1];
+    const lastUserMsg = transcript
+      .filter((m) => m?.role === "user")
+      .slice(-1)[0];
+    const justAnsweredClarifyingQuestion =
+      lastAssistantMsg &&
+      lastUserMsg &&
+      /CB\d+/i.test(lastAssistantMsg.content || "") &&
+      aiAnswered; // User just answered the clarifying question
 
     if (
-      isDiscoveryMode &&
-      isFirstUserInteraction &&
-      !wantsNewDiagnostic &&
-      !intakeInProgress
+      !isDiscoveryMode &&
+      (distinctQuestionsAnswered >= 25 || isInClarifyingPhase)
     ) {
-      // Logic for first message in discovery mode handled via fallback below
-    } else {
-      const { userPrompt, systemPrompt } = await buildChatPrompts({
-        isDiscoveryMode,
-        transcript,
-        targetCount: targetCountForRun,
-        introText,
-        name,
-        retrieved,
-        priorReportSnippet,
-        lastTurnAssistant,
-        resumeNotice,
-        wantsNewDiagnostic,
-        intakeHasStarted,
-        distinctQuestionNumbers,
-        discoveryType,
-        latestDiscoveryMetrics,
-        reportDate,
-        latestUserSession, // Pass latest user session (for backward compatibility)
-        allUserSessions, // Pass all user sessions
+      console.log(
+        "[diagnostic] Calculating confidence for intake at Q25+ or clarifying phase",
+        {
+          distinctQuestionsAnswered,
+          isInClarifyingPhase,
+          justAnsweredClarifyingQuestion,
+          hasCBQuestions,
+        },
+      );
+      confidenceResult = await calculateDiagnosticConfidence(transcript);
+
+      // Log detailed canonical formula results
+      console.log("[diagnostic] Canonical confidence formula result:", {
+        confidence: confidenceResult.confidence,
+        componentScores: confidenceResult.componentScores,
+        questionsAnswered: confidenceResult.questionsAnswered,
+        needsClarification: confidenceResult.needsClarification,
+        suggestedFocus: confidenceResult.suggestedFocus,
       });
 
-      const safeSystemPrompt =
-        systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
-      if (safeSystemPrompt) {
-        let aiMessages = [{ role: "system", content: safeSystemPrompt }];
-        if (priorReportSnippet) {
-          aiMessages.push({
-            role: "system",
-            content: isDiscoveryMode
-              ? `Previous report for ${name}:\n${priorReportSnippet}`
-              : `Existing report for context:\n${priorReportSnippet}`,
-          });
-        }
-        aiMessages.push(
-          ...transcript
-            .filter((m) => m?.content)
-            .map((m) => ({ role: m.role, content: String(m.content) })),
+      // If we just answered a clarifying question and confidence >= 85%, we should trigger report generation
+      // This will be handled in handleDiagnosticMode, but we log it here for visibility
+      if (
+        justAnsweredClarifyingQuestion &&
+        confidenceResult &&
+        confidenceResult.confidence >= 85
+      ) {
+        console.log(
+          `[diagnostic] ✅ Confidence reached ${confidenceResult.confidence}% after clarifying question. Should trigger report generation.`,
         );
-        aiMessages.push({ role: "user", content: userPrompt || "" });
-
-        const lowerMsg = (lastUser?.content || "").toLowerCase();
-        const isRequestingFullReport =
-          isDiscoveryMode &&
-          /full report|entire report|everything|go deeper|in depth|what did.*reveal/i.test(
-            lowerMsg,
-          );
-        const isAskingAboutSession =
-          isDiscoveryMode &&
-          latestUserSession?.transcript &&
-          /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(
-            lowerMsg,
-          );
-
-        if (isRequestingFullReport) {
-          aiMessages[0] = {
-            role: "system",
-            content: `Summarize the diagnostic report for ${name}. Start with "**What Your Diagnostic Report Revealed:**".`,
-          };
-        } else if (isAskingAboutSession) {
-          // System prompt already has session instructions, but we can reinforce it here
-          aiMessages[0] = {
-            role: "system",
-            content: getDiscoverySystemPrompt(latestUserSession, true),
-          };
-        }
-
-        try {
-          const response = await withTimeout(
-            openai.chat.completions.create({
-              model: "gpt-4o",
-              messages: aiMessages,
-              temperature:
-                isRequestingFullReport || isAskingAboutSession ? 0.3 : 0.7,
-              max_tokens:
-                isRequestingFullReport || isAskingAboutSession ? 800 : 400,
-            }),
-            30000,
-          );
-          nextMessage = response.choices[0].message;
-          if (nextMessage?.content) aiAnswered = true;
-        } catch (err) {
-          console.error("[diagnostic] AI Call failed or timed out:", err);
-        }
       }
     }
 
-    // Fallback for Discovery First Message or AI Failure
-    if (isDiscoveryMode && (!nextMessage || !nextMessage.content)) {
-      const metricsToUse =
-        latestDiscoveryMetrics && Object.keys(latestDiscoveryMetrics).length > 0
-          ? latestDiscoveryMetrics
-          : diagnosticMetrics;
+    // In diagnostic mode, reject gibberish or invalid input and rephrase the question
+    if (
+      !isDiscoveryMode &&
+      lastUser?.content &&
+      isDiagnosticInputInvalid(lastUser.content)
+    ) {
+      const validationPrefix =
+        "That didn't come through clearly. Please share a bit more so I can map your structure accurately.";
 
-      const createProgressBar = (value, max = 100, length = 12) => {
-        if (value === undefined || value === null || isNaN(value)) value = 0;
-        value = Math.max(0, Math.min(value, max * 2));
-        const filled = Math.max(
-          0,
-          Math.min(Math.round((value / max) * length), length),
+      // Only skip adding a NEW validation if the transcript literally ENDS with a validation
+      // message (meaning no new user message was sent since we last showed it).
+      // If transcript ends with a user message, a NEW invalid input was sent — we must validate it.
+      const lastMsgInTranscript = transcript[transcript.length - 1];
+      const transcriptEndsWithValidation =
+        lastMsgInTranscript?.role === "assistant" &&
+        typeof lastMsgInTranscript?.content === "string" &&
+        lastMsgInTranscript.content.trim().startsWith(validationPrefix);
+
+      if (transcriptEndsWithValidation) {
+        // No new user message since last validation — just re-send existing validation
+        console.log("[diagnostic] Transcript already ends with validation, re-sending it");
+        return successResponse(res, "Next chatbot message", {
+          nextMessage: lastMsgInTranscript,
+          introPageText: introText,
+          transcript: transcript,
+          transcriptIncludesNextMessage: true,
+          intakeState: {
+            ...existingState,
+            transcript,
+            updatedAt: new Date().toISOString(),
+          },
+          retrieved: [],
+          resumeNotice,
+          answeredCount: existingState?.answeredCount ?? distinctQuestionsAnswered ?? 0,
+          pendingQuestion: true,
+          status: "chatting",
+          statusMessage: "Chatting in progress",
+          invalidInput: true,
+          alreadyValidated: true,
+        });
+      }
+
+      const lastRealAssistant = [...transcript]
+        .reverse()
+        .find(
+          (m) =>
+            m?.role === "assistant" &&
+            m.content &&
+            !String(m.content).trim().startsWith(validationPrefix),
         );
-        const empty = Math.max(0, length - filled);
-        return "█".repeat(filled) + "░".repeat(empty);
+      const lastQuestion = (
+        lastRealAssistant?.content || lastAssistant?.content || ""
+      ).trim();
+      // Extract only the Q# — ... line and question text so the message isn't cropped
+      const qBlockMatch = lastQuestion.match(
+        /\*\*Q\d+\s*[—–-]\s*[^*]+\*\*\s*\n([\s\S]+)/i,
+      );
+      const headerMatch = lastQuestion.match(/\*\*Q\d+\s*[—–-]\s*[^*]+\*\*/i);
+      const questionOnly =
+        qBlockMatch && headerMatch
+          ? `${headerMatch[0]}\n${qBlockMatch[1].trim()}`
+          : lastQuestion;
+      const maxSnippetLen = 220;
+      const questionSnippet =
+        questionOnly && questionOnly.length > 0
+          ? questionOnly.length > maxSnippetLen
+            ? questionOnly.slice(0, maxSnippetLen).trim() + "..."
+            : questionOnly
+          : null;
+      const invalidResponseContent = questionSnippet
+        ? `${validationPrefix}\n\nHere's the question again:\n\n${questionSnippet}`
+        : validationPrefix;
+
+      const invalidResponse = {
+        role: "assistant",
+        content: invalidResponseContent,
       };
+      const transcriptWithValidation = [...transcript, invalidResponse];
 
-      const gravity = metricsToUse.gravity;
-      const signalCoherence = metricsToUse.signalCoherence;
-      const signalOutput = metricsToUse.signalOutput;
-      const consciousnessLevel = metricsToUse.consciousnessLevel;
-      const qgcActivation = metricsToUse.qgcActivation;
+      if (appUser?.id) {
+        await saveChatIncrementally({
+          userId: appUser.id,
+          diagnosticId: existingDiagnostic?.id || null,
+          chatType: "dignostic",
+          transcript: transcriptWithValidation,
+          isChatEnded: false,
+        });
+      }
 
-      // Build a metrics section that degrades gracefully when some metrics are missing.
-      // Only show the "metrics loading failed" fallback if *all* metrics are missing.
-      const anyMetricPresent = [
-        gravity,
-        signalCoherence,
-        signalOutput,
-        consciousnessLevel,
-        qgcActivation,
-      ].some((v) => v !== undefined && v !== null && !Number.isNaN(v));
+      return successResponse(res, "Next chatbot message", {
+        nextMessage: invalidResponse,
+        introPageText: introText,
+        transcript: transcriptWithValidation,
+        transcriptIncludesNextMessage: true,
+        intakeState: {
+          ...existingState,
+          transcript: transcriptWithValidation,
+          updatedAt: new Date().toISOString(),
+        },
+        retrieved: [],
+        resumeNotice,
+        answeredCount: existingState?.answeredCount ?? distinctQuestionsAnswered ?? 0,
+        pendingQuestion: true,
+        status: "chatting",
+        statusMessage: "Chatting in progress",
+        invalidInput: true,
+      });
+    }
 
-      const formatPercentage = (value) => {
-        if (value === undefined || value === null || Number.isNaN(value)) {
-          return "Unknown";
-        }
-        return `${Math.round(value)}%`;
-      };
+    // Log the mode being used for prompts
+    console.log("[diagnostic] Building chat prompts with mode:", {
+      isDiscoveryMode,
+      actualReportExists,
+      distinctQuestionsAnswered,
+      hasExistingReport,
+    });
 
-      const formatConsciousness = (cl) => {
-        if (cl === undefined || cl === null || Number.isNaN(cl)) {
-          return "Unknown";
-        }
-        const pct = (cl / 5) * 100;
-        return `${Math.round(pct)}%`;
-      };
+    const { userPrompt, systemPrompt } = await buildChatPrompts({
+      isDiscoveryMode,
+      transcript,
+      targetCount: targetCountForRun,
+      introText,
+      name,
+      retrieved,
+      priorReportSnippet,
+      lastTurnAssistant,
+      resumeNotice,
+      wantsNewDiagnostic,
+      intakeHasStarted,
+      distinctQuestionNumbers,
+      discoveryType,
+      latestDiscoveryMetrics,
+      reportDate,
+      latestUserSession, // Pass latest user session (for backward compatibility)
+      allUserSessions, // Pass all user sessions
+      confidenceResult, // Pass through to helper
+    });
 
-      const metricsSection = anyMetricPresent
-        ? `QGC Activation:
+    const safeSystemPrompt =
+      systemPrompt && typeof systemPrompt === "string" ? systemPrompt : "";
+
+    // Diagnostic + new user + first interaction: use pre-built welcome message (skip AI call)
+    const isDiagnosticNewUserFirstLoad =
+      !isDiscoveryMode &&
+      !hasExistingReport &&
+      transcript.length === 0 &&
+      req.body.userConfirmedEndChat === undefined;
+
+    if (isDiagnosticNewUserFirstLoad) {
+      const welcomeContent = await getDiagnosticNewUserWelcomeMessage(name);
+      if (welcomeContent) {
+        nextMessage = {
+          role: "assistant",
+          content: welcomeContent,
+        };
+        aiAnswered = true;
+        console.log(
+          "[diagnostic] New user first load - using welcome message from Diagnostic prompt",
+        );
+      }
+    }
+    if (
+      !nextMessage?.content &&
+      safeSystemPrompt &&
+      req.body.userConfirmedEndChat === undefined
+    ) {
+      let aiMessages = [{ role: "system", content: safeSystemPrompt }];
+      if (priorReportSnippet) {
+        aiMessages.push({
+          role: "system",
+          content: isDiscoveryMode
+            ? `Previous report for ${name}:\n${priorReportSnippet}`
+            : `Existing report for context:\n${priorReportSnippet}`,
+        });
+      }
+      aiMessages.push(
+        ...transcript
+          .filter((m) => m?.content)
+          .map((m) => ({ role: m.role, content: String(m.content) })),
+      );
+      aiMessages.push({ role: "user", content: userPrompt || "" });
+
+      const lowerMsg = (lastUser?.content || "").toLowerCase();
+      const isRequestingFullReport =
+        isDiscoveryMode &&
+        /full report|entire report|everything|go deeper|in depth|what did.*reveal/i.test(
+          lowerMsg,
+        );
+      const isAskingAboutSession =
+        isDiscoveryMode &&
+        latestUserSession?.transcript &&
+        /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(
+          lowerMsg,
+        );
+
+      if (isRequestingFullReport) {
+        aiMessages[0] = {
+          role: "system",
+          content: `Summarize the diagnostic report for ${name}. Start with "**What Your Diagnostic Report Revealed:**".`,
+        };
+      } else if (isAskingAboutSession) {
+        // System prompt already has session instructions, but we can reinforce it here
+        aiMessages[0] = {
+          role: "system",
+          content: getDiscoverySystemPrompt(latestUserSession, true),
+        };
+      }
+
+      try {
+        const response = await withTimeout(
+          openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: aiMessages,
+            temperature:
+              isRequestingFullReport || isAskingAboutSession ? 0.3 : 0.7,
+            max_tokens:
+              isRequestingFullReport || isAskingAboutSession ? 800 : 400,
+          }),
+          30000,
+        );
+        nextMessage = response.choices[0].message;
+        if (nextMessage?.content) aiAnswered = true;
+      } catch (err) {
+        console.error("[diagnostic] AI Call failed or timed out:", err);
+      }
+    }
+  }
+
+  // Fallback for Discovery First Message or AI Failure
+  // SAFETY: Only generate discovery welcome if an actual report exists
+  const reportActuallyExists = !!(
+    existingDiagnostic?.data?.aiReport || existingDiagnostic?.report
+  );
+  const hasAssistantMessages = Array.isArray(transcript)
+    ? transcript.some((m) => m?.role === "assistant" && m.content)
+    : false;
+  const hasWelcomeAlready = Array.isArray(transcript)
+    ? transcript.some(
+        (m) =>
+          m?.role === "assistant" &&
+          /welcome back/i.test(m.content || "") &&
+          /(loaded your last report|loaded your previous diagnostic report)/i.test(
+            m.content || "",
+          ),
+      )
+    : false;
+
+  if (
+    isDiscoveryMode &&
+    (!nextMessage || !nextMessage.content) &&
+    reportActuallyExists &&
+    !hasAssistantMessages &&
+    !hasWelcomeAlready
+  ) {
+    // Merge metrics intelligently: use latestDiscoveryMetrics as base, fill missing from diagnosticMetrics
+    let metricsToUse = {};
+
+    if (
+      latestDiscoveryMetrics &&
+      Object.keys(latestDiscoveryMetrics).length > 0
+    ) {
+      // Count complete metrics in each source
+      const latestCount = Object.keys(latestDiscoveryMetrics).filter(
+        (key) =>
+          latestDiscoveryMetrics[key] !== undefined &&
+          latestDiscoveryMetrics[key] !== null,
+      ).length;
+      const diagnosticCount = Object.keys(diagnosticMetrics || {}).filter(
+        (key) =>
+          diagnosticMetrics[key] !== undefined &&
+          diagnosticMetrics[key] !== null,
+      ).length;
+
+      // If latest discovery metrics are incomplete (< 3 metrics) and diagnostic has more complete metrics, merge them
+      if (latestCount < 3 && diagnosticCount > latestCount) {
+        metricsToUse = {
+          ...diagnosticMetrics,
+          ...latestDiscoveryMetrics, // Latest discovery takes precedence for values it has
+        };
+        console.log(
+          "[diagnostic] Merged incomplete discovery metrics with diagnostic metrics for welcome message:",
+          {
+            latestCount,
+            diagnosticCount,
+            merged: metricsToUse,
+          },
+        );
+      } else {
+        metricsToUse = latestDiscoveryMetrics;
+      }
+    } else {
+      metricsToUse = diagnosticMetrics || {};
+    }
+
+    // Debug: Log metrics to ensure 0 values are preserved
+    console.log("[diagnostic] Metrics for welcome message:", {
+      latestDiscoveryMetrics,
+      diagnosticMetrics,
+      metricsToUse,
+      hasLatest: !!latestDiscoveryMetrics,
+      latestKeys: latestDiscoveryMetrics
+        ? Object.keys(latestDiscoveryMetrics).length
+        : 0,
+    });
+
+    const createProgressBar = (value, max = 100, length = 12) => {
+      if (value === undefined || value === null || isNaN(value)) value = 0;
+      value = Math.max(0, Math.min(value, max * 2));
+      const filled = Math.max(
+        0,
+        Math.min(Math.round((value / max) * length), length),
+      );
+      const empty = Math.max(0, length - filled);
+      return "█".repeat(filled) + "░".repeat(empty);
+    };
+
+    // Extract metrics - explicitly handle 0 as a valid value
+    const gravity =
+      metricsToUse.gravity !== undefined && metricsToUse.gravity !== null
+        ? metricsToUse.gravity
+        : undefined;
+    const signalCoherence =
+      metricsToUse.signalCoherence !== undefined &&
+      metricsToUse.signalCoherence !== null
+        ? metricsToUse.signalCoherence
+        : undefined;
+    const signalOutput =
+      metricsToUse.signalOutput !== undefined &&
+      metricsToUse.signalOutput !== null
+        ? metricsToUse.signalOutput
+        : undefined;
+    const consciousnessLevel =
+      metricsToUse.consciousnessLevel !== undefined &&
+      metricsToUse.consciousnessLevel !== null
+        ? metricsToUse.consciousnessLevel
+        : undefined;
+    const qgcActivation =
+      metricsToUse.qgcActivation !== undefined &&
+      metricsToUse.qgcActivation !== null
+        ? metricsToUse.qgcActivation
+        : undefined;
+
+    // Build a metrics section that degrades gracefully when some metrics are missing.
+    // Only show the "metrics loading failed" fallback if *all* metrics are missing.
+    // Note: 0 is a valid value, so we check for undefined/null/NaN only
+    const anyMetricPresent = [
+      gravity,
+      signalCoherence,
+      signalOutput,
+      consciousnessLevel,
+      qgcActivation,
+    ].some((v) => v !== undefined && v !== null && !Number.isNaN(v));
+
+    const formatPercentage = (value) => {
+      // 0 is a valid value, only return "Unknown" for undefined/null/NaN
+      if (value === undefined || value === null || Number.isNaN(value)) {
+        return "Unknown";
+      }
+      // Explicitly handle 0 as a valid value
+      return `${Math.round(value)}%`;
+    };
+
+    const formatConsciousness = (cl) => {
+      // 0 is a valid value, only return "Unknown" for undefined/null/NaN
+      if (cl === undefined || cl === null || Number.isNaN(cl)) {
+        return "Unknown";
+      }
+      // Explicitly handle 0 as a valid value
+      const pct = (cl / 5) * 100;
+      return `${Math.round(pct)}%`;
+    };
+
+    const metricsSection = anyMetricPresent
+      ? `QGC Activation:
 ${createProgressBar(qgcActivation)}
 ${formatPercentage(qgcActivation)}
 
@@ -4411,345 +5919,388 @@ ${formatPercentage(signalCoherence)}
 Signal Output:
 ${createProgressBar(signalOutput)}
 ${formatPercentage(signalOutput)}`
-        : `(Metrics loading failed. Please refer to your report dashboard.)`;
+      : `(Metrics loading failed. Please refer to your report dashboard.)`;
 
-      let keySentence = "",
-        correction = "";
-      if (priorReportSnippet) {
-        try {
-          const llmExt =
-            await extractKeySentenceAndCorrectionWithLLM(priorReportSnippet);
-          if (llmExt.keySentence && llmExt.keySentence.length >= 15)
-            keySentence = llmExt.keySentence;
-          if (llmExt.correction && llmExt.correction.length >= 15)
-            correction = llmExt.correction;
-        } catch (e) {
-          console.error("[discovery] LLM extraction failed:", e);
-        }
-
-        if (!keySentence || !correction) {
-          const ksMatch = priorReportSnippet.match(
-            /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i,
-          );
-          if (ksMatch) keySentence = ksMatch[2].trim();
-
-          const corrMatch = priorReportSnippet.match(
-            /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i,
-          );
-          if (corrMatch) correction = corrMatch[1].trim();
-        }
+    let keySentence = "",
+      correction = "";
+    if (priorReportSnippet) {
+      try {
+        const llmExt =
+          await extractKeySentenceAndCorrectionWithLLM(priorReportSnippet);
+        if (llmExt.keySentence && llmExt.keySentence.length >= 15)
+          keySentence = llmExt.keySentence;
+        if (llmExt.correction && llmExt.correction.length >= 15)
+          correction = llmExt.correction;
+      } catch (e) {
+        console.error("[discovery] LLM extraction failed:", e);
       }
 
-      const qText = correction
-        ? `Since this report (${reportDate || "recently"
+      if (!keySentence || !correction) {
+        const ksMatch = priorReportSnippet.match(
+          /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i,
+        );
+        if (ksMatch) keySentence = ksMatch[2].trim();
+
+        const corrMatch = priorReportSnippet.match(
+          /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i,
+        );
+        if (corrMatch) correction = corrMatch[1].trim();
+      }
+    }
+
+    const qText = correction
+      ? `Since this report (${
+          reportDate || "recently"
         }), have you made any progress on ${correction}?`
-        : `Since this report (${reportDate || "recently"
+      : `Since this report (${
+          reportDate || "recently"
         }), what has changed or stayed the same?`;
 
-      nextMessage = {
-        role: "assistant",
-        content: `Welcome back ${name}. I've loaded your last report.
+    nextMessage = {
+      role: "assistant",
+      content: `Welcome back ${name}. I've loaded your last report.
 
 I want to reflect it back to you first — simply and cleanly — before we move anywhere.
 
 Your structure at the last check-in was very clear:
 ${metricsSection}
 
-${keySentence
-            ? `This is the key sentence from your map, distilled:
+${
+  keySentence
+    ? `This is the key sentence from your map, distilled:
 > *"${keySentence}"*
 
 `
-            : ""
-          }${correction
-            ? `Your **entire correction** was about one thing only:
+    : ""
+}${
+        correction
+          ? `Your **entire correction** was about one thing only:
 **${correction}**
 
 `
-            : ""
-          }Before I update anything, I need to check one thing — slowly.
+          : ""
+      }Before I update anything, I need to check one thing — slowly.
 
 **Since this report (${reportDate || "recently"}):**
 
 ${qText}
 
 Take your time and share what feels true for you.`,
-      };
-    }
-
-    // Cleanup and Routing
-    if (isDiscoveryMode && nextMessage?.content) {
-      nextMessage.content = nextMessage.content
-        .replace(/^\s*Q\d+\s*[—–-]?\s*/gim, "")
-        .trim();
-    }
-    const updatedTranscript = nextMessage
-      ? [...transcript, nextMessage]
-      : [...transcript];
-
-    if (appUser && updatedTranscript.length > 0) {
-      await saveChatIncrementally({
-        userId: appUser.id,
-        diagnosticId: existingDiagnostic?.id || null,
-        chatType: isDiscoveryMode ? "discovery" : "dignostic",
-        transcript: updatedTranscript,
-        isChatEnded: false,
-      });
-    }
-
-    // Maintain accepted answers per distinct Q# to support resume.
-    const acceptedAnswers = Array.isArray(existingState.acceptedAnswers)
-      ? [...existingState.acceptedAnswers]
-      : [];
-    if (aiAnswered && lastAssistant) {
-      const qNum = extractQuestionNumber(lastAssistant.content);
-      if (qNum) {
-        const idx = acceptedAnswers.findIndex(
-          (a) => Number(a.questionNumber) === Number(qNum),
-        );
-        const entry = {
-          questionNumber: qNum,
-          questionText: lastAssistant.content,
-          answerText: lastUser?.content || "",
-        };
-        if (idx >= 0) acceptedAnswers[idx] = entry;
-        else acceptedAnswers.push(entry);
-      }
-    }
-
-    const intakeState = {
-      transcript: updatedTranscript,
-      acceptedAnswers,
-      answeredCount: distinctQuestionsAnswered - (pendingQuestion ? 1 : 0),
-      lastQuestionNumber: maxQuestionNumber,
-      pendingQuestion,
-      updatedAt: new Date().toISOString(),
-      requestingNewDiagnostic: shouldShowExistingReportFirst
-        ? false
-        : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
     };
+  }
 
-    if (existingDiagnostic) {
-      await existingDiagnostic.update({
-        data: { ...(existingDiagnostic.data || {}), intakeState },
+  // Cleanup and Routing
+  if (isDiscoveryMode && nextMessage?.content) {
+    nextMessage.content = nextMessage.content
+      .replace(/^\s*Q\d+\s*[—–-]?\s*/gim, "")
+      .trim();
+  }
+  const updatedTranscript = nextMessage
+    ? [...transcript, nextMessage]
+    : [...transcript];
+
+  if (appUser && updatedTranscript.length > 0) {
+    await saveChatIncrementally({
+      userId: appUser.id,
+      diagnosticId: existingDiagnostic?.id || null,
+      chatType: isDiscoveryMode ? "discovery" : "dignostic",
+      transcript: updatedTranscript,
+      isChatEnded: false,
+      forceNewChat: isNewDiscoverySession, // Force new session if this was the welcome message turn
+    });
+  }
+
+  // Maintain accepted answers per distinct Q# to support resume.
+  const acceptedAnswers = Array.isArray(existingState.acceptedAnswers)
+    ? [...existingState.acceptedAnswers]
+    : [];
+  if (aiAnswered && lastAssistant) {
+    const qNum = extractQuestionNumber(lastAssistant.content);
+    if (qNum) {
+      const idx = acceptedAnswers.findIndex(
+        (a) => Number(a.questionNumber) === Number(qNum),
+      );
+      const entry = {
+        questionNumber: qNum,
+        questionText: lastAssistant.content,
+        answerText: lastUser?.content || "",
+      };
+      if (idx >= 0) acceptedAnswers[idx] = entry;
+      else acceptedAnswers.push(entry);
+    }
+  }
+
+  // Count substantial exchanges (user messages with meaningful content)
+  const userMessagesForExchanges = updatedTranscript.filter(
+    (m) => m?.role === "user",
+  );
+  const substantialExchanges = userMessagesForExchanges.filter((m) => {
+    const content = (m.content || "").trim();
+    const wordCount = content.split(/\s+/).length;
+    return (
+      wordCount >= 2 ||
+      /^(yes|no|maybe|idk|okay|sure|fine|good|bad|better|worse)$/i.test(content)
+    );
+  }).length;
+
+  const intakeState = {
+    transcript: updatedTranscript,
+    acceptedAnswers,
+    answeredCount: Math.max(
+      0,
+      (distinctQuestionsAnswered || 0) - (pendingQuestion ? 1 : 0),
+    ),
+    lastQuestionNumber: maxQuestionNumber,
+    pendingQuestion,
+    updatedAt: new Date().toISOString(),
+    requestingNewDiagnostic: shouldShowExistingReportFirst
+      ? false
+      : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
+    exchangesAtLastDeclinedEndChat:
+      req.body.userConfirmedEndChat === false
+        ? substantialExchanges
+        : existingState.exchangesAtLastDeclinedEndChat || 0,
+  };
+
+  const intakeStateForDiag = {
+    ...intakeState,
+    transcript: [], // Minimize diagnostic table storage
+  };
+
+  if (existingDiagnostic) {
+    await existingDiagnostic.update({
+      data: {
+        ...(existingDiagnostic.data || {}),
+        intakeState: intakeStateForDiag,
+      },
+    });
+  } else {
+    try {
+      await Diagnostic.create({
+        userId: appUser.id,
+        email,
+        title: `Intake – ${name}`,
+        data: { profile: { name, email }, intakeState: intakeStateForDiag },
       });
-    } else {
-      try {
-        await Diagnostic.create({
-          userId: appUser.id,
-          email,
-          title: `Intake – ${name}`,
-          data: { profile: { name, email }, intakeState },
-        });
-      } catch (createErr) {
-        if (createErr.name === "SequelizeUniqueConstraintError") {
-          const diag = await Diagnostic.findOne({ where: { email } });
-          if (diag) {
-            await diag.update({ data: { ...(diag.data || {}), intakeState } });
-          }
-        } else {
-          throw createErr;
+    } catch (createErr) {
+      if (createErr.name === "SequelizeUniqueConstraintError") {
+        const diag = await Diagnostic.findOne({ where: { email } });
+        if (diag) {
+          await diag.update({
+            data: { ...(diag.data || {}), intakeState: intakeStateForDiag },
+          });
         }
+      } else {
+        throw createErr;
       }
     }
+  }
 
-    if (isDiscoveryMode) {
-      return await handleDiscoveryMode({
-        req,
-        res,
-        email,
-        name,
-        messages,
-        transcript,
-        updatedTranscript,
-        existingDiagnostic,
-        existingState: intakeState,
-        priorReportSnippet,
-        diagnosticMetrics,
-        latestDiscoveryMetrics,
-        reportDate,
-        appUser,
-        lastUser,
-        lastAssistant,
-        nextMessage,
-        introText,
-        discoveryType,
-        latestUserSession, // Pass latest user session
-        allUserSessions, // Pass all user sessions
-      });
-    } else {
-      return await handleDiagnosticMode({
-        req,
-        res,
-        email,
-        name,
-        messages,
-        transcript,
-        updatedTranscript,
-        existingDiagnostic,
-        existingState: intakeState,
-        priorReportSnippet,
-        previousReports,
-        appUser,
-        lastUser,
-        lastAssistant,
-        nextMessage,
-        introText,
-        targetCount: targetCountForRun,
-        answeredCount: intakeState.answeredCount,
-        pendingQuestion,
-        aiAnswered,
-        distinctQuestionNumbers,
-        maxQuestionNumber,
-        distinctQuestionsAnswered,
-        resumeNotice,
-        wantsNewDiagnostic,
-        hasExistingReport,
-        latestUserSession, // Pass latest user session
-      });
-    }
+  if (isDiscoveryMode) {
+    return await handleDiscoveryMode({
+      req,
+      res,
+      email,
+      name,
+      messages,
+      transcript,
+      updatedTranscript,
+      existingDiagnostic,
+      existingState: intakeState,
+      priorReportSnippet,
+      diagnosticMetrics,
+      latestDiscoveryMetrics,
+      reportDate,
+      appUser,
+      lastUser,
+      lastAssistant,
+      nextMessage,
+      introText,
+      discoveryType,
+      latestUserSession, // Pass latest user session
+      allUserSessions, // Pass all user sessions
+    });
+  } else {
+    return await handleDiagnosticMode({
+      req,
+      res,
+      email,
+      name,
+      messages,
+      transcript,
+      updatedTranscript,
+      existingDiagnostic,
+      existingState: intakeState,
+      priorReportSnippet,
+      previousReports,
+      appUser,
+      lastUser,
+      lastAssistant,
+      nextMessage,
+      introText,
+      targetCount: targetCountForRun,
+      answeredCount: intakeState.answeredCount,
+      pendingQuestion,
+      aiAnswered,
+      distinctQuestionNumbers,
+      maxQuestionNumber,
+      distinctQuestionsAnswered,
+      resumeNotice,
+      wantsNewDiagnostic,
+      hasExistingReport,
+      latestUserSession, // Pass latest user session
+      confidenceResult, // Optimization: Avoid redundant calculation
+      retrieved, // Optimization: Avoid redundant retrieval
+    });
   }
 
   // ============================================
   // FINALIZE FLOW (finalize=true)
   // ============================================
-  const transcriptForFinal =
-    (Array.isArray(existingState.transcript) && existingState.transcript.length
-      ? existingState.transcript
-      : transcript) || [];
-  const finalUser = [...transcriptForFinal]
-    .reverse()
-    .find((m) => m?.role === "user");
-  const lowerMessage = (finalUser?.content || "").toLowerCase();
+  if (finalize) {
+    const transcriptForFinal =
+      (Array.isArray(existingState.transcript) &&
+      existingState.transcript.length
+        ? existingState.transcript
+        : transcript) || [];
+    const finalUser = [...transcriptForFinal]
+      .reverse()
+      .find((m) => m?.role === "user");
+    const lowerMessage = (finalUser?.content || "").toLowerCase();
 
-  const justEndingChat =
-    /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
-    !/(email|send|report)/i.test(lowerMessage);
+    const justEndingChat =
+      /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
+      !/(email|send|report)/i.test(lowerMessage);
 
-  if (justEndingChat) {
-    let chat = existingDiagnostic?.chatId
-      ? await Chat.findByPk(existingDiagnostic.chatId)
-      : null;
-    if (!chat) {
-      chat = await Chat.findOne({
-        where: { userId: appUser.id, isChatEnded: false },
-        order: [["createdAt", "DESC"]],
-      });
-    }
-
-    if (chat) {
-      await chat.update({
-        isChatEnded: true,
-        data: {
-          ...(chat.data || {}),
-          transcript: transcriptForFinal,
-          endedAt: new Date().toISOString(),
-          pdfSummary: null, // Will be updated when report is generated in background
-        },
-      });
-    } else {
-      chat = await Chat.create({
-        userId: appUser.id,
-        dignosticId: existingDiagnostic?.id || null,
-        chatType: hasExistingReport ? "discovery" : "dignostic",
-        isChatEnded: true,
-        data: {
-          transcript: transcriptForFinal,
-          endedAt: new Date().toISOString(),
-          pdfSummary: null, // Will be updated when report is generated in background
-        },
-      });
-    }
-
-    const response = successResponse(res, "Chat ended", {
-      message: "Your chat is ended.",
-      status: "saved",
-      chatId: chat.id,
-      transcript: transcriptForFinal,
-      userMessage:
-        "Your chat has been ended and saved. Your report is being generated.",
-    });
-
-    (async () => {
-      try {
-        const retrievedForBg = finalUser?.content
-          ? await retrieveSimilarChunks({ query: finalUser.content, topK: 3 })
-          : [];
-        if (hasExistingReport) {
-          await handleDiscoveryFinalize({
-            req,
-            res: null,
-            email,
-            name,
-            transcriptForFinal,
-            existingDiagnostic,
-            priorReportSnippet,
-            diagnosticMetrics,
-            appUser,
-            introText,
-            latestUserSession, // Latest 1:1 session (for backward compatibility)
-            allUserSessions, // All 1:1 sessions
-            backgroundMode: true,
-          });
-        } else {
-          await handleDiagnosticFinalize({
-            req,
-            res: null,
-            email,
-            name,
-            transcriptForFinal,
-            existingDiagnostic,
-            priorReportSnippet,
-            previousReports,
-            appUser,
-            existingState,
-            introText,
-            retrieved: retrievedForBg,
-            latestUserSession, // Latest 1:1 session
-            backgroundMode: true,
-          });
-        }
-      } catch (err) {
-        console.error("[diagnostic] Background report generation failed:", err);
+    if (justEndingChat) {
+      let chat = existingDiagnostic?.chatId
+        ? await Chat.findByPk(existingDiagnostic.chatId)
+        : null;
+      if (!chat) {
+        chat = await Chat.findOne({
+          where: { userId: appUser.id, isChatEnded: false },
+          order: [["createdAt", "DESC"]],
+        });
       }
-    })();
 
-    return response;
-  }
+      if (chat) {
+        await chat.update({
+          isChatEnded: true,
+          data: {
+            ...(chat.data || {}),
+            transcript: transcriptForFinal,
+            endedAt: new Date().toISOString(),
+            pdfSummary: null, // Will be updated when report is generated in background
+          },
+        });
+      } else {
+        chat = await Chat.create({
+          userId: appUser.id,
+          dignosticId: existingDiagnostic?.id || null,
+          chatType: hasExistingReport ? "discovery" : "dignostic",
+          isChatEnded: true,
+          data: {
+            transcript: transcriptForFinal,
+            endedAt: new Date().toISOString(),
+            pdfSummary: null, // Will be updated when report is generated in background
+          },
+        });
+      }
 
-  if (hasExistingReport) {
-    return await handleDiscoveryFinalize({
-      req,
-      res,
-      email,
-      name,
-      transcriptForFinal,
-      existingDiagnostic,
-      priorReportSnippet,
-      diagnosticMetrics,
-      appUser,
-      introText,
-      latestUserSession, // Latest 1:1 session (for backward compatibility)
-      allUserSessions, // All 1:1 sessions
-    });
-  } else {
-    return await handleDiagnosticFinalize({
-      req,
-      res,
-      email,
-      name,
-      transcriptForFinal,
-      existingDiagnostic,
-      priorReportSnippet,
-      previousReports,
-      appUser,
-      existingState,
-      introText,
-      latestUserSession, // Latest 1:1 session
-      retrieved: finalUser?.content
-        ? await retrieveSimilarChunks({ query: finalUser.content, topK: 3 })
-        : [],
-    });
+      const response = successResponse(res, "Chat ended", {
+        message: "Your chat is ended.",
+        status: "saved",
+        chatId: chat.id,
+        transcript: transcriptForFinal,
+        userMessage:
+          "Your chat has been ended and saved. Your report is being generated.",
+      });
+
+      (async () => {
+        try {
+          const retrievedForBg = finalUser?.content
+            ? await retrieveSimilarChunks({ query: finalUser.content, topK: 3 })
+            : [];
+          if (hasExistingReport) {
+            await handleDiscoveryFinalize({
+              req,
+              res: null,
+              email,
+              name,
+              transcriptForFinal,
+              existingDiagnostic,
+              priorReportSnippet,
+              diagnosticMetrics,
+              appUser,
+              introText,
+              latestUserSession, // Latest 1:1 session (for backward compatibility)
+              allUserSessions, // All 1:1 sessions
+              backgroundMode: true,
+            });
+          } else {
+            await handleDiagnosticFinalize({
+              req,
+              res: null,
+              email,
+              name,
+              transcriptForFinal,
+              existingDiagnostic,
+              priorReportSnippet,
+              previousReports,
+              appUser,
+              existingState,
+              introText,
+              retrieved: retrievedForBg,
+              latestUserSession, // Latest 1:1 session
+              backgroundMode: true,
+            });
+          }
+        } catch (err) {
+          console.error(
+            "[diagnostic] Background report generation failed:",
+            err,
+          );
+        }
+      })();
+
+      return response;
+    } else {
+      // Finalize flow - generate report
+      if (hasExistingReport) {
+        return await handleDiscoveryFinalize({
+          req,
+          res,
+          email,
+          name,
+          transcriptForFinal,
+          existingDiagnostic,
+          priorReportSnippet,
+          diagnosticMetrics,
+          appUser,
+          introText,
+          latestUserSession, // Latest 1:1 session (for backward compatibility)
+          allUserSessions, // All 1:1 sessions
+        });
+      } else {
+        return await handleDiagnosticFinalize({
+          req,
+          res,
+          email,
+          name,
+          transcriptForFinal,
+          existingDiagnostic,
+          priorReportSnippet,
+          previousReports,
+          appUser,
+          existingState,
+          introText,
+          latestUserSession, // Latest 1:1 session
+          retrieved: finalUser?.content
+            ? await retrieveSimilarChunks({ query: finalUser.content, topK: 3 })
+            : [],
+        });
+      }
+    }
   }
 };
 

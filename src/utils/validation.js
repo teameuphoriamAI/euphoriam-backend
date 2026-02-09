@@ -371,7 +371,7 @@ export function validateChatbotRequest(body = {}) {
     assessmentIds = [],
     finalize = false,
     introPageText,
-    targetCount = 12,
+    targetCount = 25, // 25 core questions in the Deep Intake Engine
     discoveryType,
   } = body;
 
@@ -628,9 +628,9 @@ export async function detectUserWantsToEndOrGenerateReport({
     wantsNewDiagnosticVal !== null
       ? wantsNewDiagnosticVal
       : await detectUserWantsNewDiagnostic({
-          userMessage,
-          transcript,
-        });
+        userMessage,
+        transcript,
+      });
 
   console.log(
     "[detectUserWantsToEndOrGenerateReport] wantsNewDiagnostic:",

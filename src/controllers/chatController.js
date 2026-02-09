@@ -28,8 +28,6 @@ const {
   buildFreeformIntakePrompt,
   extractQuestionNumber,
   validateChatbotRequest,
-  SUPPORT_LOCK_PROMPT,
-  EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT,
   getDiscoverySystemPrompt,
 } = require("../helpers/euphoriamChatbot");
 const { retrieveSimilarChunks } = require("../helpers/rag");
@@ -67,7 +65,7 @@ const saveChatIncrementally = async ({
     const isNewSession = forceNewChat || transcript.length === 0;
 
     console.log(
-      `[saveChatIncrementally] Entry: userId=${userId}, chatType=${chatType}, diagnosticId=${diagnosticId}, forceNewChat=${forceNewChat}, transcriptLength=${transcript.length}, isNewSession=${isNewSession}`
+      `[saveChatIncrementally] Entry: userId=${userId}, chatType=${chatType}, diagnosticId=${diagnosticId}, forceNewChat=${forceNewChat}, transcriptLength=${transcript.length}, isNewSession=${isNewSession}`,
     );
 
     // Find existing incomplete chat for this user and type (only if not forcing new)
@@ -94,7 +92,7 @@ const saveChatIncrementally = async ({
       };
 
       console.log(
-        `[saveChatIncrementally] Looking for existing chat: userId=${userId}, chatType=${chatType}, diagnosticId=${diagnosticId}, discoveryId=${discoveryId}, transcriptLength=${transcript.length}`
+        `[saveChatIncrementally] Looking for existing chat: userId=${userId}, chatType=${chatType}, diagnosticId=${diagnosticId}, discoveryId=${discoveryId}, transcriptLength=${transcript.length}`,
       );
 
       // First, try to find chat with matching diagnosticId/discoveryId (if provided)
@@ -114,7 +112,7 @@ const saveChatIncrementally = async ({
 
         if (chat) {
           console.log(
-            `[saveChatIncrementally] Found chat ${chat.id} with matching diagnosticId/discoveryId`
+            `[saveChatIncrementally] Found chat ${chat.id} with matching diagnosticId/discoveryId`,
           );
         }
       }
@@ -133,11 +131,11 @@ const saveChatIncrementally = async ({
               chat.id
             } without diagnosticId filter, will update it${
               diagnosticId ? ` with diagnosticId ${diagnosticId}` : ""
-            }`
+            }`,
           );
         } else {
           console.log(
-            `[saveChatIncrementally] No existing incomplete chat found for user ${userId}, chatType=${chatType}`
+            `[saveChatIncrementally] No existing incomplete chat found for user ${userId}, chatType=${chatType}`,
           );
         }
       }
@@ -145,13 +143,18 @@ const saveChatIncrementally = async ({
       // Additional check: if the found chat's transcript doesn't match, it might be a different session
       // Only create new chat if current transcript is significantly shorter (user started over)
       // BUT: If isChatEnded is true, always update existing chat (we're ending it, transcript might be shorter due to closing message)
-      if (chat && chat.data?.transcript && transcript.length > 0 && !isChatEnded) {
+      if (
+        chat &&
+        chat.data?.transcript &&
+        transcript.length > 0 &&
+        !isChatEnded
+      ) {
         const existingTranscript = chat.data.transcript || [];
         const existingLength = existingTranscript.length;
         const currentLength = transcript.length;
 
         console.log(
-          `[saveChatIncrementally] Comparing transcripts: existing=${existingLength}, current=${currentLength}`
+          `[saveChatIncrementally] Comparing transcripts: existing=${existingLength}, current=${currentLength}`,
         );
 
         // If current transcript is significantly shorter (more than 2 messages difference),
@@ -159,31 +162,39 @@ const saveChatIncrementally = async ({
         // But allow if current transcript is longer or same length (normal progression or concurrent saves)
         if (currentLength < existingLength - 2) {
           console.log(
-            `[saveChatIncrementally] Transcript mismatch - current (${currentLength}) is significantly shorter than existing (${existingLength}), creating new chat`
+            `[saveChatIncrementally] Transcript mismatch - current (${currentLength}) is significantly shorter than existing (${existingLength}), creating new chat`,
           );
           chat = null; // Force new chat creation
         } else {
           // Current transcript is same length, longer, or only slightly shorter
           // This is normal progression or concurrent saves - update existing chat
           console.log(
-            `[saveChatIncrementally] Transcript length compatible (existing=${existingLength}, current=${currentLength}) - updating existing chat`
+            `[saveChatIncrementally] Transcript length compatible (existing=${existingLength}, current=${currentLength}) - updating existing chat`,
           );
         }
       } else if (chat && isChatEnded) {
         // When ending chat, always update existing chat regardless of transcript length
         console.log(
-          `[saveChatIncrementally] Ending chat - will update existing chat ${chat.id} regardless of transcript length`
+          `[saveChatIncrementally] Ending chat - will update existing chat ${chat.id} regardless of transcript length`,
         );
       }
     }
 
     if (chat && !isNewSession) {
+      // SAFETY: Prevent saving corrupted transcripts
+      const MAX_TRANSCRIPT_LENGTH = 200;
+      let transcriptToSave = transcript;
+      if (transcript.length > MAX_TRANSCRIPT_LENGTH) {
+        console.warn(`[saveChatIncrementally] ⚠️ Transcript too long (${transcript.length}), truncating to last ${MAX_TRANSCRIPT_LENGTH}`);
+        transcriptToSave = transcript.slice(-MAX_TRANSCRIPT_LENGTH);
+      }
+      
       // Update existing incomplete chat with latest transcript
       // Also update diagnosticId/discoveryId if they were set after chat creation
       const updateData = {
         data: {
           ...(chat.data || {}),
-          transcript: transcript,
+          transcript: transcriptToSave,
           // messages: transcript,
           lastUpdated: new Date().toISOString(),
           ...(pdfSummary ? { pdfSummary: pdfSummary } : {}), // Add PDF summary if provided
@@ -202,10 +213,18 @@ const saveChatIncrementally = async ({
 
       await chat.update(updateData);
       console.log(
-        `[saveChatIncrementally] Updated existing chat ${chat.id} for user ${userId} (${transcript.length} messages)`
+        `[saveChatIncrementally] Updated existing chat ${chat.id} for user ${userId} (${transcript.length} messages)`,
       );
       return chat;
     } else {
+      // SAFETY: Prevent saving corrupted transcripts on new chat creation
+      const MAX_TRANSCRIPT_LENGTH = 200;
+      let transcriptToSave = transcript;
+      if (transcript.length > MAX_TRANSCRIPT_LENGTH) {
+        console.warn(`[saveChatIncrementally] ⚠️ New chat transcript too long (${transcript.length}), truncating to last ${MAX_TRANSCRIPT_LENGTH}`);
+        transcriptToSave = transcript.slice(-MAX_TRANSCRIPT_LENGTH);
+      }
+      
       // Create new chat record (new session)
       chat = await Chat.create({
         userId: userId,
@@ -214,14 +233,14 @@ const saveChatIncrementally = async ({
         chatType: chatType,
         isChatEnded: isChatEnded,
         data: {
-          transcript: transcript,
+          transcript: transcriptToSave,
           sessionStartedAt: new Date().toISOString(),
           lastUpdated: new Date().toISOString(),
           ...(pdfSummary ? { pdfSummary: pdfSummary } : {}), // Add PDF summary if provided
         },
       });
       console.log(
-        `[saveChatIncrementally] Created NEW chat session ${chat.id} for user ${userId} (${transcript.length} messages, type: ${chatType})`
+        `[saveChatIncrementally] Created NEW chat session ${chat.id} for user ${userId} (${transcript.length} messages, type: ${chatType})`,
       );
 
       // Link chat to diagnostic if exists and not already linked
@@ -242,9 +261,9 @@ const saveChatIncrementally = async ({
 };
 const getChatHistory = async (req, res) => {
   try {
-        const { email } = req.user||{};
+    const { email } = req.user || {};
 
-    const {  chatType } = req.body || req.query || {};
+    const { chatType } = req.body || req.query || {};
     console.log("data is", req.params, req.query);
 
     if (!email) {

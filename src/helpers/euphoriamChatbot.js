@@ -3216,37 +3216,129 @@ const loadLatestDiscoveryMetrics = async (
     }
   }
 
-  // Then, try to get metrics from old discovery report (if exists)
+  // Then, try to get metrics from discovery records (if exist)
   if (existingDiagnostic?.userId) {
     const discoveries = await Discovery.findAll({
       where: { userId: existingDiagnostic.userId },
       order: [["createdAt", "DESC"]],
-      limit: 1,
+      limit: 5, // look at a few recent discoveries to find one with valid metrics
     });
-    latestDiscovery = discoveries[0] || null;
+    // Prefer the most recent discovery that has non-zero numeric metrics
+    if (discoveries && discoveries.length > 0) {
+      const hasNonZeroMetrics = (metrics) => {
+        if (!metrics || typeof metrics !== "object") return false;
+        const keysToCheck = [
+          "gravity",
+          "signalCoherence",
+          "signalOutput",
+          "consciousnessLevel",
+          "qgcActivation",
+        ];
+        return keysToCheck.some((k) => {
+          const v = metrics[k];
+          return v !== undefined && v !== null && !Number.isNaN(v) && v !== 0;
+        });
+      };
 
-    if (latestDiscovery) {
-      latestDiscoveryReport =
-        latestDiscovery.data?.newReport ||
-        latestDiscovery.data?.previousReport ||
-        latestDiscovery.data?.newReportSnippet ||
-        null;
+      // Find first discovery (most recent first) with any non-zero metric
+      let selected = null;
+      for (const disc of discoveries) {
+        const storedMetrics = disc.data?.metrics || {};
+        if (hasNonZeroMetrics(storedMetrics)) {
+          selected = { disc, storedMetrics };
+          break;
+        }
+      }
 
-      if (latestDiscoveryReport) {
-        // Extract metrics from discovery report
-        const extractedMetrics = extractMetricsFromReport(
-          latestDiscoveryReport,
-        );
+      // Fallback: if none have non-zero metrics, use the latest one as before
+      if (!selected) {
+        latestDiscovery = discoveries[0];
+        const storedDiscoveryMetrics = latestDiscovery.data?.metrics || {};
         if (
+          storedDiscoveryMetrics &&
+          typeof storedDiscoveryMetrics === "object" &&
+          Object.keys(storedDiscoveryMetrics).length > 0
+        ) {
+          latestDiscoveryMetrics = {
+            ...latestDiscoveryMetrics,
+            ...storedDiscoveryMetrics,
+          };
+        }
+      } else {
+        latestDiscovery = selected.disc;
+        latestDiscoveryMetrics = {
+          ...latestDiscoveryMetrics,
+          ...selected.storedMetrics,
+        };
+      }
+
+      if (latestDiscovery) {
+        console.log(
+          "[loadLatestDiscoveryMetrics] Using stored discovery metrics from DB:",
+          {
+            discoveryId: latestDiscovery.id,
+            createdAt: latestDiscovery.createdAt,
+            updatedAt: latestDiscovery.updatedAt,
+            metrics: latestDiscoveryMetrics,
+          },
+        );
+
+        // Also try to extract from the report text and merge (text is secondary)
+        latestDiscoveryReport =
+          latestDiscovery.data?.newReport ||
+          latestDiscovery.data?.previousReport ||
+          latestDiscovery.data?.newReportSnippet ||
+          null;
+
+        if (latestDiscoveryReport) {
+          const extractedMetrics = extractMetricsFromReport(
+            latestDiscoveryReport,
+          );
+        if (
+          extractedMetrics &&
           Object.keys(extractedMetrics).some(
             (key) => extractedMetrics[key] !== undefined,
           )
         ) {
-          latestDiscoveryMetrics = extractedMetrics;
+          // Merge carefully: NEVER let extracted 0s overwrite non-zero stored metrics
+          const merged = { ...latestDiscoveryMetrics };
+          const metricKeys = [
+            "gravity",
+            "signalCoherence",
+            "signalOutput",
+            "consciousnessLevel",
+            "qgcActivation",
+          ];
+
+          for (const key of Object.keys(extractedMetrics)) {
+            const value = extractedMetrics[key];
+            if (!metricKeys.includes(key)) {
+              // Non-metric fields (eo, lack, etc.) can always be overwritten
+              merged[key] = value;
+              continue;
+            }
+
+            const stored = latestDiscoveryMetrics[key];
+            const hasStored =
+              stored !== undefined && stored !== null && !Number.isNaN(stored);
+            const isNonZero = Number(value) !== 0;
+
+            if (!hasStored) {
+              // No stored value → accept whatever we extracted (even 0)
+              merged[key] = value;
+            } else if (isNonZero) {
+              // Only overwrite a stored value if the extracted one is non-zero
+              merged[key] = value;
+            }
+            // If we have a stored non-zero and extracted 0 → keep stored
+          }
+
+          latestDiscoveryMetrics = merged;
           console.log(
-            "[loadLatestDiscoveryMetrics] Using metrics from old discovery report:",
-            extractedMetrics,
+            "[loadLatestDiscoveryMetrics] Using metrics from discovery report (merged with stored metrics, preserving non-zero DB values):",
+            latestDiscoveryMetrics,
           );
+        }
         }
       }
     }

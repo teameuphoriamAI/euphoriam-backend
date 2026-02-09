@@ -4632,6 +4632,81 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         };
       }
 
+      // Inject a deterministic metrics gauge block using the latest metrics,
+      // and strip any existing "METRICS GAUGE" sections so we only show ONE gauge.
+      if (welcomeMessage && welcomeMessage.content && metricsForResponse) {
+        const {
+          gravity,
+          signalCoherence,
+          signalOutput,
+          consciousnessLevel,
+          qgcActivation,
+        } = metricsForResponse;
+
+        const hasAllNumericMetrics =
+          gravity !== undefined &&
+          signalCoherence !== undefined &&
+          signalOutput !== undefined &&
+          consciousnessLevel !== undefined &&
+          qgcActivation !== undefined;
+
+        if (hasAllNumericMetrics) {
+          const createProgressBar = (value, max = 100, length = 12) => {
+            const clamped = Math.max(
+              0,
+              Math.min(max, Number(value) || 0),
+            );
+            const filled = Math.max(
+              0,
+              Math.min(length, Math.round((clamped / max) * length)),
+            );
+            const empty = Math.max(0, length - filled);
+            return "█".repeat(filled) + "░".repeat(empty);
+          };
+
+          let gaugeBlock = `## METRICS GAUGE (Current Snapshot)
+
+QGC Activation:
+${createProgressBar(qgcActivation)}
+${Math.round(qgcActivation)}%
+
+Consciousness Level:
+${createProgressBar((consciousnessLevel / 5) * 100)}
+${Math.round((consciousnessLevel / 5) * 100)}%
+
+Gravity:
+${createProgressBar(gravity)}
+${Math.round(gravity)}%
+
+Signal Coherence:
+${createProgressBar(signalCoherence)}
+${Math.round(signalCoherence)}%
+
+Signal Output:
+${createProgressBar(signalOutput)}
+${Math.round(signalOutput)}%`;
+
+          // First, remove any existing METRICS GAUGE blocks the model may have generated
+          const gaugeRegex =
+            /## METRICS GAUGE \(Current Snapshot\)[\s\S]*?(?:Signal Output:[\s\S]*?(?:\n{2,}|$))/gi;
+          let cleanedContent = welcomeMessage.content.replace(gaugeRegex, "").trim();
+
+          const marker =
+            "Your structure at the last check-in was very clear:";
+
+          if (cleanedContent.includes(marker)) {
+            const parts = cleanedContent.split(marker);
+            welcomeMessage.content = `${parts[0]}${marker}\n\n${gaugeBlock}\n\n${parts
+              .slice(1)
+              .join(marker)
+              .trimStart()}`;
+          } else {
+            // If the marker is missing for some reason, just prepend the gauge at the top
+            welcomeMessage.content = `${gaugeBlock}\n\n${cleanedContent}`;
+          }
+        }
+      }
+
       const welcomeTranscript = [welcomeMessage];
 
       // Save the welcome message to chat

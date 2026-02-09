@@ -604,6 +604,18 @@ const renderStyledReport = (
   // Text buffer for paragraph rendering
   let textBuffer = [];
 
+  const renderPlainHeader = (headerText, size = 14) => {
+    const cleanedHeader = cleanText(headerText).replace(/:+$/, "").trim();
+    if (!cleanedHeader) return;
+    doc.moveDown(1);
+    doc.font("Helvetica-Bold").fontSize(size).text(cleanedHeader, {
+      width: availableWidth,
+      lineGap: 4,
+    });
+    doc.font("Helvetica").fontSize(11);
+    doc.moveDown(0.5);
+  };
+
   // Helper to flush buffer
   const flushTextBuffer = () => {
     if (textBuffer.length > 0) {
@@ -635,6 +647,26 @@ const renderStyledReport = (
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     let line = rawLine.trimEnd();
+
+    if (skipUntilNextSection) {
+      const isNextSection =
+        /^SECTION\s+\d+/i.test(line) ||
+        /^PHASE\s+\d+/i.test(line) ||
+        /^##\s+/.test(line) ||
+        /^[\-─_]{3,}/.test(line) ||
+        isAllCapsHeader(line);
+
+      if (!line.trim()) {
+        continue;
+      }
+
+      if (!isNextSection) {
+        continue;
+      }
+
+      skipUntilNextSection = false;
+      // Fall through and process this line as a new section header.
+    }
 
     // Skip problematic lines
     if (/^%{10,}/.test(line.trim())) {
@@ -855,6 +887,10 @@ const renderStyledReport = (
         }
         metricsInterpretationRendered = true;
       }
+
+      renderPlainHeader("FRICTION ANALYSIS");
+      firstContentSectionStarted = true;
+      continue;
     }
 
     // Check if we've found the METRICS GAUGE section
@@ -1063,6 +1099,13 @@ const renderStyledReport = (
       });
       doc.font("Helvetica").fontSize(11);
       doc.moveDown(0.5);
+      continue;
+    }
+
+    if (/^SECTION\s+\d+/i.test(line) || /^PHASE\s+\d+/i.test(line) || isAllCapsHeader(line)) {
+      flushTextBuffer();
+      renderPlainHeader(line, 14);
+      firstContentSectionStarted = true;
       continue;
     }
 

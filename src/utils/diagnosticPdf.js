@@ -89,11 +89,10 @@ const renderVisualGauge = (doc, metrics) => {
 
     if (m.label.includes("Consciousness")) {
       const val = parseFloat(m.val);
-      // Convert 1-5 scale to percentage for visual display (1 = 0%, 5 = 100%)
-      pct = ((val - 1) / 4) * 100; // Map 1-5 to 0-100%
-      if (pct < 0) pct = 0;
-      if (pct > 100) pct = 100;
-      displayVal = val.toFixed(1);
+      // Consciousness Level (CL) is on a 1.0–5.0 scale. For the gauge we want a 0–100%
+      // view that matches the other metrics, so use (CL/5)*100.
+      pct = Math.max(0, Math.min(100, (val / 5) * 100));
+      displayVal = `${Math.round((val / 5) * 100)}%`;
     } else {
       const val = parseFloat(m.val);
       pct = Math.max(0, Math.min(100, val));
@@ -250,10 +249,12 @@ const renderMetricLine = (doc, label, value, isPercentage = true) => {
   const percentageForGauge = isPercentage
     ? displayValue
     : (displayValue / 5) * 100;
-  // For display text: show percentage for percentage metrics, raw value for Consciousness Level
+  // For display text:
+  // - percentage metrics (Gravity, QGC, Signal, Coherence) show XX%
+  // - Consciousness Level (passed as isPercentage = false, 1.0–5.0) should display as a percentage too
   const valueText = isPercentage
     ? `${Math.round(displayValue)}%`
-    : `${displayValue}`;
+    : `${Math.round((displayValue / 5) * 100)}%`;
 
   // Draw gauge bar
   drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);

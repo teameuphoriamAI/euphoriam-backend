@@ -126,13 +126,14 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     // Get metrics from existing diagnostic (if available), otherwise use empty metrics
     const metrics = existing?.data?.metrics || {};
 
-    const retrieved = await retrieveSimilarChunks({
-      query: session.transcript.at(-1)?.content || "",
-      topK: 3,
-    });
-
-    // Generate UPDATED full diagnostic report (not discovery report)
-    const prompt = await getLatestPromptFromDb();
+    // Run independent async operations in parallel
+    const [retrieved, prompt] = await Promise.all([
+      retrieveSimilarChunks({
+        query: session.transcript.at(-1)?.content || "",
+        topK: 3,
+      }),
+      getLatestPromptFromDb(),
+    ]);
     // Extract string content from prompt object, or use fallback
     const promptContent =
       typeof prompt === "string"
@@ -466,18 +467,11 @@ const wireChatbotFreeform = (io) => {
       session.transcript.push({ role: "user", content });
       scheduleInactivity(socket, session);
 
-      const retrieved = await retrieveSimilarChunks({
-        query: content,
-        topK: 3,
-      });
-
-      // If user wants new diagnostic, switch to diagnostic mode
+      // If user wants new diagnostic, switch to diagnostic mode (keep full conversation, do not clear transcript)
       if (wantsNewDiagnostic && session.mode === "discovery") {
         session.mode = "diagnostic";
         session.requestingNewDiagnostic = true; // Set flag to persist through intake
-        // Keep the request message but clear previous discovery chat
-        session.transcript = [{ role: "user", content }]; // Start fresh with just the request
-        session.priorReportSnippet = null; // Don't reference old report
+        session.priorReportSnippet = null; // Don't reference old report for the new intake
         session.targetCount = 25; // Ensure 25 core questions
       }
 
@@ -512,12 +506,17 @@ const wireChatbotFreeform = (io) => {
         );
       }
 
-      // Calculate confidence if in diagnostic mode and 25 questions reached
-      let confidenceResult = null;
-      if (session.mode === "diagnostic" && distinctQuestionNumbers.length >= 25) {
+      // Run chunk retrieval and confidence calculation in parallel
+      const needsConfidence = session.mode === "diagnostic" && distinctQuestionNumbers.length >= 25;
+      if (needsConfidence) {
         console.log("[socket diagnostic] Calculating confidence for Q25+");
-        confidenceResult = await calculateDiagnosticConfidence(session.transcript);
       }
+      const [retrieved, confidenceResult] = await Promise.all([
+        retrieveSimilarChunks({ query: content, topK: 3 }),
+        needsConfidence
+          ? calculateDiagnosticConfidence(session.transcript)
+          : Promise.resolve(null),
+      ]);
 
       // Use robust buildChatPrompts helper to construct both system and user prompts
       const { systemPrompt, userPrompt: chatPrompt } = await buildChatPrompts({
@@ -549,12 +548,57 @@ const wireChatbotFreeform = (io) => {
       const safeChatPrompt = chatPrompt || "";
 
       // Filter out messages with null/undefined content and ensure all content is strings
-      const validTranscriptMessages = session.transcript
-        .filter((m) => m && m.content && typeof m.content === "string")
-        .map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: String(m.content), // Ensure it's a string
-        }));
+      // Also deduplicate verbatim repetitions so the model doesn't copy-paste loops,
+      // and hard-block the "here's the question again" phrasing from the history.
+      const validTranscriptMessages = (() => {
+        const filtered = session.transcript
+          .filter((m) => m && m.content && typeof m.content === "string")
+          .map((m) => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: String(m.content),
+          }));
+
+        const cleaned = [];
+        let lastAssistantContent = null;
+
+        for (const msg of filtered) {
+          if (msg.role === "assistant") {
+            const content = msg.content || "";
+            const lower = content.toLowerCase();
+
+            // Hard-block the "here's the question again" pattern
+            if (
+              lower.includes("here's the question again") ||
+              lower.includes("here is the question again")
+            ) {
+              cleaned.push({
+                role: "assistant",
+                content:
+                  "(The user's response was unclear. I need to rephrase this question using different, simpler words and add an example to help them answer.)",
+              });
+              lastAssistantContent = null;
+              continue;
+            }
+
+            // Collapse verbatim repeated assistant messages
+            if (lastAssistantContent && content === lastAssistantContent) {
+              cleaned.push({
+                role: "assistant",
+                content:
+                  "(The user's response was unclear. I need to rephrase this question using different, simpler words and add an example to help them answer.)",
+              });
+              lastAssistantContent = content;
+              continue;
+            }
+
+            lastAssistantContent = content;
+          }
+
+          cleaned.push(msg);
+        }
+
+        return cleaned;
+      })();
 
       if (!safeSystemPrompt || !safeChatPrompt) {
         console.error("[socket] Invalid system or chat prompt:", {
@@ -692,11 +736,14 @@ const wireChatbotFreeform = (io) => {
       // For now, use empty metrics - they will be calculated by AI from the user's answers
       const metrics = {};
 
-      const retrieved = await retrieveSimilarChunks({
-        query: session.transcript.at(-1)?.content || "",
-        topK: 3,
-      });
-      const prompt = await getLatestPromptFromDb();
+      // Run independent async operations in parallel
+      const [retrieved, prompt] = await Promise.all([
+        retrieveSimilarChunks({
+          query: session.transcript.at(-1)?.content || "",
+          topK: 3,
+        }),
+        getLatestPromptFromDb(),
+      ]);
       // Extract string content from prompt object, or use fallback
       const promptContent =
         typeof prompt === "string"

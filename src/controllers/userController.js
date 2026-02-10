@@ -397,11 +397,21 @@ const getUserProfile = async (req, res) => {
       existingDiagnosticId: existingDiagnostic?.id,
     });
 
-    // Get discovery counts
-    const discoveries = await Discovery.findAll({
-      where: { userId: user.id },
-      attributes: ["discoveryType"],
-    });
+    // Run 3 independent DB queries in parallel
+    const [discoveries, latestDiagnostic, latestDiscovery] = await Promise.all([
+      Discovery.findAll({
+        where: { userId: user.id },
+        attributes: ["discoveryType"],
+      }),
+      Diagnostic.findOne({
+        where: { email: user.email },
+        order: [["updatedAt", "DESC"]],
+      }),
+      Discovery.findOne({
+        where: { userId: user.id },
+        order: [["updatedAt", "DESC"]],
+      }),
+    ]);
 
     const discoveryCounts = {
       alignment: 0,
@@ -423,17 +433,6 @@ const getUserProfile = async (req, res) => {
     let firstCorrection = null;
     let angleOfGrowth = null;
     try {
-      // Get latest diagnostic report
-      const latestDiagnostic = await Diagnostic.findOne({
-        where: { email: user.email },
-        order: [["updatedAt", "DESC"]],
-      });
-
-      // Get latest discovery report
-      const latestDiscovery = await Discovery.findOne({
-        where: { userId: user.id },
-        order: [["updatedAt", "DESC"]],
-      });
 
       // Determine which is latest and get the report text
       let latestReportText = null;

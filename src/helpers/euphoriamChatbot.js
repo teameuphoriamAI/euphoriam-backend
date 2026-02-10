@@ -4,6 +4,7 @@ const { User } = require("../models/userModel");
 const { Prompt } = require("../models/promptModel");
 const { UserSession } = require("../models/userSessionModel");
 const openai = require("../config/openai");
+const { withDbSlot } = require("../config/sequelize");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 
 const SUPPORT_LOCK_PROMPT = `
@@ -16,7 +17,6 @@ Rules:
 If the user asks a question or says they don't understand at any time (including during the intake):
 - Pause progression immediately
 - Do NOT move to the next question
-- Do NOT alter, reword, or replace the original question
 - Do NOT interpret their question as an answer
 
 Your role is strictly to:
@@ -30,9 +30,27 @@ Your role is strictly to:
 2. DO NOT perform redundant confirmations (e.g., "Are you 100% sure?") unless the user's answer is truly ambiguous or contradictory.
 3. If you understand the user's answer, acknowledge it and move to the NEXT question immediately.
 
+🚨 REPHRASING RULE (CRITICAL):
+When the user's response is unclear, a random letter, gibberish, or doesn't make sense as an answer:
+- NEVER repeat the question word-for-word. That feels robotic and unhelpful.
+- ALWAYS rephrase the question using simpler, more conversational language.
+- Keep the same Q-number label (e.g., **Q8 — Abduction Sentence**) but rewrite the body in fresh, plain words.
+- Add a short example or analogy to make it easier to answer.
+- Keep it warm and low-pressure: "No rush — here's another way to think about it."
+
+Example of WRONG response (verbatim repeat):
+"Here's the question again:
+**Q8 — Abduction Sentence**
+What's the abduction sentence your mind uses as proof…"
+
+Example of CORRECT response (rephrased):
+"No worries — let me put that differently.
+**Q8 — Abduction Sentence**
+When you catch yourself stopping or pulling back from work, what's the thought that shows up to justify it? Something like 'I'll do it tomorrow' or 'It won't matter anyway.' What's yours?"
+
 - Maintain Euphoriam tone
-- You must always return control to the SAME question.
-- End by inviting them to answer that exact question
+- You must always return control to the SAME question (rephrased, never copied verbatim).
+- End by inviting them to answer that rephrased question
 - Never advance the intake
 - Never diagnose early
 
@@ -81,7 +99,7 @@ const findOrCreateCreatorUser = async ({ email, name, assessmentIds = [] }) => {
       };
 
       await user.update({ membership });
-      user = await user.reload(); // Reload to get updated data
+      // update() already mutates the instance — no need for a separate reload() query
     } catch (err) {
       console.error(
         "[findOrCreateCreatorUser] Failed to check membership:",
@@ -483,6 +501,19 @@ When you imagine the version of your life that actually feels right — not impr
     /CB\d+/i.test(m.content || ""),
   ).length;
 
+  // Detect if the last user message is gibberish / unclear / not a real answer
+  const lastUserMsg =
+    [...transcript].reverse().find((m) => m?.role === "user")?.content || "";
+  const isLikelyGibberish = isLikelyGibberishMessage(lastUserMsg);
+
+  // Check if the previous assistant message already asked the same question (detect repeat loop)
+  const lastAssistantMsg =
+    [...transcript].reverse().find((m) => m?.role === "assistant")?.content ||
+    "";
+  const isRepeatLoop =
+    lastAssistantMsg.includes("Here's the question again") ||
+    lastAssistantMsg.includes("here's the question again");
+
   const confidenceBlock = confidenceResult
     ? `\n🚨 CONFIDENCE DATA:
 Confidence: ${confidenceResult.confidence}%
@@ -507,10 +538,13 @@ ${confidenceBlock}
 QUESTION FLOW:
 1. **Core Intake (Q1 - Q25)**: One question at a time.
 2. **Evaluation Point (After Q25)**: Only after Q25 is answered, evaluate if you have enough information (Confidence ≥ 85%).
-3. **Clarifier Burst (CB1 - CB6)**: If Confidence < 85% after Q25, you MUST inform the user:
-   "We've completed the core 25-question intake. However, to ensure your diagnostic is 100% accurate, I need to ask a few targeted clarifier questions about [REASONING FOR CLARIFIERS]."
-   Then ask up to 6 additional questions (CB1-CB6).
+3. **Clarifier Burst (CB1 - CB6)**: If Confidence < 85% after Q25, you MUST:
+   - FIRST explain WHY you're asking additional questions. Do NOT jump straight to "CB1: ...". Tell the user we've completed the 25 core questions, then in 1–2 sentences say why a few more questions will help (e.g. "to pin down your trigger pattern", "to clarify how this shows up in different areas", "to make your report more accurate"). Use the confidence reasoning if provided.
+   - THEN ask the clarifier question (CB1, then CB2, etc.). For each CB, you may briefly say what this question is for (e.g. "This one helps me map the loop more clearly:" before CB1).
+   - Example opening: "We've completed the core 25-question intake. To make your diagnostic as accurate as possible, I need to ask a few targeted follow-ups — mainly to clarify [specific reason from context]. Here's the first one: **CB1** ..."
+   - Use the CONFIDENCE DATA "Reasoning" (if shown above) when explaining why you're asking these follow-ups.
 4. **After Each Clarifying Question**: Re-evaluate confidence. If Confidence ≥ 85% after answering a clarifying question, IMMEDIATELY use the Completion Signal. Do NOT ask another clarifying question.
+5. **CB gibberish/unclear**: If the user's reply to a clarifier (CB1–CB6) is gibberish or not a real answer, treat it like core questions: say "That didn't come through clearly...", REPHRASE the same CB in simpler words, and do NOT move to the next CB until they give a valid answer.
 
 🚨🚨🚨 CRITICAL RESPONSE FORMAT - ACKNOWLEDGEMENT STYLE:
 
@@ -566,18 +600,27 @@ The next piece is about what you're avoiding.
 **Q8 — Avoidance Target**
 What specifically are you putting off? Is it a task, a conversation, a decision — or something else?"
 
-🚨 IMPORTANT: If the user didn't answer or asked for clarification:
-- Acknowledge their confusion
-- Clarify the current question (Q${coreQuestionCount}) in different words
-- Do NOT move to the next question
+🚨 VALID SHORT ANSWERS — ACCEPT AND MOVE TO NEXT QUESTION (do NOT ask for more):
+- These replies are VALID answers. Acknowledge briefly (e.g. "Got it.", "That's okay.", "Noted.") and move to the next question. Do NOT say "That didn't come through clearly" or ask them to share more.
+- Examples: "none", "nothing", "not for now", "not right now", "i don't remember", "i dont remember", "nothing comes to mind", "can't think of any", "no", "idk", "i don't know", "unsure", "not really", "not really sure", "no idea", "don't have one", "nothing specific", "skip", "pass".
+- For these, give a one-line acknowledgment (e.g. "Got it — no problem." or "That's valid data.") then ask the NEXT question (Q${coreQuestionCount + 1}) with **Q${coreQuestionCount + 1} — [Name]**.
+
+🚨 IMPORTANT: If the user truly didn't answer (gibberish, random characters, or explicitly asked to rephrase/clarify the question):
+- You MUST begin your reply with exactly this sentence:
+  "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
+- Then REPHRASE the current question in simpler words — NEVER repeat the same wording verbatim.
+  - If you're on a core question (Q1–Q25): rephrase **Q${coreQuestionCount}**, keep the same Q-number, do NOT move to the next Q.
+  - If you're on a clarifier (CB1–CB6): rephrase the current **CB${coreQuestionCount >= 25 && cbCount >= 1 ? `CB${cbCount}` : "Q" + coreQuestionCount}** only; do NOT move to the next CB. Stay on the same CB until they give a valid answer.
+- Add a short example or analogy to make it easier to answer.
+- Do NOT move to the next question.
 
 📝 MORE REFLECTION EXAMPLES (adapt to context):
 
 For short/single-word answers:
 - "purpose" → "Got it. So the pull is toward **meaning** — the structure is asking for direction, not just activity. That's the first thread."
 - "money" → "Got it. So the field is reading **security** — resources, survival, stability. That's where the weight sits."
-- "nothing" → "Noted. 'Nothing' is actually data — it tells me the response is **inaction**, which is itself a pattern. We map that."
-- "idk" / "i don't know" → "That's okay. 'I don't know' often means the answer is deeper than the mind can reach right now. Let me rephrase..."
+- "nothing" / "none" / "not for now" / "i dont remember" → ACCEPT. Brief acknowledgment (e.g. "Got it." or "That's okay — that's valid.") then ask the NEXT question (Q${coreQuestionCount + 1}). Do NOT rephrase or ask for more.
+- "idk" / "i don't know" → ACCEPT. "That's okay." then ask the NEXT question. Do NOT say "Let me rephrase" or ask for more.
 - "yes" / "no" → "Clear. That confirms the pattern is [interpret what yes/no means in context]."
 
 For emotional/body answers:
@@ -595,11 +638,47 @@ Current State:
 - Core Questions Asked So Far: ${coreQuestionCount}
 - Clarifiers Asked So Far: ${cbCount}
 
+${
+  isLikelyGibberish || isRepeatLoop
+    ? (coreQuestionCount >= 25 && cbCount >= 1
+        ? `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
+The user's response is NOT a valid answer. You are on a CLARIFIER question (CB${cbCount}). You MUST:
+1. Start your reply with EXACTLY this sentence (verbatim, no changes):
+   "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
+2. Immediately after that line, REPHRASE the current clarifier question **CB${cbCount}** using COMPLETELY DIFFERENT words. Do NOT copy-paste or repeat the previous version.
+3. Add a short example to help them answer.
+4. Do NOT move to CB${cbCount + 1}. Stay on CB${cbCount} until they give a valid answer.
+
+🚫 FORBIDDEN: Do NOT ask CB${cbCount + 1} or the next question. REPHRASE CB${cbCount} only.
+✅ REQUIRED: Write a FRESH, SIMPLER version of the same clarifier in your own words.
+
+Example: "That didn't come through clearly. Please share a bit more so I can map your structure accurately.
+
+Let me put CB${cbCount} differently: [rewrite the question in simpler words and add an example]."`
+        : `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
+The user's response is NOT a valid answer. You MUST:
+1. Start your reply with EXACTLY this sentence (verbatim, no changes):
+   "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
+2. Immediately after that line, REPHRASE Q${coreQuestionCount} using COMPLETELY DIFFERENT words. Do NOT copy-paste or repeat the previous version.
+3. Add a concrete example to help them answer — e.g., "Something like 'I'll do it tomorrow' or 'What's the point.'"
+4. Keep the **Q${coreQuestionCount} — [Name]** label but REWRITE the question body from scratch.
+
+🚫 FORBIDDEN: Do NOT say "Here's the question again:" and repeat the same text. That is WRONG.
+🚫 FORBIDDEN: Do NOT copy any part of the previous version of this question from the transcript.
+✅ REQUIRED: Write a FRESH, SIMPLER version of the question in your own words.
+
+Example of CORRECT response:
+"No worries — let me put that differently.
+
+**Q8 — Abduction Sentence**
+Think about the last time you stopped yourself from doing something important. What was the thought that showed up? Like 'I'll do it later' or 'It probably won't work anyway.' What's yours?"`)
+    : ""
+}
 👉 ACTION:
 ${coreQuestionCount < 25 ? `- If user answered the last question: Ask Core Question Q${coreQuestionCount + 1} — prefix with **Q${coreQuestionCount + 1} — [Question Name]**` : ""}
-${coreQuestionCount < 25 ? `- If user did NOT answer or asked to rephrase: Clarify and re-ask Core Question Q${coreQuestionCount} — keep **Q${coreQuestionCount} — [Question Name]**` : ""}
+${coreQuestionCount < 25 ? `- If user did NOT answer, sent gibberish, or asked to rephrase: REPHRASE Core Question Q${coreQuestionCount} in simpler words (NEVER copy-paste the same wording) — keep **Q${coreQuestionCount} — [Question Name]** label but rewrite the body. Add an example to help.` : ""}
 ${coreQuestionCount >= 25 && confidenceResult && confidenceResult.confidence >= 85 ? `👉 ACTION: Confidence is ${confidenceResult.confidence}% (≥ 85%). IMMEDIATELY use Completion Signal. Do NOT ask another question.` : ""}
-${coreQuestionCount >= 25 && (!confidenceResult || confidenceResult.confidence < 85) ? `👉 ACTION: Evaluate confidence. If < 85%, ask next CB (CB${cbCount + 1}) with transition explanation. If ≥ 85%, use Completion Signal immediately.` : ""}
+${coreQuestionCount >= 25 && (!confidenceResult || confidenceResult.confidence < 85) ? `👉 ACTION: If the user's last message was gibberish, unclear, or not a valid answer → REPHRASE the current clarifier (CB${cbCount}) and do NOT move to CB${cbCount + 1}. Only if they gave a valid answer: evaluate confidence. If < 85%, explain WHY you're asking more, then ask CB${cbCount + 1}. If ≥ 85%, use Completion Signal immediately.` : ""}
 
 COMPLETION SIGNAL (ONLY if Core Q25 is answered AND Confidence ≥ 85%):
 - "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you."
@@ -891,6 +970,16 @@ All discoveries should link to the Euphoriam formula and help them understand th
     userMessagesInDiscovery.length <= 2 &&
     !lowerMessage.includes("what are you experiencing") &&
     !lowerMessage.includes("what would you like to create");
+
+  // Greeting or other short non-answer: we should always acknowledge it before continuing
+  const isGreetingOrShortNonAnswer =
+    /^(hi|hello|hey|hey there|hi there|howdy|greetings)$/i.test(
+      lastUserMessage.trim(),
+    ) ||
+    (lastUserMessage.trim().length <= 20 &&
+      /^(ok|okay|yes|no|sure|thanks|thank you|alright)$/i.test(
+        lastUserMessage.trim(),
+      ));
 
   // Skip welcome message if user is asking about session - answer their question directly
   if (isFirstDiscoveryMessage && !isAskingAboutSession) {
@@ -1423,6 +1512,8 @@ You are Euphoriam AI working with structure-aware precision.${discoveryTypeConte
 
 🌑 DISCOVERY MODE - ONBOARDING QUESTIONS:
 
+🚨 ALWAYS RESPOND TO THE USER'S MESSAGE: If the user said a greeting (e.g. "hi", "hello", "hey"), you MUST acknowledge it first. Start with a brief, warm reply such as "Hi [their name], I'm your Euphoriam AI assistant." or "Hi [name]." Then in the same message ask your question. Never ignore what they said.
+
 The user has just started a discovery session. You need to understand their current state and desired creation via two key questions — but ask only ONE per message.
 
 - First question (ask in this message only): **What are you experiencing today?**
@@ -1434,7 +1525,7 @@ The user has just started a discovery session. You need to understand their curr
   - Understand their desired reality vs current reality
   - Identify the gap between potential and received
 
-🚨 ONE QUESTION PER MESSAGE: In this message, ask only "What are you experiencing today?" (and brief context if needed). Do NOT list "1." and "2." with both questions in the same message. After they answer, ask the second question in your next message.
+🚨 ONE QUESTION PER MESSAGE: In this message, ${isGreetingOrShortNonAnswer ? "first acknowledge their greeting (e.g. 'Hi [name], I'm your Euphoriam AI assistant.'), then " : ""}ask "What are you experiencing today?" (and brief context if needed). Do NOT list "1." and "2." with both questions in the same message. After they answer, ask the second question in your next message.
 
 After asking the first question, wait for their answer; then continue the discovery conversation naturally, helping them:
 - Increase their CL (Consciousness Level)
@@ -1836,6 +1927,12 @@ ${transcript
 
 Last user message: "${lastUserMessage}"
 
+🚨🚨🚨 MANDATORY — RESPOND TO WHAT THEY SAID FIRST:
+- Your reply MUST start by acknowledging or responding to the user's message above. Do not skip this.
+- If they said a greeting (e.g. "hi", "hello", "hey") → your first sentence must be something like "Hi [name]." or "Hi — good to hear from you." Then continue.
+- If their message was unclear, gibberish, or didn't answer the question → your first sentence must say so (e.g. "That didn't come through clearly." or "I'm not sure I got that — no worries."). Then rephrase your question in meaningfully different words.
+- Only after that first sentence, continue with your question or content. Never open with a question without first responding to what they said.
+
 🚨🚨🚨 CRITICAL: You have the user's question/message in the transcript above. 
 - The user's message is: "${lastUserMessage}"
 - You MUST answer this question directly - NEVER ask them to paste or share it again
@@ -2154,6 +2251,7 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
 
 1b. MID-CONVERSATION (if transcript is NOT empty - meaning there are already messages):
    - CRITICAL: If there are already messages in the transcript, you are in the MIDDLE of a conversation
+   - ALWAYS RESPOND TO THE USER'S MESSAGE: Acknowledge what they said first, then continue. If they sent a greeting (hi, hello, hey), acknowledge it (e.g. "Hi [name], I'm your Euphoriam AI assistant.") then ask or continue. If their message is unclear, gibberish, or doesn't answer the question, say so briefly (e.g. "That didn't come through clearly." or "I'm not sure I got that.") then rephrase your question in meaningfully different words — don't just repeat the same question with a slight wording change.
    - NEVER use the "Welcome back. I've loaded your last report" format in mid-conversation
    - NEVER restart with structure reflection in mid-conversation
    - ALWAYS answer the user's question directly using the conversation context and report data
@@ -2212,6 +2310,11 @@ If you output ANY text in square brackets, you have FAILED. You must ALWAYS:
    - Acknowledge what "I don't know" means in their structure
    - Never judge uncertainty
    - Work with their resistance, don't push against it
+
+4b. WHEN THE USER'S MESSAGE IS UNCLEAR OR DOESN'T ANSWER (e.g. gibberish, random characters, or off-topic):
+   - Always respond to what they said: acknowledge briefly and warmly (e.g. "That didn't come through clearly." or "I'm not sure I got that — no worries.").
+   - Then rephrase your question in meaningfully different words, or try a simpler, different angle. Do NOT just repeat the same question with a slight wording change (e.g. "Let's shift focus... same question" is wrong).
+   - Keep the same intent (e.g. still asking about body/sensation if that was the topic) but use fresh phrasing or a concrete example so they can answer more easily.
 
 5. MICRO-CORRECTIONS:
    - Give very small, specific actions (e.g., "open platform, close it, that's it")
@@ -2412,160 +2515,164 @@ const safeFindDiagnostic = async (options = {}) => {
  * so we need to find the diagnostic with the most recent report generation.
  * We check data.generatedAt (when report was generated) or updatedAt as fallback.
  */
-const loadDiagnosticState = async (email) => {
-  const { Chat } = require("../models/chatModel");
-  const { User } = require("../models/userModel");
+const loadDiagnosticState = (email) =>
+  withDbSlot(async () => {
+    const { Chat } = require("../models/chatModel");
+    const { User } = require("../models/userModel");
 
-  // Find all diagnostics for this email to compare report generation dates
-  const allDiagnostics = await Diagnostic.findAll({
-    where: { email },
-    attributes: [
-      "id",
-      "userId",
-      "email",
-      "title",
-      "data",
-      "createdAt",
-      "updatedAt",
-    ],
-    order: [["updatedAt", "DESC"]], // Start with most recently updated
-  });
+    // Run independent DB queries in parallel for speed
+    const [allDiagnostics, user] = await Promise.all([
+      Diagnostic.findAll({
+        where: { email },
+        attributes: [
+          "id",
+          "userId",
+          "email",
+          "title",
+          "data",
+          "createdAt",
+          "updatedAt",
+        ],
+        order: [["updatedAt", "DESC"]],
+        limit: 10, // Cap to avoid loading too many rows
+      }),
+      User.findOne({ where: { email } }),
+    ]);
 
-  // Get user to check for incomplete chats in Chat model
-  const user = await User.findOne({ where: { email } });
-
-  // PRIORITY 1: Check for incomplete chats in the Chat model first
-  // This is where transcripts are actually stored (Diagnostic.intakeState.transcript is kept empty)
-  if (user) {
-    const incompleteChat = await Chat.findOne({
-      where: {
-        userId: user.id,
-        isChatEnded: false,
-      },
-      order: [["updatedAt", "DESC"]],
-    });
-
-    if (incompleteChat && incompleteChat.data?.transcript?.length > 0) {
-      const chatTranscript = incompleteChat.data.transcript;
-
-      console.log(
-        "[loadDiagnosticState] Found incomplete chat in Chat model:",
-        {
-          chatId: incompleteChat.id,
-          transcriptLength: chatTranscript.length,
-          chatType: incompleteChat.chatType,
+    // PRIORITY 1: Check for incomplete chats in the Chat model first
+    // This is where transcripts are actually stored (Diagnostic.intakeState.transcript is kept empty)
+    if (user) {
+      const incompleteChat = await Chat.findOne({
+        where: {
+          userId: user.id,
+          isChatEnded: false,
         },
-      );
-
-      // Find the associated diagnostic (if any)
-      let associatedDiagnostic = null;
-      if (incompleteChat.dignosticId) {
-        associatedDiagnostic = allDiagnostics.find(
-          (d) => d.id === incompleteChat.dignosticId,
-        );
-      }
-      if (!associatedDiagnostic && allDiagnostics.length > 0) {
-        associatedDiagnostic = allDiagnostics[0];
-      }
-
-      // Build the intakeState with the transcript from Chat model
-      // CRITICAL: Include the chatType as 'mode' so we know if this is a discovery or diagnostic chat
-      const existingState = {
-        ...(associatedDiagnostic?.data?.intakeState || {}),
-        transcript: chatTranscript, // Use transcript from Chat model
-        mode:
-          incompleteChat.chatType === "discovery"
-            ? "discovery"
-            : associatedDiagnostic?.data?.intakeState?.mode || "diagnostic",
-      };
-
-      const existingReport = associatedDiagnostic?.data?.aiReport;
-      const diagnosticMetrics = associatedDiagnostic?.data?.metrics || {};
-
-      console.log("[loadDiagnosticState] Returning incomplete chat state:", {
-        chatType: incompleteChat.chatType,
-        mode: existingState.mode,
-        hasReport: Boolean(existingReport),
+        order: [["updatedAt", "DESC"]],
       });
 
+      if (incompleteChat && incompleteChat.data?.transcript?.length > 0) {
+        const chatTranscript = incompleteChat.data.transcript;
+
+        console.log(
+          "[loadDiagnosticState] Found incomplete chat in Chat model:",
+          {
+            chatId: incompleteChat.id,
+            transcriptLength: chatTranscript.length,
+            chatType: incompleteChat.chatType,
+          },
+        );
+
+        // Find the associated diagnostic (if any)
+        let associatedDiagnostic = null;
+        if (incompleteChat.dignosticId) {
+          associatedDiagnostic = allDiagnostics.find(
+            (d) => d.id === incompleteChat.dignosticId,
+          );
+        }
+        if (!associatedDiagnostic && allDiagnostics.length > 0) {
+          associatedDiagnostic = allDiagnostics[0];
+        }
+
+        // Build the intakeState with the transcript from Chat model
+        // CRITICAL: Include the chatType as 'mode' so we know if this is a discovery or diagnostic chat
+        const existingState = {
+          ...(associatedDiagnostic?.data?.intakeState || {}),
+          transcript: chatTranscript, // Use transcript from Chat model
+          mode:
+            incompleteChat.chatType === "discovery"
+              ? "discovery"
+              : associatedDiagnostic?.data?.intakeState?.mode || "diagnostic",
+        };
+
+        const existingReport = associatedDiagnostic?.data?.aiReport;
+        const diagnosticMetrics = associatedDiagnostic?.data?.metrics || {};
+
+        console.log("[loadDiagnosticState] Returning incomplete chat state:", {
+          chatId: incompleteChat.id,
+          chatType: incompleteChat.chatType,
+          mode: existingState.mode,
+          hasReport: Boolean(existingReport),
+        });
+
+        return {
+          existingDiagnostic: associatedDiagnostic,
+          existingState,
+          existingReport,
+          diagnosticMetrics,
+          incompleteChatId: incompleteChat.id, // so controller can update this same chat when switching discovery → diagnostic
+        };
+      }
+    }
+
+    // PRIORITY 2: Check for incomplete chats in Diagnostic model (legacy support)
+    let incompleteInDiagnostic = null;
+    for (const diag of allDiagnostics) {
+      const intakeState = diag.data?.intakeState || {};
+      const transcript = intakeState?.transcript || [];
+      const isCompleted = intakeState?.completedAt || intakeState?.finalizedAt;
+      const hasReport = diag.data?.aiReport || diag.report;
+
+      // Check if this is an incomplete chat (has transcript, not completed, no report yet)
+      if (transcript.length > 0 && !isCompleted && !hasReport) {
+        incompleteInDiagnostic = diag;
+        console.log(
+          "[loadDiagnosticState] Found incomplete chat in Diagnostic model with",
+          transcript.length,
+          "messages",
+        );
+        break;
+      }
+    }
+
+    if (incompleteInDiagnostic) {
+      const existingState = incompleteInDiagnostic?.data?.intakeState || {};
+      const diagnosticMetrics = incompleteInDiagnostic?.data?.metrics || {};
+
       return {
-        existingDiagnostic: associatedDiagnostic,
+        existingDiagnostic: incompleteInDiagnostic,
         existingState,
-        existingReport,
+        existingReport: null,
         diagnosticMetrics,
       };
     }
-  }
 
-  // PRIORITY 2: Check for incomplete chats in Diagnostic model (legacy support)
-  let incompleteInDiagnostic = null;
-  for (const diag of allDiagnostics) {
-    const intakeState = diag.data?.intakeState || {};
-    const transcript = intakeState?.transcript || [];
-    const isCompleted = intakeState?.completedAt || intakeState?.finalizedAt;
-    const hasReport = diag.data?.aiReport || diag.report;
+    // PRIORITY 3: Find the diagnostic with the most recent report generation
+    let existingDiagnostic = null;
+    let mostRecentGeneratedAt = null;
 
-    // Check if this is an incomplete chat (has transcript, not completed, no report yet)
-    if (transcript.length > 0 && !isCompleted && !hasReport) {
-      incompleteInDiagnostic = diag;
-      console.log(
-        "[loadDiagnosticState] Found incomplete chat in Diagnostic model with",
-        transcript.length,
-        "messages",
-      );
-      break;
-    }
-  }
+    for (const diag of allDiagnostics) {
+      const generatedAt = diag.data?.generatedAt;
+      const hasReport = diag.data?.aiReport || diag.report;
 
-  if (incompleteInDiagnostic) {
-    const existingState = incompleteInDiagnostic?.data?.intakeState || {};
-    const diagnosticMetrics = incompleteInDiagnostic?.data?.metrics || {};
-
-    return {
-      existingDiagnostic: incompleteInDiagnostic,
-      existingState,
-      existingReport: null,
-      diagnosticMetrics,
-    };
-  }
-
-  // PRIORITY 3: Find the diagnostic with the most recent report generation
-  let existingDiagnostic = null;
-  let mostRecentGeneratedAt = null;
-
-  for (const diag of allDiagnostics) {
-    const generatedAt = diag.data?.generatedAt;
-    const hasReport = diag.data?.aiReport || diag.report;
-
-    if (hasReport) {
-      if (generatedAt) {
-        const genDate = new Date(generatedAt);
-        if (!mostRecentGeneratedAt || genDate > mostRecentGeneratedAt) {
-          mostRecentGeneratedAt = genDate;
+      if (hasReport) {
+        if (generatedAt) {
+          const genDate = new Date(generatedAt);
+          if (!mostRecentGeneratedAt || genDate > mostRecentGeneratedAt) {
+            mostRecentGeneratedAt = genDate;
+            existingDiagnostic = diag;
+          }
+        } else if (!existingDiagnostic) {
           existingDiagnostic = diag;
         }
-      } else if (!existingDiagnostic) {
-        existingDiagnostic = diag;
       }
     }
-  }
 
-  // If no diagnostic with report found, use the most recently updated one
-  if (!existingDiagnostic && allDiagnostics.length > 0) {
-    existingDiagnostic = allDiagnostics[0];
-  }
+    // If no diagnostic with report found, use the most recently updated one
+    if (!existingDiagnostic && allDiagnostics.length > 0) {
+      existingDiagnostic = allDiagnostics[0];
+    }
 
-  const existingState = existingDiagnostic?.data?.intakeState || {};
-  const existingReport = existingDiagnostic?.data?.aiReport;
-  const diagnosticMetrics = existingDiagnostic?.data?.metrics || {};
+    const existingState = existingDiagnostic?.data?.intakeState || {};
+    const existingReport = existingDiagnostic?.data?.aiReport;
+    const diagnosticMetrics = existingDiagnostic?.data?.metrics || {};
 
-  return {
-    existingDiagnostic,
-    existingState,
-    existingReport,
-    diagnosticMetrics,
-  };
-};
+    return {
+      existingDiagnostic,
+      existingState,
+      existingReport,
+      diagnosticMetrics,
+    };
+  });
 
 /**
  * Calculate diagnostic confidence using the CANONICAL CONFIDENCE FORMULA
@@ -3221,6 +3328,7 @@ const getAllUserSessions = async (userId, email) => {
         ["sessionDate", "DESC"],
         ["createdAt", "DESC"],
       ],
+      limit: 20, // Cap to avoid loading hundreds of sessions
     });
 
     return sessions || [];
@@ -3234,24 +3342,37 @@ const getAllUserSessions = async (userId, email) => {
  * Loads latest discovery metrics and report
  * Priority: 1) User session (if available), 2) Old discovery report metrics, 3) Last diagnostic report metrics
  */
-const loadLatestDiscoveryMetrics = async (
-  existingDiagnostic,
-  diagnosticMetrics,
-) => {
-  let latestDiscovery = null;
-  let latestDiscoveryReport = null;
-  let latestDiscoveryMetrics = {};
-  let latestUserSession = null;
-  let allUserSessions = [];
+const loadLatestDiscoveryMetrics = (existingDiagnostic, diagnosticMetrics) =>
+  withDbSlot(async () => {
+    let latestDiscovery = null;
+    let latestDiscoveryReport = null;
+    let latestDiscoveryMetrics = {};
+    let latestUserSession = null;
+    let allUserSessions = [];
 
-  // First, try to get all user sessions (highest priority for discovery)
-  if (existingDiagnostic?.userId || existingDiagnostic?.email) {
-    allUserSessions = await getAllUserSessions(
-      existingDiagnostic?.userId,
-      existingDiagnostic?.email,
-    );
+    // Run independent DB queries in parallel for speed
+    const hasUserId = Boolean(existingDiagnostic?.userId);
+    const hasUserIdOrEmail = hasUserId || Boolean(existingDiagnostic?.email);
 
-    // Also get latest session for backward compatibility
+    const [sessionsResult, discoveriesResult] = await Promise.all([
+      // Get all user sessions (highest priority for discovery)
+      hasUserIdOrEmail
+        ? getAllUserSessions(
+            existingDiagnostic?.userId,
+            existingDiagnostic?.email,
+          )
+        : Promise.resolve([]),
+      // Get metrics from discovery records
+      hasUserId
+        ? Discovery.findAll({
+            where: { userId: existingDiagnostic.userId },
+            order: [["createdAt", "DESC"]],
+            limit: 5,
+          })
+        : Promise.resolve([]),
+    ]);
+
+    allUserSessions = sessionsResult;
     latestUserSession = allUserSessions.length > 0 ? allUserSessions[0] : null;
 
     if (allUserSessions.length > 0) {
@@ -3262,194 +3383,247 @@ const loadLatestDiscoveryMetrics = async (
         sessionsWithSummaries: allUserSessions.filter((s) => s.summery).length,
       });
     }
-  }
 
-  // Then, try to get metrics from discovery records (if exist)
-  if (existingDiagnostic?.userId) {
-    const discoveries = await Discovery.findAll({
-      where: { userId: existingDiagnostic.userId },
-      order: [["createdAt", "DESC"]],
-      limit: 5, // look at a few recent discoveries to find one with valid metrics
-    });
-    // Prefer the most recent discovery that has non-zero numeric metrics
-    if (discoveries && discoveries.length > 0) {
-      const hasNonZeroMetrics = (metrics) => {
-        if (!metrics || typeof metrics !== "object") return false;
-        const keysToCheck = [
-          "gravity",
-          "signalCoherence",
-          "signalOutput",
-          "consciousnessLevel",
-          "qgcActivation",
-        ];
-        return keysToCheck.some((k) => {
-          const v = metrics[k];
-          return v !== undefined && v !== null && !Number.isNaN(v) && v !== 0;
-        });
-      };
+    // Process discovery results
+    if (hasUserId) {
+      const discoveries = discoveriesResult;
+      // Prefer the most recent discovery that has non-zero numeric metrics
+      if (discoveries && discoveries.length > 0) {
+        const hasNonZeroMetrics = (metrics) => {
+          if (!metrics || typeof metrics !== "object") return false;
+          const keysToCheck = [
+            "gravity",
+            "signalCoherence",
+            "signalOutput",
+            "consciousnessLevel",
+            "qgcActivation",
+          ];
+          return keysToCheck.some((k) => {
+            const v = metrics[k];
+            return v !== undefined && v !== null && !Number.isNaN(v) && v !== 0;
+          });
+        };
 
-      // Find first discovery (most recent first) with any non-zero metric
-      let selected = null;
-      for (const disc of discoveries) {
-        const storedMetrics = disc.data?.metrics || {};
-        if (hasNonZeroMetrics(storedMetrics)) {
-          selected = { disc, storedMetrics };
-          break;
+        // Find first discovery (most recent first) with any non-zero metric
+        let selected = null;
+        for (const disc of discoveries) {
+          const storedMetrics = disc.data?.metrics || {};
+          if (hasNonZeroMetrics(storedMetrics)) {
+            selected = { disc, storedMetrics };
+            break;
+          }
         }
-      }
 
-      // Fallback: if none have non-zero metrics, use the latest one as before
-      if (!selected) {
-        latestDiscovery = discoveries[0];
-        const storedDiscoveryMetrics = latestDiscovery.data?.metrics || {};
-        if (
-          storedDiscoveryMetrics &&
-          typeof storedDiscoveryMetrics === "object" &&
-          Object.keys(storedDiscoveryMetrics).length > 0
-        ) {
+        // Fallback: if none have non-zero metrics, use the latest one as before
+        if (!selected) {
+          latestDiscovery = discoveries[0];
+          const storedDiscoveryMetrics = latestDiscovery.data?.metrics || {};
+          if (
+            storedDiscoveryMetrics &&
+            typeof storedDiscoveryMetrics === "object" &&
+            Object.keys(storedDiscoveryMetrics).length > 0
+          ) {
+            latestDiscoveryMetrics = {
+              ...latestDiscoveryMetrics,
+              ...storedDiscoveryMetrics,
+            };
+          }
+        } else {
+          latestDiscovery = selected.disc;
           latestDiscoveryMetrics = {
             ...latestDiscoveryMetrics,
-            ...storedDiscoveryMetrics,
+            ...selected.storedMetrics,
           };
         }
-      } else {
-        latestDiscovery = selected.disc;
-        latestDiscoveryMetrics = {
-          ...latestDiscoveryMetrics,
-          ...selected.storedMetrics,
-        };
-      }
 
-      if (latestDiscovery) {
-        console.log(
-          "[loadLatestDiscoveryMetrics] Using stored discovery metrics from DB:",
-          {
-            discoveryId: latestDiscovery.id,
-            createdAt: latestDiscovery.createdAt,
-            updatedAt: latestDiscovery.updatedAt,
-            metrics: latestDiscoveryMetrics,
-          },
-        );
-
-        // Also try to extract from the report text and merge (text is secondary)
-        latestDiscoveryReport =
-          latestDiscovery.data?.newReport ||
-          latestDiscovery.data?.previousReport ||
-          latestDiscovery.data?.newReportSnippet ||
-          null;
-
-        if (latestDiscoveryReport) {
-          const extractedMetrics = extractMetricsFromReport(
-            latestDiscoveryReport,
+        if (latestDiscovery) {
+          console.log(
+            "[loadLatestDiscoveryMetrics] Using stored discovery metrics from DB:",
+            {
+              discoveryId: latestDiscovery.id,
+              createdAt: latestDiscovery.createdAt,
+              updatedAt: latestDiscovery.updatedAt,
+              metrics: latestDiscoveryMetrics,
+            },
           );
-          if (
-            extractedMetrics &&
-            Object.keys(extractedMetrics).some(
-              (key) => extractedMetrics[key] !== undefined,
-            )
-          ) {
-            // Merge carefully: NEVER let extracted 0s overwrite non-zero stored metrics
-            const merged = { ...latestDiscoveryMetrics };
-            const metricKeys = [
-              "gravity",
-              "signalCoherence",
-              "signalOutput",
-              "consciousnessLevel",
-              "qgcActivation",
-            ];
 
-            for (const key of Object.keys(extractedMetrics)) {
-              const value = extractedMetrics[key];
-              if (!metricKeys.includes(key)) {
-                // Non-metric fields (eo, lack, etc.) can always be overwritten
-                merged[key] = value;
-                continue;
-              }
+          // Also try to extract from the report text and merge (text is secondary)
+          latestDiscoveryReport =
+            latestDiscovery.data?.newReport ||
+            latestDiscovery.data?.previousReport ||
+            latestDiscovery.data?.newReportSnippet ||
+            null;
 
-              const stored = latestDiscoveryMetrics[key];
-              const hasStored =
-                stored !== undefined &&
-                stored !== null &&
-                !Number.isNaN(stored);
-              const isNonZero = Number(value) !== 0;
-
-              if (!hasStored) {
-                // No stored value → accept whatever we extracted (even 0)
-                merged[key] = value;
-              } else if (isNonZero) {
-                // Only overwrite a stored value if the extracted one is non-zero
-                merged[key] = value;
-              }
-              // If we have a stored non-zero and extracted 0 → keep stored
-            }
-
-            latestDiscoveryMetrics = merged;
-            console.log(
-              "[loadLatestDiscoveryMetrics] Using metrics from discovery report (merged with stored metrics, preserving non-zero DB values):",
-              latestDiscoveryMetrics,
+          if (latestDiscoveryReport) {
+            const extractedMetrics = extractMetricsFromReport(
+              latestDiscoveryReport,
             );
+            if (
+              extractedMetrics &&
+              Object.keys(extractedMetrics).some(
+                (key) => extractedMetrics[key] !== undefined,
+              )
+            ) {
+              // Merge carefully: NEVER let extracted 0s overwrite non-zero stored metrics
+              const merged = { ...latestDiscoveryMetrics };
+              const metricKeys = [
+                "gravity",
+                "signalCoherence",
+                "signalOutput",
+                "consciousnessLevel",
+                "qgcActivation",
+              ];
+
+              for (const key of Object.keys(extractedMetrics)) {
+                const value = extractedMetrics[key];
+                if (!metricKeys.includes(key)) {
+                  // Non-metric fields (eo, lack, etc.) can always be overwritten
+                  merged[key] = value;
+                  continue;
+                }
+
+                const stored = latestDiscoveryMetrics[key];
+                const hasStored =
+                  stored !== undefined &&
+                  stored !== null &&
+                  !Number.isNaN(stored);
+                const isNonZero = Number(value) !== 0;
+
+                if (!hasStored) {
+                  // No stored value → accept whatever we extracted (even 0)
+                  merged[key] = value;
+                } else if (isNonZero) {
+                  // Only overwrite a stored value if the extracted one is non-zero
+                  merged[key] = value;
+                }
+                // If we have a stored non-zero and extracted 0 → keep stored
+              }
+
+              latestDiscoveryMetrics = merged;
+              console.log(
+                "[loadLatestDiscoveryMetrics] Using metrics from discovery report (merged with stored metrics, preserving non-zero DB values):",
+                latestDiscoveryMetrics,
+              );
+            }
           }
         }
       }
     }
-  }
 
-  // Always try to extract from diagnostic report to compare dates
-  let diagnosticReportMetrics = {};
-  let diagnosticReportDate = null;
-  if (existingDiagnostic?.data?.aiReport) {
-    const diagnosticReport = existingDiagnostic.data.aiReport;
-    diagnosticReportMetrics = extractMetricsFromReport(diagnosticReport);
-    // Get diagnostic report date (use data.generatedAt if available, which represents
-    // when the actual diagnostic report was generated. Fallback to updatedAt or createdAt)
-    diagnosticReportDate = existingDiagnostic.data?.generatedAt
-      ? new Date(existingDiagnostic.data.generatedAt)
-      : existingDiagnostic.updatedAt || existingDiagnostic.createdAt;
-    console.log(
-      "[loadLatestDiscoveryMetrics] Extracted metrics from diagnostic report:",
-      diagnosticReportMetrics,
-      {
-        date: diagnosticReportDate,
-        generatedAt: existingDiagnostic.data?.generatedAt,
-        createdAt: existingDiagnostic.createdAt,
-        updatedAt: existingDiagnostic.updatedAt,
-      },
-    );
-  }
+    // Always try to extract from diagnostic report to compare dates
+    let diagnosticReportMetrics = {};
+    let diagnosticReportDate = null;
+    if (existingDiagnostic?.data?.aiReport) {
+      const diagnosticReport = existingDiagnostic.data.aiReport;
+      diagnosticReportMetrics = extractMetricsFromReport(diagnosticReport);
+      // Get diagnostic report date (use data.generatedAt if available, which represents
+      // when the actual diagnostic report was generated. Fallback to updatedAt or createdAt)
+      diagnosticReportDate = existingDiagnostic.data?.generatedAt
+        ? new Date(existingDiagnostic.data.generatedAt)
+        : existingDiagnostic.updatedAt || existingDiagnostic.createdAt;
+      console.log(
+        "[loadLatestDiscoveryMetrics] Extracted metrics from diagnostic report:",
+        diagnosticReportMetrics,
+        {
+          date: diagnosticReportDate,
+          generatedAt: existingDiagnostic.data?.generatedAt,
+          createdAt: existingDiagnostic.createdAt,
+          updatedAt: existingDiagnostic.updatedAt,
+        },
+      );
+    }
 
-  // Check if we have valid discovery metrics
-  const hasDiscoveryMetrics =
-    latestDiscoveryMetrics &&
-    Object.keys(latestDiscoveryMetrics).length > 0 &&
-    (latestDiscoveryMetrics.gravity !== undefined ||
-      latestDiscoveryMetrics.signalCoherence !== undefined ||
-      latestDiscoveryMetrics.signalOutput !== undefined);
+    // Check if we have valid discovery metrics
+    const hasDiscoveryMetrics =
+      latestDiscoveryMetrics &&
+      Object.keys(latestDiscoveryMetrics).length > 0 &&
+      (latestDiscoveryMetrics.gravity !== undefined ||
+        latestDiscoveryMetrics.signalCoherence !== undefined ||
+        latestDiscoveryMetrics.signalOutput !== undefined);
 
-  // Check if we have valid diagnostic metrics
-  const hasDiagnosticMetrics =
-    diagnosticReportMetrics &&
-    Object.keys(diagnosticReportMetrics).length > 0 &&
-    (diagnosticReportMetrics.gravity !== undefined ||
-      diagnosticReportMetrics.signalCoherence !== undefined ||
-      diagnosticReportMetrics.signalOutput !== undefined);
+    // Check if we have valid diagnostic metrics
+    const hasDiagnosticMetrics =
+      diagnosticReportMetrics &&
+      Object.keys(diagnosticReportMetrics).length > 0 &&
+      (diagnosticReportMetrics.gravity !== undefined ||
+        diagnosticReportMetrics.signalCoherence !== undefined ||
+        diagnosticReportMetrics.signalOutput !== undefined);
 
-  // Determine which report is more recent
-  const discoveryReportDate =
-    latestDiscovery?.updatedAt || latestDiscovery?.createdAt;
+    // Determine which report is more recent
+    const discoveryReportDate =
+      latestDiscovery?.updatedAt || latestDiscovery?.createdAt;
 
-  // Decide which metrics to use based on date comparison
-  if (
-    hasDiscoveryMetrics &&
-    hasDiagnosticMetrics &&
-    discoveryReportDate &&
-    diagnosticReportDate
-  ) {
-    // Both reports exist - use the more recent one
-    const discoveryDate = new Date(discoveryReportDate);
-    const diagnosticDate = new Date(diagnosticReportDate);
+    // Decide which metrics to use based on date comparison
+    if (
+      hasDiscoveryMetrics &&
+      hasDiagnosticMetrics &&
+      discoveryReportDate &&
+      diagnosticReportDate
+    ) {
+      // Both reports exist - use the more recent one
+      const discoveryDate = new Date(discoveryReportDate);
+      const diagnosticDate = new Date(diagnosticReportDate);
 
-    if (discoveryDate > diagnosticDate) {
-      // Discovery is more recent - use discovery metrics, but merge if incomplete
+      if (discoveryDate > diagnosticDate) {
+        // Discovery is more recent - use discovery metrics, but merge if incomplete
+        const discoveryMetricCount = Object.keys(latestDiscoveryMetrics).filter(
+          (key) =>
+            latestDiscoveryMetrics[key] !== undefined &&
+            latestDiscoveryMetrics[key] !== null,
+        ).length;
+        const diagnosticMetricCount = Object.keys(
+          diagnosticReportMetrics,
+        ).filter(
+          (key) =>
+            diagnosticReportMetrics[key] !== undefined &&
+            diagnosticReportMetrics[key] !== null,
+        ).length;
+
+        if (
+          discoveryMetricCount < 3 &&
+          diagnosticMetricCount > discoveryMetricCount
+        ) {
+          // Merge: use diagnostic as base, discovery takes precedence for values it has
+          latestDiscoveryMetrics = {
+            ...diagnosticReportMetrics,
+            ...latestDiscoveryMetrics, // Discovery metrics take precedence
+          };
+          console.log(
+            "[loadLatestDiscoveryMetrics] Merged incomplete discovery metrics (more recent) with diagnostic metrics:",
+            latestDiscoveryMetrics,
+            {
+              discoveryDate: discoveryReportDate,
+              diagnosticDate: diagnosticReportDate,
+              discoveryCount: discoveryMetricCount,
+              diagnosticCount: diagnosticMetricCount,
+            },
+          );
+        } else {
+          console.log(
+            "[loadLatestDiscoveryMetrics] Using metrics from discovery report (more recent):",
+            latestDiscoveryMetrics,
+            {
+              discoveryDate: discoveryReportDate,
+              diagnosticDate: diagnosticReportDate,
+            },
+          );
+        }
+        // latestDiscoveryMetrics already set above (or merged), keep it
+      } else {
+        // Diagnostic is more recent - use diagnostic metrics
+        latestDiscoveryMetrics = diagnosticReportMetrics;
+        console.log(
+          "[loadLatestDiscoveryMetrics] Using metrics from diagnostic report (more recent):",
+          diagnosticReportMetrics,
+          {
+            diagnosticDate: diagnosticReportDate,
+            discoveryDate: discoveryReportDate,
+          },
+        );
+      }
+    } else if (hasDiscoveryMetrics) {
+      // Only discovery metrics available, but check if it's complete
+      // Count how many metrics are present
       const discoveryMetricCount = Object.keys(latestDiscoveryMetrics).filter(
         (key) =>
           latestDiscoveryMetrics[key] !== undefined &&
@@ -3461,110 +3635,54 @@ const loadLatestDiscoveryMetrics = async (
           diagnosticReportMetrics[key] !== null,
       ).length;
 
+      // If discovery metrics are incomplete (less than 3 metrics) and diagnostic has more complete metrics, merge them
       if (
         discoveryMetricCount < 3 &&
         diagnosticMetricCount > discoveryMetricCount
       ) {
-        // Merge: use diagnostic as base, discovery takes precedence for values it has
+        // Merge: use discovery metrics as base, fill missing from diagnostic
         latestDiscoveryMetrics = {
           ...diagnosticReportMetrics,
-          ...latestDiscoveryMetrics, // Discovery metrics take precedence
+          ...latestDiscoveryMetrics, // Discovery metrics take precedence for values they have
         };
         console.log(
-          "[loadLatestDiscoveryMetrics] Merged incomplete discovery metrics (more recent) with diagnostic metrics:",
+          "[loadLatestDiscoveryMetrics] Merged incomplete discovery metrics with diagnostic metrics:",
           latestDiscoveryMetrics,
-          {
-            discoveryDate: discoveryReportDate,
-            diagnosticDate: diagnosticReportDate,
-            discoveryCount: discoveryMetricCount,
-            diagnosticCount: diagnosticMetricCount,
-          },
         );
       } else {
         console.log(
-          "[loadLatestDiscoveryMetrics] Using metrics from discovery report (more recent):",
+          "[loadLatestDiscoveryMetrics] Using metrics from discovery report (only discovery available):",
           latestDiscoveryMetrics,
-          {
-            discoveryDate: discoveryReportDate,
-            diagnosticDate: diagnosticReportDate,
-          },
         );
       }
-      // latestDiscoveryMetrics already set above (or merged), keep it
-    } else {
-      // Diagnostic is more recent - use diagnostic metrics
+    } else if (hasDiagnosticMetrics) {
+      // Only diagnostic metrics available (or discovery doesn't have valid metrics)
       latestDiscoveryMetrics = diagnosticReportMetrics;
       console.log(
-        "[loadLatestDiscoveryMetrics] Using metrics from diagnostic report (more recent):",
+        "[loadLatestDiscoveryMetrics] Using metrics from diagnostic report:",
         diagnosticReportMetrics,
-        {
-          diagnosticDate: diagnosticReportDate,
-          discoveryDate: discoveryReportDate,
-        },
       );
-    }
-  } else if (hasDiscoveryMetrics) {
-    // Only discovery metrics available, but check if it's complete
-    // Count how many metrics are present
-    const discoveryMetricCount = Object.keys(latestDiscoveryMetrics).filter(
-      (key) =>
-        latestDiscoveryMetrics[key] !== undefined &&
-        latestDiscoveryMetrics[key] !== null,
-    ).length;
-    const diagnosticMetricCount = Object.keys(diagnosticReportMetrics).filter(
-      (key) =>
-        diagnosticReportMetrics[key] !== undefined &&
-        diagnosticReportMetrics[key] !== null,
-    ).length;
-
-    // If discovery metrics are incomplete (less than 3 metrics) and diagnostic has more complete metrics, merge them
-    if (
-      discoveryMetricCount < 3 &&
-      diagnosticMetricCount > discoveryMetricCount
-    ) {
-      // Merge: use discovery metrics as base, fill missing from diagnostic
-      latestDiscoveryMetrics = {
-        ...diagnosticReportMetrics,
-        ...latestDiscoveryMetrics, // Discovery metrics take precedence for values they have
-      };
+    } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
+      // Fallback to stored diagnostic metrics if extraction failed
+      latestDiscoveryMetrics = diagnosticMetrics;
       console.log(
-        "[loadLatestDiscoveryMetrics] Merged incomplete discovery metrics with diagnostic metrics:",
-        latestDiscoveryMetrics,
+        "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (extraction failed):",
+        diagnosticMetrics,
       );
     } else {
       console.log(
-        "[loadLatestDiscoveryMetrics] Using metrics from discovery report (only discovery available):",
-        latestDiscoveryMetrics,
+        "[loadLatestDiscoveryMetrics] No valid metrics found from any source",
       );
     }
-  } else if (hasDiagnosticMetrics) {
-    // Only diagnostic metrics available (or discovery doesn't have valid metrics)
-    latestDiscoveryMetrics = diagnosticReportMetrics;
-    console.log(
-      "[loadLatestDiscoveryMetrics] Using metrics from diagnostic report:",
-      diagnosticReportMetrics,
-    );
-  } else if (diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0) {
-    // Fallback to stored diagnostic metrics if extraction failed
-    latestDiscoveryMetrics = diagnosticMetrics;
-    console.log(
-      "[loadLatestDiscoveryMetrics] Using stored diagnostic metrics (extraction failed):",
-      diagnosticMetrics,
-    );
-  } else {
-    console.log(
-      "[loadLatestDiscoveryMetrics] No valid metrics found from any source",
-    );
-  }
 
-  return {
-    latestDiscovery,
-    latestDiscoveryReport,
-    latestDiscoveryMetrics,
-    latestUserSession, // Include latest user session for backward compatibility
-    allUserSessions, // Include all user sessions for discovery chat/reports
-  };
-};
+    return {
+      latestDiscovery,
+      latestDiscoveryReport,
+      latestDiscoveryMetrics,
+      latestUserSession, // Include latest user session for backward compatibility
+      allUserSessions, // Include all user sessions for discovery chat/reports
+    };
+  });
 
 /**
  * Extracts report date from discovery or diagnostic with UTC date and time
@@ -3724,8 +3842,8 @@ const prepareTranscript = (
         ? existingState.transcript
         : [];
 
-  // If user wants new diagnostic, clear transcript
-  const transcript = wantsNewDiagnostic ? [] : baseTranscript;
+  // When user wants new diagnostic from discovery, keep full conversation (do not clear transcript)
+  const transcript = baseTranscript;
 
   return transcript;
 };
@@ -3736,6 +3854,24 @@ const prepareTranscript = (
 const extractQuestionNumber = (text = "") => {
   const match = (text || "").match(/Q\s*(\d{1,2})/i);
   return match ? Number(match[1]) : null;
+};
+
+/**
+ * Returns true if the message looks like gibberish (random chars, repeated pattern, no vowels).
+ * Used for intake/CB to avoid treating unclear input as an answer.
+ */
+const isLikelyGibberishMessage = (content) => {
+  const t = (content || "").trim().toLowerCase();
+  if (!t || t.length === 0) return false;
+  if (t.length === 1 && !/^[a-z0-9]$/i.test(t)) return true;
+  const stripped = t.replace(/\s/g, "");
+  const uniqueChars = new Set(stripped);
+  if (stripped.length > 4 && uniqueChars.size <= 3) return true;
+  if (stripped.length > 10 && uniqueChars.size <= 6 && !/\s/.test(t)) return true;
+  const hasVowel = /[aeiou]/i.test(t);
+  const commonNoVowel = ["k", "y", "n", "hm", "mm", "hmm", "shh", "brb", "lol", "smh", "tbh", "ngl"];
+  if (!hasVowel && stripped.length <= 4 && !commonNoVowel.includes(t)) return true;
+  return false;
 };
 
 /**
@@ -3963,18 +4099,19 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
   if (!alpha || alpha.length < 1) return false;
 
   const prompt = `
-You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
+You are a binary classifier. Decide if the user's reply is an *answer* to the given question (or a valid response we should accept and move on from).
 
 Question: "${question || "N/A"}"
 Reply: "${reply}"
 
 Rules:
 - Reply only "yes" or "no".
-- "yes" if the reply attempts to answer; "no" if it is just a question, "I don't know", or unrelated.
+- "yes" if the reply attempts to answer OR is a valid short response (e.g. "none", "nothing", "not for now", "not right now", "i don't remember", "i don't know", "idk", "no idea", "nothing comes to mind", "skip", "pass") — treat these as acceptable answers.
+- "no" only if the reply is a question back, off-topic, or explicitly asking to rephrase/clarify the question.
 `;
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -4144,12 +4281,12 @@ const buildChatPrompts = async ({
     );
 
   if (isDiscoveryMode) {
-    // Discovery mode: fetch latest prompts from DB (Diagnostic Chat + Brain Prompt)
+    // Discovery mode: fetch latest prompts from DB in parallel (Diagnostic Chat + Brain Prompt)
     const { PromptType } = require("../utils/types");
-    const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
-    const discoveryChatPromptObj = await getLatestPromptFromDb(
-      PromptType.DIAGNOSTIC_CHAT,
-    );
+    const [brainPromptObj, discoveryChatPromptObj] = await Promise.all([
+      getLatestPromptFromDb(PromptType.BRAINPROMPT),
+      getLatestPromptFromDb(PromptType.DIAGNOSTIC_CHAT),
+    ]);
 
     const brainPrompt = brainPromptObj?.content || "";
     const discoveryChatPrompt = discoveryChatPromptObj?.content || "";
@@ -4176,21 +4313,20 @@ const buildChatPrompts = async ({
       discoveryChatPromptFromDb: discoveryChatPrompt, // Pass prompt from DB
     });
   } else {
-    // Diagnostic mode: fetch latest prompts from DB or use fallback
+    // Diagnostic mode: fetch latest prompts from DB in parallel
     const { PromptType } = require("../utils/types");
-    const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
-    const diagnosticPromptObj = await getLatestPromptFromDb(
-      PromptType.DIAGNOSTIC,
-    );
+    const [brainPromptObj, diagnosticPromptObj] = await Promise.all([
+      getLatestPromptFromDb(PromptType.BRAINPROMPT),
+      getLatestPromptFromDb(PromptType.DIAGNOSTIC),
+    ]);
 
     const brainPrompt = brainPromptObj?.content;
     const diagnosticPrompt = diagnosticPromptObj?.content;
 
     systemPrompt = `${brainPrompt}\n\n${diagnosticPrompt}\n\n${SUPPORT_LOCK_PROMPT}`;
 
-    // Diagnostic mode: freeform intake
-    const intakeTranscript =
-      wantsNewDiagnostic && !intakeHasStarted ? [] : transcript;
+    // Diagnostic mode: freeform intake (keep full transcript when switching from discovery so conversation continues)
+    const intakeTranscript = transcript;
 
     const intakeResumeNotice =
       wantsNewDiagnostic && !intakeHasStarted
@@ -4216,6 +4352,59 @@ const buildChatPrompts = async ({
 };
 
 /**
+ * Cleans up verbatim repetition loops in a transcript before sending to the AI.
+ * When the AI has repeated the same question word-for-word 2+ times, the model
+ * sees that pattern and copies it forever. This function collapses repeated
+ * assistant messages so the model sees fresh context instead of a copy-paste loop.
+ */
+const deduplicateTranscript = (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length < 4) return transcript;
+
+  const cleaned = [];
+  let lastAssistantContent = null;
+  let repeatCount = 0;
+
+  for (const msg of transcript) {
+    if (msg.role === "assistant") {
+      const content = msg.content || "";
+      const lower = content.toLowerCase();
+
+      // Hard-block the "here's the question again" pattern so the model
+      // never sees this phrasing in the history and doesn't copy it.
+      if (
+        lower.includes("here's the question again") ||
+        lower.includes("here is the question again")
+      ) {
+        cleaned.push({
+          role: "assistant",
+          content:
+            "(The user's response was unclear. I need to rephrase this question using different, simpler words and add an example to help them answer.)",
+        });
+        lastAssistantContent = null;
+        continue;
+      }
+
+      // Check if this assistant message is identical (or nearly identical) to the previous one
+      if (lastAssistantContent && content === lastAssistantContent) {
+        repeatCount++;
+        // Replace the repeated message with a short note so the model doesn't copy the pattern
+        cleaned.push({
+          role: "assistant",
+          content:
+            "(The user's response was unclear. I need to rephrase this question using different, simpler words and add an example to help them answer.)",
+        });
+        continue;
+      }
+      lastAssistantContent = content;
+      repeatCount = 0;
+    }
+    cleaned.push(msg);
+  }
+
+  return cleaned;
+};
+
+/**
  * Generate AI chat response
  */
 const generateChatResponse = async ({
@@ -4228,6 +4417,9 @@ const generateChatResponse = async ({
   temperature = 0.3,
   maxTokens = 400,
 }) => {
+  // Clean up verbatim repetition loops before sending to the AI
+  const cleanedTranscript = deduplicateTranscript(transcript);
+
   // Build messages array for AI
   let messages = [{ role: "system", content: systemPrompt }];
 
@@ -4242,7 +4434,7 @@ const generateChatResponse = async ({
   }
 
   messages.push(
-    ...transcript.map((m) => ({
+    ...cleanedTranscript.map((m) => ({
       role: m.role === "assistant" ? "assistant" : "user",
       content: m.content,
     })),
@@ -4305,9 +4497,19 @@ const saveChatState = async ({
 };
 
 /**
- * Get latest prompt from database by type
+ * Get latest prompt from database by type.
+ * Results are cached for 60 seconds to avoid hitting the DB on every chat message.
  */
+const _promptCache = new Map(); // key → { data, expiresAt }
+const PROMPT_CACHE_TTL_MS = 60_000; // 60 seconds
+
 const getLatestPromptFromDb = async (type = "Diagnostic") => {
+  const now = Date.now();
+  const cached = _promptCache.get(type);
+  if (cached && cached.expiresAt > now) {
+    return cached.data;
+  }
+
   try {
     const prompt = await Prompt.findOne({
       where: { type, isActive: true },
@@ -4315,12 +4517,15 @@ const getLatestPromptFromDb = async (type = "Diagnostic") => {
       raw: true,
     });
 
-    if (!prompt) return null;
+    const result = prompt
+      ? { ...prompt, fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}` }
+      : null;
 
-    return {
-      ...prompt,
-      fullPrompt: `${prompt.content}\n\n${SUPPORT_LOCK_PROMPT}`,
-    };
+    _promptCache.set(type, {
+      data: result,
+      expiresAt: now + PROMPT_CACHE_TTL_MS,
+    });
+    return result;
   } catch (error) {
     console.error(`Error fetching latest prompt of type ${type}:`, error);
     return null;
@@ -4353,6 +4558,7 @@ module.exports = {
   prepareTranscript,
   trackQuestionNumbers,
   extractQuestionNumber,
+  isLikelyGibberishMessage,
   SUPPORT_LOCK_PROMPT,
   isAiLikelyAnswer,
   generateChatResponse,
@@ -4362,4 +4568,5 @@ module.exports = {
   safeFindDiagnostic,
   cleanTranscriptText,
   calculateDiagnosticConfidence,
+  deduplicateTranscript,
 };

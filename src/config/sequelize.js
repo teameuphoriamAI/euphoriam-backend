@@ -9,16 +9,22 @@ if (!DATABASE_URL) {
 // Check if using Supabase/Neon (Session mode databases with strict limits)
 const isSupabaseOrNeon = 
   DATABASE_URL.includes("supabase.co") || 
-  DATABASE_URL.includes("neon.tech") ||
   DATABASE_URL.includes("neon.tech");
 
-if (isSupabaseOrNeon && !DATABASE_URL.includes("pooler")) {
+const isUsingPooler = DATABASE_URL.includes("pooler");
+
+if (isSupabaseOrNeon && !isUsingPooler) {
   console.warn("\n⚠️  WARNING: Using direct connection to Supabase/Neon (Session mode)");
   console.warn("   Session mode has very strict connection limits (usually 1 connection)");
   console.warn("   Consider using a connection pooler URL for better performance:");
   console.warn("   - Supabase: Use the 'Connection Pooling' URL from your dashboard");
   console.warn("   - Neon: Use the 'Pooled' connection string\n");
 }
+
+// Dynamic pool size: use larger pool when a connection pooler is available
+const poolMax = isUsingPooler ? 5 : (isSupabaseOrNeon ? 1 : 5);
+
+console.log(`[DB] Pool config: max=${poolMax}, pooler=${isUsingPooler}, supabase/neon=${isSupabaseOrNeon}`);
 
 const sequelize = new Sequelize(DATABASE_URL, {
   dialect: "postgres",
@@ -30,9 +36,9 @@ const sequelize = new Sequelize(DATABASE_URL, {
     },
   },
   pool: {
-    max: 1, // Absolute minimum for Session mode databases (Supabase/Neon free tier)
+    max: poolMax,
     min: 0, // Start with 0 connections, create as needed
-    acquire: 60000, // Increased: Maximum time (ms) to wait for a connection (60 seconds)
+    acquire: 60000, // Maximum time (ms) to wait for a connection (60 seconds)
     idle: 10000, // Maximum time (ms) a connection can be idle before being released
     evict: 1000, // Interval (ms) to check for idle connections
     handleDisconnects: true, // Automatically reconnect if connection is lost
@@ -47,6 +53,8 @@ const sequelize = new Sequelize(DATABASE_URL, {
       /SequelizeHostNotReachableError/,
       /SequelizeInvalidConnectionError/,
       /SequelizeConnectionTimedOutError/,
+      /SequelizeConnectionAcquireTimeoutError/,
+      /ConnectionAcquireTimeoutError/,
       /MaxClientsInSessionMode/,
     ],
   },
@@ -57,6 +65,48 @@ const sequelize = new Sequelize(DATABASE_URL, {
     },
   },
 });
+
+// ── Query semaphore for low-pool scenarios ──────────────────────────────
+// When pool max is 1, concurrent callers pile up waiting for the single
+// connection.  If they exceed the acquire timeout they all fail at once.
+// This semaphore limits in-flight DB work so callers queue in JS instead
+// of inside the pool, preventing cascade timeouts.
+const _dbQueue = [];
+let _dbInFlight = 0;
+const DB_MAX_CONCURRENT = poolMax; // match pool size
+
+const acquireDbSlot = () =>
+  new Promise((resolve) => {
+    if (_dbInFlight < DB_MAX_CONCURRENT) {
+      _dbInFlight++;
+      resolve();
+    } else {
+      _dbQueue.push(resolve);
+    }
+  });
+
+const releaseDbSlot = () => {
+  _dbInFlight--;
+  if (_dbQueue.length > 0) {
+    _dbInFlight++;
+    const next = _dbQueue.shift();
+    next();
+  }
+};
+
+/**
+ * Wraps an async DB operation with the semaphore so that at most
+ * DB_MAX_CONCURRENT operations run in parallel. Prevents pool-acquire
+ * timeouts when many requests arrive at once.
+ */
+const withDbSlot = async (fn) => {
+  await acquireDbSlot();
+  try {
+    return await fn();
+  } finally {
+    releaseDbSlot();
+  }
+};
 
 const backfillDiagnosticEmails = async () => {
   // Fill email from profile only for one row per email, avoiding unique violations
@@ -499,4 +549,4 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
   return models;
 };
 
-module.exports = { sequelize, initDb };
+module.exports = { sequelize, initDb, withDbSlot };

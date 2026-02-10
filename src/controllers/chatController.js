@@ -54,6 +54,7 @@ const saveChatIncrementally = async ({
   isChatEnded = false,
   forceNewChat = false,
   pdfSummary = null, // PDF report summary to save with chat
+  existingChatId = null, // when switching discovery → diagnostic: update this chat instead of creating new one
 }) => {
   try {
     if (!userId) {
@@ -61,16 +62,28 @@ const saveChatIncrementally = async ({
       return null;
     }
 
-    // If forcing new chat or transcript is empty (new session), always create new entry
-    const isNewSession = forceNewChat || transcript.length === 0;
+    // If forcing new chat or transcript is empty (new session), always create new entry (unless we're updating existingChatId)
+    const isNewSession = forceNewChat || (transcript.length === 0 && !existingChatId);
 
     console.log(
-      `[saveChatIncrementally] Entry: userId=${userId}, chatType=${chatType}, diagnosticId=${diagnosticId}, forceNewChat=${forceNewChat}, transcriptLength=${transcript.length}, isNewSession=${isNewSession}`,
+      `[saveChatIncrementally] Entry: userId=${userId}, chatType=${chatType}, diagnosticId=${diagnosticId}, forceNewChat=${forceNewChat}, transcriptLength=${transcript.length}, isNewSession=${isNewSession}, existingChatId=${existingChatId || "none"}`,
     );
 
-    // Find existing incomplete chat for this user and type (only if not forcing new)
+    // When switching discovery → diagnostic: update the existing chat by id (same chat, new type + transcript)
     let chat = null;
-    if (!isNewSession) {
+    if (existingChatId) {
+      chat = await Chat.findByPk(existingChatId);
+      if (chat && chat.userId !== userId) {
+        console.warn("[saveChatIncrementally] existingChatId does not belong to userId, ignoring");
+        chat = null;
+      }
+      if (chat) {
+        console.log(`[saveChatIncrementally] Updating existing chat ${chat.id} (switch to ${chatType}), transcript length=${transcript.length}`);
+      }
+    }
+
+    // Find existing incomplete chat for this user and type (only if not forcing new and not updating by id)
+    if (!chat && !isNewSession) {
       // Only look for incomplete chats that are recent (within last 24 hours)
       // This prevents reusing very old incomplete chats
       const { Op } = require("sequelize");
@@ -143,8 +156,10 @@ const saveChatIncrementally = async ({
       // Additional check: if the found chat's transcript doesn't match, it might be a different session
       // Only create new chat if current transcript is significantly shorter (user started over)
       // BUT: If isChatEnded is true, always update existing chat (we're ending it, transcript might be shorter due to closing message)
+      // BUT: If existingChatId was provided (e.g. switching discovery → diagnostic), always update that chat and replace transcript
       if (
         chat &&
+        !existingChatId &&
         chat.data?.transcript &&
         transcript.length > 0 &&
         !isChatEnded
@@ -209,6 +224,10 @@ const saveChatIncrementally = async ({
       // Update discoveryId if it was set after chat creation
       if (discoveryId && !chat.discoveryId) {
         updateData.discoveryId = discoveryId;
+      }
+      // When switching discovery → diagnostic, update chatType so the same chat continues as diagnostic
+      if (existingChatId && chatType) {
+        updateData.chatType = chatType;
       }
 
       await chat.update(updateData);

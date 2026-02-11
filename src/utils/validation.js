@@ -94,7 +94,40 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
   const normalizedReply = t.trim();
   const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
   if (simpleAnswers.includes(normalizedReply)) {
-    return true; // Accept yes/no answers immediately
+    // Only accept yes/no as valid answers if the question is actually a yes/no question
+    const questionText = (question || "").toLowerCase();
+    const isYesNoQuestion =
+      /^(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\s+/i.test(
+        question
+      ) || // Starts with auxiliary verb
+      /\?$/.test(question.trim()) && // Ends with question mark AND
+      /(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\s+/.test(
+        question
+      ); // Contains auxiliary verb
+
+    // Also check if question is open-ended (what/how/why/when/where/who/describe/explain)
+    const isOpenEnded =
+      /^(what|how|why|when|where|who|describe|explain|tell\s+me|share)/i.test(
+        question
+      ) ||
+      /\b(what|how|why|when|where|who|describe|explain|tell|share)\b/i.test(
+        question
+      );
+
+    if (isYesNoQuestion && !isOpenEnded) {
+      console.log(`[isAiLikelyAnswer] Accepting yes/no for yes/no question: "${question}"`);
+      return true; // Accept yes/no for yes/no questions
+    }
+
+    // STRICT HEURISTIC: If it's strictly open-ended (starts with what/how/etc and NOT a yes/no structure)
+    // then a solitary "yes" or "no" is NEVER a valid answer.
+    if (!isYesNoQuestion && isOpenEnded && simpleAnswers.includes(normalizedReply)) {
+      console.log(`[isAiLikelyAnswer] STRICT REJECT: soliltary "${normalizedReply}" for open-ended question: "${question}"`);
+      return false;
+    }
+
+    // For open-ended questions, "yes" or "no" alone is NOT a valid answer - pass to AI classifier
+    console.log(`[isAiLikelyAnswer] Passing yes/no for complex check to AI classifier: "${question}" (isYesNoQuestion=${isYesNoQuestion}, isOpenEnded=${isOpenEnded})`);
   }
 
   // Single letter answers (A, B, C, etc.) - only accept if question has multiple choice options
@@ -224,18 +257,32 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
   if (!alpha || alpha.length < 1) return false;
 
   const prompt = `
-You are a binary classifier. Decide if the user's reply is an *answer* to the given question.
+You are a binary classifier. Decide if the user's reply is a VALID, COMPLETE answer to the given question.
 
 Question: "${question || "N/A"}"
 Reply: "${reply}"
 
 Rules:
 - Reply only "yes" or "no".
-- "yes" if the reply attempts to answer; "no" if it is just a question, "I don't know", or unrelated.
+- "yes" ONLY if the reply provides substantive information that answers the question.
+- "no" if:
+  * The reply is just a question back
+  * The reply is "I don't know" or similar
+  * The reply is unrelated to the question
+  * The reply is a greeting, social comment, or off-topic remark
+  * The question asks "what/how/describe/explain" and the reply is just "yes" or "no" (insufficient detail)
+  * The question asks for a pattern/example/description and the reply is a single word that doesn't provide the requested information
+
+Examples:
+- Question: "What's the pattern that stops you?" Reply: "no" → Answer: no (insufficient - needs description)
+- Question: "What's the pattern that stops you?" Reply: "procrastination" → Answer: yes (provides pattern)
+- Question: "Do you feel anxious?" Reply: "yes" → Answer: yes (valid for yes/no question)
+- Question: "How are you?" Reply: "good" → Answer: no (social greeting, not diagnostic answer)
 `;
+
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -587,7 +634,7 @@ Reply:`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -741,7 +788,7 @@ Reply:`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -962,7 +1009,7 @@ Reply:`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -1061,7 +1108,7 @@ Reply:
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
@@ -1172,3 +1219,4 @@ export async function handleFinalize(req, res, input, context) {
 
   return finalizeNewDiagnostic(req, res, input, context);
 }
+

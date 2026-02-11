@@ -26,7 +26,7 @@ Your role is strictly to:
 - Reflect dimensions they may consider
 
 ⚖️ PROGRESS AND CONFIRMATION LOGIC
-1. If the user provides a short answer (e.g., "yes", "no", "A", "d,d,d"), accept it as progress if it fits the context.
+1. If the user provides a short, definitive answer (e.g., "none", "nothing", "A", "d,d,d"), accept it as progress if it fits the context.
 2. DO NOT perform redundant confirmations (e.g., "Are you 100% sure?") unless the user's answer is truly ambiguous or contradictory.
 3. If you understand the user's answer, acknowledge it and move to the NEXT question immediately.
 
@@ -489,6 +489,7 @@ const buildFreeformIntakePrompt = ({
   priorReport,
   wantsNewDiagnostic = false,
   confidenceResult = null,
+  aiAnswered = true,
 }) => {
   const displayName =
     typeof userName === "string" && userName.trim().length
@@ -533,6 +534,12 @@ When you imagine the version of your life that actually feels right — not impr
   const lastUserMsg =
     [...transcript].reverse().find((m) => m?.role === "user")?.content || "";
   const isLikelyGibberish = isLikelyGibberishMessage(lastUserMsg);
+
+  // If it's NOT gibberish but NOT an answer (aiAnswered === false), the bot should
+  // acknowledge warmly and redirect — NOT say "That didn't come through clearly."
+  // "That didn't come through clearly" is ONLY for actual gibberish / random characters.
+  const isNonAnswerButCoherent =
+    !isLikelyGibberish && aiAnswered === false && assistantMessages.length > 0;
 
   // Check if the previous assistant message already asked the same question (detect repeat loop)
   const lastAssistantMsg =
@@ -635,14 +642,17 @@ What specifically are you putting off? Is it a task, a conversation, a decision 
 
 🚨 VALID SHORT ANSWERS — ACCEPT AND MOVE TO NEXT QUESTION (do NOT ask for more):
 - These replies are VALID answers. Acknowledge briefly (e.g. "Got it.", "That's okay.", "Noted.") and move to the next question. Do NOT say "That didn't come through clearly" or ask them to share more.
-- Examples: "none", "nothing", "not for now", "not right now", "i don't remember", "i dont remember", "nothing comes to mind", "can't think of any", "no", "idk", "i don't know", "unsure", "not really", "not really sure", "no idea", "don't have one", "nothing specific", "skip", "pass".
-- For these, give a one-line acknowledgment (e.g. "Got it — no problem." or "That's valid data.") then ask the NEXT question (Q${coreQuestionCount + 1}) with **Q${coreQuestionCount + 1} — [Name]**.
+- Examples: "none", "nothing", "not for now", "not right now", "i don't remember", "i dont remember", "nothing comes to mind", "can't think of any", "unsure", "not really", "not really sure", "no idea", "don't have one", "nothing specific", "skip", "pass".
+- For these, give a one-line acknowledgment (e.g. "Got it — no problem." or "That's okay.") then ask the NEXT question (Q${coreQuestionCount + 1}) with **Q${coreQuestionCount + 1} — [Name]**.
 
-🚨 IMPORTANT: Use the "That didn't come through clearly" script ONLY when the message is **truly** unreadable (gibberish, random characters, or you genuinely cannot infer any meaning, greeting, or question).
-- If the user sends a greeting (e.g. "hi", "hii", "hello", "hey", "hey there", "yo", "good morning", or similar) or any real sentence/question (even if it's short, messy, or emotional), you MUST treat it as a valid message: briefly acknowledge/respond to what they said, then continue with the current or next question. Do **not** treat those as gibberish.
-- ONLY use a full greeting line (e.g. "Hi ${displayName}, good to meet you.") when the conversation has just started (no prior assistant messages) **and** the user's message is only a greeting. Do NOT add a fresh greeting for simple answers like "yes" or "no"; for those, follow the valid-answer rules above (e.g. "Got it." then continue with the next question).
-- Only when you cannot extract any clear words, intent, or question at all should you begin your reply with exactly this sentence:
-  "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
+🚨 IMPORTANT — GREETINGS & SOCIAL MESSAGES (hi, hello, how are you?, etc.):
+- If the user sends a greeting or casual/off-topic remark instead of answering, DO NOT say "That didn't come through clearly."
+- Instead: Respond warmly and naturally to their message (e.g. greet them back, answer their question), then gently redirect: "Let's get back to where we were."
+- Then REPHRASE the current question in simpler words. Do NOT move to the next question — stay on the same one.
+
+🚨 IMPORTANT — GIBBERISH / TRULY UNCLEAR INPUT (random characters, nonsense):
+- If the user truly didn't answer (gibberish, random characters, or explicitly asked to rephrase/clarify the question):
+- Say: "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
 - Then REPHRASE the current question in simpler words — NEVER repeat the same wording verbatim.
   - If you're on a core question (Q1–Q25): rephrase **Q${coreQuestionCount}**, keep the same Q-number, do NOT move to the next Q.
   - If you're on a clarifier (CB1–CB6): rephrase the current **CB${coreQuestionCount >= 25 && cbCount >= 1 ? `CB${cbCount}` : "Q" + coreQuestionCount}** only; do NOT move to the next CB. Stay on the same CB until they give a valid answer.
@@ -656,7 +666,7 @@ For short/single-word answers:
 - "money" → "Got it. So the field is reading **security** — resources, survival, stability. That's where the weight sits."
 - "nothing" / "none" / "not for now" / "i dont remember" → ACCEPT. Brief acknowledgment (e.g. "Got it." or "That's okay — that's valid.") then ask the NEXT question (Q${coreQuestionCount + 1}). Do NOT rephrase or ask for more.
 - "idk" / "i don't know" → ACCEPT. "That's okay." then ask the NEXT question. Do NOT say "Let me rephrase" or ask for more.
-- "yes" / "no" → "Clear. That confirms the pattern is [interpret what yes/no means in context]."
+- "idk" / "i don't know" → ACCEPT. "That's okay." then ask the NEXT question. Do NOT say "Let me rephrase" or ask for more.
 
 For emotional/body answers:
 - "chest" → "The chest is where we hold grief, longing, and unspoken truth. That's where the signal is getting compressed."
@@ -674,15 +684,64 @@ Current State:
 - Clarifiers Asked So Far: ${cbCount}
 
 ${
-  isLikelyGibberish || isRepeatLoop
+  isNonAnswerButCoherent
     ? coreQuestionCount >= 25 && cbCount >= 1
-      ? `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
+      ? `🚨🚨🚨 USER SENT A NON-ANSWER MESSAGE: "${lastUserMsg}"
+The user's message is coherent but is NOT an answer to your clarifier question (CB${cbCount}). You MUST:
+1. FIRST, you MUST acknowledge their exact words directly and specifically (DO NOT skip this):
+   - If user says "no" → YOU MUST START WITH: "I hear you said 'no', but I need a bit more detail here."
+   - If user says "yes" → YOU MUST START WITH: "Got it - you said 'yes', but I need a bit more detail to clarify this thread."
+   - If user says a greeting or closing (e.g. "hi", "bye", "goodbye") → Respond warmly and acknowledge their intent specifically.
+   - If user asks a question (e.g. "how many more?", "how are you?", "what is this?") → Answer their question directly and accurately.
+   - If a comment → Respond to the comment naturally. (Note: If the comment is nonsense or truly unclear, say: "That didn't come through clearly. Please share a bit more so I can map your structure accurately.")
+
+2. Then gently redirect: "Let's get back to where we were — I still need your input on this one."
+
+3. REPHRASE the current clarifier question **CB${cbCount}** using COMPLETELY DIFFERENT words. Add a short example.
+4. Do NOT move to CB${cbCount + 1}. Stay on CB${cbCount}.
+
+TEMPLATE FOR YOUR RESPONSE:
+"[Specific Acknowledgment]. [Gente Redirect].
+
+**CB${cbCount}**
+[Rephrased Question with Example]"
+
+🚫 FORBIDDEN: Do NOT say "That didn't come through clearly."
+🚫 FORBIDDEN: Do NOT give generic acknowledgments like "Hi, let's continue" without referencing what they said.
+🚫 FORBIDDEN: Do NOT ask CB${cbCount + 1}.`
+      : `🚨🚨🚨 USER SENT A NON-ANSWER MESSAGE: "${lastUserMsg}"
+The user's message is coherent but is NOT an answer to your diagnostic question (Q${coreQuestionCount}). You MUST:
+1. FIRST, you MUST acknowledge their exact words directly and specifically (DO NOT skip this):
+   - If user says "no" → YOU MUST START WITH: "I hear you said 'no', but I need a bit more detail to map your pattern accurately."
+   - If user says "yes" → YOU MUST START WITH: "Got it - you said 'yes', but I need a bit more detail on what specifically happens."
+   - If user says a greeting or closing (e.g. "hi", "bye", "goodbye") → Respond warmly and acknowledge their intent specifically.
+   - If user asks a question (e.g. "how many more?", "how are you?", "is this working?") → Answer their question directly and accurately.
+   - If a comment → Respond to the comment naturally. (Note: If the comment is nonsense or truly unclear, say: "That didn't come through clearly. Please share a bit more so I can map your structure accurately.")
+
+2. Then gently redirect: "Let's get back to where we were — I still need your input on this one."
+
+3. REPHRASE Q${coreQuestionCount} using COMPLETELY DIFFERENT words. Add a concrete example.
+4. Keep the **Q${coreQuestionCount} — [Name]** label but REWRITE the question body.
+
+TEMPLATE FOR YOUR RESPONSE:
+"[Specific Acknowledgment]. [Gente Redirect].
+
+**Q${coreQuestionCount} — [Name]**
+[Rephrased Question with Example]"
+
+🚫 FORBIDDEN: Do NOT say "That didn't come through clearly."
+🚫 FORBIDDEN: Do NOT give generic acknowledgments like "Hi, let's continue" without referencing what they said.
+🚫 FORBIDDEN: Do NOT advance to Q${coreQuestionCount + 1}.`
+    : isLikelyGibberish || isRepeatLoop
+      ? coreQuestionCount >= 25 && cbCount >= 1
+        ? `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
 The user's response is NOT a valid answer. You are on a CLARIFIER question (CB${cbCount}). You MUST:
-1. Start your reply with EXACTLY this sentence (verbatim, no changes):
+1. Briefly acknowledge what the user said (e.g. "I hear you.", "Got it.", etc.).
+2. Then say exactly this sentence (verbatim, no changes):
    "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
-2. Immediately after that line, REPHRASE the current clarifier question **CB${cbCount}** using COMPLETELY DIFFERENT words. Do NOT copy-paste or repeat the previous version.
-3. Add a short example to help them answer.
-4. Do NOT move to CB${cbCount + 1}. Stay on CB${cbCount} until they give a valid answer.
+3. Immediately after that line, REPHRASE the current clarifier question **CB${cbCount}** using COMPLETELY DIFFERENT words. Do NOT copy-paste or repeat the previous version.
+4. Add a short example to help them answer.
+5. Do NOT move to CB${cbCount + 1}. Stay on CB${cbCount} until they give a valid answer.
 
 🚫 FORBIDDEN: Do NOT ask CB${cbCount + 1} or the next question. REPHRASE CB${cbCount} only.
 ✅ REQUIRED: Write a FRESH, SIMPLER version of the same clarifier in your own words.
@@ -690,13 +749,14 @@ The user's response is NOT a valid answer. You are on a CLARIFIER question (CB${
 Example: "That didn't come through clearly. Please share a bit more so I can map your structure accurately.
 
 Let me put CB${cbCount} differently: [rewrite the question in simpler words and add an example]."`
-      : `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
+        : `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
 The user's response is NOT a valid answer. You MUST:
-1. Start your reply with EXACTLY this sentence (verbatim, no changes):
+1. Briefly acknowledge what the user said (e.g. "Noted.", "Hi there.", etc.).
+2. Then say exactly this sentence (verbatim, no changes):
    "That didn't come through clearly. Please share a bit more so I can map your structure accurately."
-2. Immediately after that line, REPHRASE Q${coreQuestionCount} using COMPLETELY DIFFERENT words. Do NOT copy-paste or repeat the previous version.
-3. Add a concrete example to help them answer — e.g., "Something like 'I'll do it tomorrow' or 'What's the point.'"
-4. Keep the **Q${coreQuestionCount} — [Name]** label but REWRITE the question body from scratch.
+3. Immediately after that line, REPHRASE Q${coreQuestionCount} using COMPLETELY DIFFERENT words. Do NOT copy-paste or repeat the previous version.
+4. Add a concrete example to help them answer — e.g., "Something like 'I'll do it tomorrow' or 'What's the point.'"
+5. Keep the **Q${coreQuestionCount} — [Name]** label but REWRITE the question body from scratch.
 
 🚫 FORBIDDEN: Do NOT say "Here's the question again:" and repeat the same text. That is WRONG.
 🚫 FORBIDDEN: Do NOT copy any part of the previous version of this question from the transcript.
@@ -707,7 +767,7 @@ Example of CORRECT response:
 
 **Q8 — Abduction Sentence**
 Think about the last time you stopped yourself from doing something important. What was the thought that showed up? Like 'I'll do it later' or 'It probably won't work anyway.' What's yours?"`
-    : ""
+      : ""
 }
 👉 ACTION:
 ${coreQuestionCount < 25 ? `- If user answered the last question: Ask Core Question Q${coreQuestionCount + 1} — prefix with **Q${coreQuestionCount + 1} — [Question Name]**` : ""}
@@ -2865,7 +2925,7 @@ Return ONLY valid JSON:
 }`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -3898,13 +3958,36 @@ const extractQuestionNumber = (text = "") => {
 const isLikelyGibberishMessage = (content) => {
   const t = (content || "").trim().toLowerCase();
   if (!t || t.length === 0) return false;
+
+  // Single character that isn't alphanumeric
   if (t.length === 1 && !/^[a-z0-9]$/i.test(t)) return true;
+
   const stripped = t.replace(/\s/g, "");
   const uniqueChars = new Set(stripped);
-  if (stripped.length > 4 && uniqueChars.size <= 3) return true;
-  if (stripped.length > 10 && uniqueChars.size <= 6 && !/\s/.test(t))
+
+  // Low entropy check (e.g., "aaaaaaa")
+  if (stripped.length > 4 && uniqueChars.size <= 2) return true;
+
+  // Keyboard mash check: Very long string with very few vowels relative to length
+  const vowels = t.match(/[aeiouy]/gi) || [];
+  const vowelRatio = vowels.length / stripped.length;
+  // If it's more than 6 letters and less than 15% vowels, it's likely a mash
+  if (stripped.length > 6 && vowelRatio < 0.15) {
+    console.log(
+      `[isLikelyGibberishMessage] Low vowel ratio: ${vowelRatio.toFixed(2)} for "${t}"`,
+    );
     return true;
-  const hasVowel = /[aeiou]/i.test(t);
+  }
+
+  // Consonant run check: 5 or more consonants in a row (excluding common names/words)
+  const consonantRuns = stripped.match(/[^aeiouy]{5,}/gi);
+  if (consonantRuns) {
+    console.log(
+      `[isLikelyGibberishMessage] Consonant run detected: "${consonantRuns[0]}" in "${t}"`,
+    );
+    return true;
+  }
+
   const commonNoVowel = [
     "k",
     "y",
@@ -3919,8 +4002,10 @@ const isLikelyGibberishMessage = (content) => {
     "tbh",
     "ngl",
   ];
+  const hasVowel = /[aeiouy]/i.test(t);
   if (!hasVowel && stripped.length <= 4 && !commonNoVowel.includes(t))
     return true;
+
   return false;
 };
 
@@ -3952,341 +4037,130 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
   const t = (reply || "").trim().toLowerCase();
   if (!t) return false;
   if (isQuestion(t)) return false;
-  // Hard fail on clarify/intents - but only if they indicate asking for clarification
-  // Short answers like "not sure" alone should still be accepted
+
   const clarifyPhrases = [
     "elaborate",
     "clarify",
-    "explain more",
-    "repeat the question",
+    "explain",
+    "repeat",
     "don't understand",
     "do not understand",
+    "not sure",
     "what do you mean",
     "can you rephrase",
     "could you rephrase",
+    "?",
   ];
-  // Only reject if the response contains clarification requests AND is longer than 2 words
-  // Short answers like "not sure" or single-word answers should pass through
-  const replyWordCount = t.split(/\s+/).filter((w) => w.length > 0).length;
-  if (replyWordCount > 2 && clarifyPhrases.some((p) => t.includes(p)))
+  if (clarifyPhrases.some((p) => t.includes(p))) {
+    console.log(
+      `[isAiLikelyAnswer] Rejecting as clarification request: "${t}"`,
+    );
     return false;
-  // Reject if response ends with question mark (user is asking a question)
-  if (t.endsWith("?")) return false;
+  }
 
-  // Heuristic: Recognize common simple answers immediately
   const normalizedReply = t.trim();
-  const simpleAnswers = [
-    "yes",
-    "no",
-    "y",
-    "n",
-    "yeah",
-    "yep",
-    "nope",
-    "nah",
-    // Common short answers to behavioral questions
-    "nothing",
-    "none",
-    "everything",
-    "all",
-    "both",
-    "neither",
-    "always",
-    "never",
-    "sometimes",
-    "often",
-    "rarely",
-    "maybe",
-    "idk",
-    "i don't know",
-    "unsure",
-    "depends",
-    // Common emotional/state answers
-    "fine",
-    "good",
-    "bad",
-    "okay",
-    "ok",
-    "great",
-    "terrible",
-    "awful",
-    "happy",
-    "sad",
-    "angry",
-    "anxious",
-    "stressed",
-    "calm",
-    "tired",
-  ];
+  const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
+  const questionText = (question || "").toLowerCase();
+
+  // Improved regex: check for open-ended intent anywhere in the question
+  const isOpenEnded =
+    /\b(what|how|why|when|where|who|describe|explain|tell|share|elaborate|clarify|give\s+an\s+example)\b/i.test(
+      questionText,
+    );
+
+  // Improved regex: check for auxiliary verbs that signal a yes/no question
+  const hasAuxiliaryVerb =
+    /\b(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\b/i.test(
+      questionText,
+    );
+  const endsWithQuestionMark = /\?$/.test(questionText.trim());
+  const isYesNoQuestion =
+    /^(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\b/i.test(
+      questionText,
+    ) ||
+    (endsWithQuestionMark && hasAuxiliaryVerb);
+
   if (simpleAnswers.includes(normalizedReply)) {
-    return true; // Accept simple answers immediately
-  }
-
-  // Single letter answers (A, B, C, etc.) - only accept if question has multiple choice options
-  const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
-  if (singleLetterAnswers.includes(normalizedReply)) {
-    // Check if the question contains multiple choice indicators
-    const questionText = (question || "").toLowerCase();
-    const hasMultipleChoice =
-      /\([a-f]\)/i.test(question) || // (A), (B), (C)
-      /^[a-f]\)/i.test(question) || // A), B), C) at start of line
-      /\*\*[a-f]\)/i.test(question) || // **A), **B), **C)
-      /\[a-f\]/i.test(question) || // [A], [B], [C]
-      /pick\s+[a-f]/i.test(question) || // "pick A", "pick B"
-      /choose\s+[a-f]/i.test(question) || // "choose A", "choose B"
-      /reply\s+with\s+[a-f]/i.test(question) || // "reply with A"
-      /option\s+[a-f]/i.test(question); // "option A"
-
-    if (hasMultipleChoice) {
-      return true; // Accept single letter only if question has multiple choice options
+    // CRITICAL: If a question is open-ended (What/How/Share), 'yes' or 'no' alone is NEVER a complete answer.
+    if (isOpenEnded) {
+      console.log(
+        `[isAiLikelyAnswer] REJECT: Solitary "${normalizedReply}" for open-ended question: "${question.substring(0, 50)}..."`,
+      );
+      return false;
     }
-    // If no multiple choice detected, don't accept single letter - let AI classifier decide
-  }
-
-  // Single number answers (1, 2, 3, etc.) - only accept if question has numbered options
-  const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
-  if (singleNumberAnswers.includes(normalizedReply)) {
-    const questionText = (question || "").toLowerCase();
-    const hasNumberedOptions =
-      /\([1-6]\)/i.test(question) || // (1), (2), (3)
-      /^[1-6]\)/i.test(question) || // 1), 2), 3) at start of line
-      /\*\*[1-6]\)/i.test(question) || // **1), **2), **3)
-      /\[1-6\]/i.test(question) || // [1], [2], [3]
-      /option\s+[1-6]/i.test(question); // "option 1"
-
-    if (hasNumberedOptions) {
-      return true; // Accept single number only if question has numbered options
+    // If it's a pure yes/no question (starts with auxiliary or ends with ? and has auxiliary), accept it.
+    if (isYesNoQuestion) {
+      console.log(
+        `[isAiLikelyAnswer] ACCEPT: Solitary "${normalizedReply}" for yes/no question: "${question.substring(0, 50)}..."`,
+      );
+      return true;
     }
-    // If no numbered options detected, don't accept single number - let AI classifier decide
+    // Default fallback for yes/no: reject if we're not sure it's a yes/no question.
+    console.log(
+      `[isAiLikelyAnswer] REJECT: Solitary "${normalizedReply}" for ambiguous question: "${question.substring(0, 50)}..."`,
+    );
+    return false;
   }
 
-  // Check for "move on", "next", "skip" type responses that indicate user wants to proceed
-  const moveOnPhrases = [
-    "move on",
-    "next question",
-    "next",
+  // Common semantic "non-answer" data points we accept as progress
+  const semanticAcceptables = [
+    "none",
+    "nothing",
+    "not for now",
+    "not right now",
+    "i don't remember",
+    "i don't know",
+    "idk",
+    "no idea",
+    "nothing comes to mind",
     "skip",
-    "move to next",
-    "continue",
-    "proceed",
-    "go to next",
+    "pass",
   ];
-  if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
-    return true; // Accept move-on requests as answers
+  if (semanticAcceptables.includes(normalizedReply)) {
+    console.log(
+      `[isAiLikelyAnswer] ACCEPT: Semantic non-answer: "${normalizedReply}"`,
+    );
+    return true;
   }
 
-  // Heuristic: Recognize common single-word location/state answers
-  const singleWordAnswers = [
-    "alone",
-    "together",
-    "home",
-    "work",
-    "bed",
-    "couch",
-    "chair",
-    "desk",
-    "balcony",
-    "outside",
-    "library",
-    "park",
-    "car",
-    "office",
-    "calm",
-    "relaxed",
-    "interrupted",
-    "available",
-    "free",
-    "busy",
-    "watched",
-    "on-call",
-  ];
-  if (singleWordAnswers.includes(normalizedReply)) {
-    return true; // Accept single-word descriptive answers immediately
-  }
-
-  // Heuristic: Recognize common descriptive answers (2-4 words that are likely answers)
-  // These are short, descriptive responses that answer location/state questions
-  const descriptiveAnswerPatterns = [
-    /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
-    /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
-    /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
-    /^(yes|no|maybe|sometimes|often|rarely|never|always)\s+(alone|interrupted|available)/i,
-  ];
-  if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
-    return true; // Accept descriptive answers immediately
-  }
-
-  // Heuristic: Short answers (2-4 words) that don't contain question words are likely answers
-  const words = normalizedReply.split(/\s+/).filter((w) => w.length > 0);
-  if (words.length >= 2 && words.length <= 4) {
-    const questionWords = [
-      "what",
-      "where",
-      "when",
-      "why",
-      "how",
-      "who",
-      "which",
-      "can",
-      "could",
-      "would",
-      "should",
-      "is",
-      "are",
-      "do",
-      "does",
-      "did",
-    ];
-    const hasQuestionWord = words.some((w) => questionWords.includes(w));
-    if (!hasQuestionWord && !normalizedReply.includes("?")) {
-      // Likely a descriptive answer - pass to AI classifier but be more lenient
-      // This will be handled by the AI classifier below
-    }
-  }
-
-  const alpha = t.match(/[A-Za-z]/g);
-  // Relaxed: Allow short answers to pass to the AI classifier
-  if (!alpha || alpha.length < 1) return false;
-
+  // AI Classification for complex responses
   const prompt = `
-You are a binary classifier. Decide if the user's reply is an *answer* to the given question (or a valid response we should accept and move on from).
+You are a binary classifier. Decide if the user's reply is a VALID, COMPLETE answer to the given question.
 
 Question: "${question || "N/A"}"
 Reply: "${reply}"
 
 Rules:
 - Reply only "yes" or "no".
-- "yes" if the reply attempts to answer OR is a valid short response (e.g. "none", "nothing", "not for now", "not right now", "i don't remember", "i don't know", "idk", "no idea", "nothing comes to mind", "skip", "pass") — treat these as acceptable answers.
-- "no" only if the reply is a question back, off-topic, or explicitly asking to rephrase/clarify the question.
+- "yes" ONLY if the reply provides substantive information that answers the question.
+- "no" if:
+  * The reply is just a question back
+  * The reply is "I don't know" or similar (unless it's a simple behavioral question where "idk" is valid)
+  * The reply is unrelated to the question
+  * The reply is a greeting, social comment, or off-topic remark
+  * The question asks "what/how/describe/explain/share" and the reply is just "yes" or "no" (insufficient detail)
+
+Examples:
+- Question: "What's the pattern that stops you?" Reply: "no" → Answer: no
+- Question: "Do you feel anxious?" Reply: "yes" → Answer: yes
 `;
+
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_completion_tokens: 20,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
-    return txt.includes("yes");
+    const result = txt.includes("yes");
+    console.log(
+      `[isAiLikelyAnswer] AI Classification result: ${result} for "${reply}"`,
+    );
+    return result;
   } catch (err) {
-    console.error("[isAiLikelyAnswer] fallback to heuristic", err);
-    // Fallback: If AI fails, use heuristic for simple answers
-    const normalizedReply = t.trim();
-    const simpleAnswers = ["yes", "no", "y", "n", "yeah", "yep", "nope", "nah"];
-    if (simpleAnswers.includes(normalizedReply)) {
-      return true;
-    }
-
-    // Single letter answers - only accept if question has multiple choice
-    const singleLetterAnswers = ["a", "b", "c", "d", "e", "f"];
-    if (singleLetterAnswers.includes(normalizedReply)) {
-      const questionText = (question || "").toLowerCase();
-      const hasMultipleChoice =
-        /\([a-f]\)/i.test(question) ||
-        /^[a-f]\)/i.test(question) ||
-        /\*\*[a-f]\)/i.test(question) ||
-        /\[a-f\]/i.test(question) ||
-        /pick\s+[a-f]/i.test(question) ||
-        /choose\s+[a-f]/i.test(question) ||
-        /reply\s+with\s+[a-f]/i.test(question) ||
-        /option\s+[a-f]/i.test(question);
-      if (hasMultipleChoice) {
-        return true;
-      }
-    }
-
-    // Single number answers - only accept if question has numbered options
-    const singleNumberAnswers = ["1", "2", "3", "4", "5", "6"];
-    if (singleNumberAnswers.includes(normalizedReply)) {
-      const questionText = (question || "").toLowerCase();
-      const hasNumberedOptions =
-        /\([1-6]\)/i.test(question) ||
-        /^[1-6]\)/i.test(question) ||
-        /\*\*[1-6]\)/i.test(question) ||
-        /\[1-6\]/i.test(question) ||
-        /option\s+[1-6]/i.test(question);
-      if (hasNumberedOptions) {
-        return true;
-      }
-    }
-    const moveOnPhrases = [
-      "move on",
-      "next question",
-      "next",
-      "skip",
-      "move to next",
-      "continue",
-      "proceed",
-      "go to next",
-    ];
-    if (moveOnPhrases.some((p) => normalizedReply.includes(p))) {
-      return true;
-    }
-    // Fallback: Check for single-word location/state answers
-    const singleWordAnswers = [
-      "alone",
-      "together",
-      "home",
-      "work",
-      "bed",
-      "couch",
-      "chair",
-      "desk",
-      "balcony",
-      "outside",
-      "library",
-      "park",
-      "car",
-      "office",
-      "calm",
-      "relaxed",
-      "interrupted",
-      "available",
-      "free",
-      "busy",
-      "watched",
-      "on-call",
-    ];
-    if (singleWordAnswers.includes(normalizedReply)) {
-      return true;
-    }
-    // Fallback: Check for descriptive answers
-    const descriptiveAnswerPatterns = [
-      /^(completely|fully|totally|mostly|usually|always|never|sometimes)\s+(alone|interrupted|available|on-call|watched|free|busy|calm|relaxed)/i,
-      /^(at|in|on|by|near)\s+(home|work|bed|couch|chair|desk|balcony|outside|library|park|car|office)/i,
-      /^(alone|together|with\s+people|by\s+myself|with\s+family|with\s+friends)/i,
-    ];
-    if (descriptiveAnswerPatterns.some((pattern) => pattern.test(reply))) {
-      return true;
-    }
-    // Fallback: Short answers (2-4 words) without question words are likely answers
-    const words = normalizedReply.split(/\s+/).filter((w) => w.length > 0);
-    if (words.length >= 2 && words.length <= 4) {
-      const questionWords = [
-        "what",
-        "where",
-        "when",
-        "why",
-        "how",
-        "who",
-        "which",
-        "can",
-        "could",
-        "would",
-        "should",
-        "is",
-        "are",
-        "do",
-        "does",
-        "did",
-      ];
-      const hasQuestionWord = words.some((w) => questionWords.includes(w));
-      if (!hasQuestionWord && !normalizedReply.includes("?")) {
-        // Likely a descriptive answer - accept it
-        return true;
-      }
-    }
-    return false;
+    console.error("[isAiLikelyAnswer] AI fail error:", err);
+    return false; // Fail safe to rephrasing
   }
 };
 /**
@@ -4395,6 +4269,7 @@ const buildChatPrompts = async ({
       priorReport: priorReportSnippet,
       wantsNewDiagnostic: wantsNewDiagnostic && !intakeHasStarted,
       confidenceResult,
+      aiAnswered,
     });
   }
 

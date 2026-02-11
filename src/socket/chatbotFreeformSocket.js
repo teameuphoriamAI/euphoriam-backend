@@ -171,7 +171,7 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
     }
 
     const aiResponse = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: safePromptContent },
         {
@@ -612,7 +612,7 @@ const wireChatbotFreeform = (io) => {
       }
 
       const aiResponse = await openai.chat.completions.create({
-        model: "gpt-5.2",
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: safeSystemPrompt },
           ...validTranscriptMessages,
@@ -778,7 +778,7 @@ const wireChatbotFreeform = (io) => {
       }
 
       const aiResponse = await openai.chat.completions.create({
-        model: "gpt-5.2",
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: safePromptContent },
           {
@@ -917,3 +917,4 @@ module.exports = {
   wireChatbotFreeform,
   chatbotFreeformNamespace: namespace,
 };
+

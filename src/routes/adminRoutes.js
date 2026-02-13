@@ -74,6 +74,9 @@ router.get("/user-sessions", asyncHandler(adminController.getAllUserSessions));
 router.get("/user-sessions/user", asyncHandler(adminController.getUserSessions));
 router.get("/user-sessions/latest", asyncHandler(adminController.getUserLatestSession));
 
+// Semantic search for user sessions (vector DB)
+router.post("/user-sessions/search", asyncHandler(adminController.searchUserSessionsSemantic));
+
 router.get("/user-sessions/:id", asyncHandler(adminController.singleUserSessionToUser));
 
 module.exports = router;

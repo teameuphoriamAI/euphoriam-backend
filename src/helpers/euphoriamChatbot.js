@@ -5,6 +5,14 @@ const { Prompt } = require("../models/promptModel");
 const { UserSession } = require("../models/userSessionModel");
 const openai = require("../config/openai");
 const { withDbSlot } = require("../config/sequelize");
+
+// Vector store for semantic search of historical context
+let vectorStoreService = null;
+try {
+  vectorStoreService = require("../services/vectorStoreService");
+} catch (err) {
+  console.warn("Vector store service not available:", err.message);
+}
 const isQuestion = (text = "") => text.trim().endsWith("?");
 
 const SUPPORT_LOCK_PROMPT = `
@@ -599,7 +607,7 @@ QUESTION FLOW:
 
 Your response must flow naturally WITHOUT any labels like "STEP 1" or "STEP 2". Follow this structure invisibly:
 
-1. Start with a brief, NATURAL acknowledgement (1 line) — use "Got it.", "That tracks.", "Makes sense." — NEVER "I hear you"
+1. Start with a brief, NATURAL acknowledgement of the LAST user message only — use "Got it.", "That tracks.", "Makes sense." — NEVER "I hear you". You MUST respond to what they said most recently (see "LAST USER MESSAGE" above), not to an older message in the transcript.
 2. Then reflect/interpret what their answer reveals (2-4 sentences)
 3. Add a grounding statement (1 line)
 4. Then ask the next question with a brief intro
@@ -714,6 +722,11 @@ For longer answers:
 Current State:
 - Core Questions Asked So Far: ${coreQuestionCount}
 - Clarifiers Asked So Far: ${cbCount}
+
+🚨 LAST USER MESSAGE (you MUST respond to this — it is the most recent thing they said):
+"${lastUserMsg}"
+
+🚨 MANDATORY: Your reply MUST first acknowledge or respond to the message above. Do not respond to an older message (e.g. "im sleepy" if they just said "my head hurts"). Address exactly what they said last. Then continue with the question or next step.
 
 ${
   isNonAnswerButCoherent
@@ -4143,12 +4156,37 @@ const buildChatPrompts = async ({
   allUserSessions = null, // All 1:1 coaching sessions (preferred)
   aiAnswered, // Passed from controller to avoid redundant LLM calls
   confidenceResult = null, // Added to pass confidence to intake prompt
+  userId = null, // User ID for vector search
+  historicalContext = null, // Pre-fetched historical context from vector DB
 }) => {
   let userPrompt;
   let systemPrompt;
   const lastUserMessage = (
     transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || ""
   ).toLowerCase();
+
+  // Fetch historical context from vector DB if not provided and userId available
+  let relevantHistory = historicalContext;
+  if (!relevantHistory && userId && vectorStoreService && lastUserMessage.length > 10) {
+    try {
+      // Check if user is asking about past conversations or sessions
+      const isAskingAboutHistory = /past|previous|before|earlier|last time|remember|history|old|session|chat/i.test(lastUserMessage);
+      
+      if (isAskingAboutHistory) {
+        relevantHistory = await vectorStoreService.getRelevantContext({
+          query: lastUserMessage,
+          userId: userId,
+          topK: 3,
+        });
+        
+        if (relevantHistory?.hasRelevantHistory) {
+          console.log(`[buildChatPrompts] Found ${relevantHistory.resultCount} relevant historical items for user query`);
+        }
+      }
+    } catch (err) {
+      console.warn("[buildChatPrompts] Error fetching historical context:", err.message);
+    }
+  }
   const sessionsToCheck =
     allUserSessions && allUserSessions.length > 0
       ? allUserSessions
@@ -4160,6 +4198,20 @@ const buildChatPrompts = async ({
     /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(
       lastUserMessage,
     );
+
+  // Build historical context section if available
+  let historicalContextSection = "";
+  if (relevantHistory?.hasRelevantHistory && relevantHistory?.context) {
+    historicalContextSection = `
+
+## Relevant Historical Context (from past conversations)
+The user may be referencing previous discussions. Here is relevant context from their chat history:
+
+${relevantHistory.context}
+
+Use this context to provide continuity and personalized responses when the user asks about past conversations.
+`;
+  }
 
   if (isDiscoveryMode) {
     // Discovery mode: fetch latest prompts from DB in parallel (Diagnostic Chat + Brain Prompt)
@@ -4179,6 +4231,11 @@ const buildChatPrompts = async ({
       allUserSessions,
       brainPrompt, // Pass brain prompt from DB
     );
+
+    // Add historical context from vector DB if available
+    if (historicalContextSection) {
+      systemPrompt += historicalContextSection;
+    }
 
     userPrompt = buildDiscoveryChatPrompt({
       transcript,
@@ -4204,7 +4261,8 @@ const buildChatPrompts = async ({
     const brainPrompt = brainPromptObj?.content;
     const diagnosticPrompt = diagnosticPromptObj?.content;
 
-    systemPrompt = `${brainPrompt}\n\n${diagnosticPrompt}\n\n${SUPPORT_LOCK_PROMPT}`;
+    // Add historical context from vector DB if available
+    systemPrompt = `${brainPrompt}\n\n${diagnosticPrompt}\n\n${SUPPORT_LOCK_PROMPT}${historicalContextSection}`;
 
     // Diagnostic mode: freeform intake (keep full transcript when switching from discovery so conversation continues)
     const intakeTranscript = transcript;

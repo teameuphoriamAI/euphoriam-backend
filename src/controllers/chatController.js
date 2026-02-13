@@ -45,6 +45,14 @@ const {
   detectBotSignaledEnd,
 } = require("../utils/validation");
 
+// Vector store service for semantic search
+const {
+  storeChatInVectorDB,
+  searchChats,
+  searchAllHistory,
+  getRelevantContext,
+} = require("../services/vectorStoreService");
+
 const saveChatIncrementally = async ({
   userId,
   diagnosticId = null,
@@ -234,6 +242,16 @@ const saveChatIncrementally = async ({
       console.log(
         `[saveChatIncrementally] Updated existing chat ${chat.id} for user ${userId} (${transcript.length} messages)`,
       );
+
+      // Store in vector DB for semantic search (async, non-blocking)
+      storeChatInVectorDB({
+        chatId: chat.id,
+        userId: userId,
+        transcript: transcriptToSave,
+        chatType: chatType,
+        metadata: { createdAt: chat.createdAt },
+      }).catch((err) => console.error("[saveChatIncrementally] Vector DB error:", err));
+
       return chat;
     } else {
       // SAFETY: Prevent saving corrupted transcripts on new chat creation
@@ -268,6 +286,17 @@ const saveChatIncrementally = async ({
         if (diagnostic && !diagnostic.chatId) {
           await diagnostic.update({ chatId: chat.id });
         }
+      }
+
+      // Store in vector DB for semantic search (async, non-blocking)
+      if (transcriptToSave.length > 0) {
+        storeChatInVectorDB({
+          chatId: chat.id,
+          userId: userId,
+          transcript: transcriptToSave,
+          chatType: chatType,
+          metadata: { createdAt: chat.createdAt },
+        }).catch((err) => console.error("[saveChatIncrementally] Vector DB error:", err));
       }
 
       return chat;
@@ -350,7 +379,157 @@ const getChatHistory = async (req, res) => {
   }
 };
 
+/**
+ * Semantic search for chat history
+ * Find relevant past conversations based on meaning, not just keywords
+ */
+const searchChatHistorySemantic = async (req, res) => {
+  try {
+    const { email } = req.user || {};
+    const { query, chatType, topK = 5 } = req.body || {};
+
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+
+    if (!query || query.trim().length === 0) {
+      return errorResponse(res, "Search query is required", 400);
+    }
+
+    // Find user by email
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return successResponse(res, "No chat history found", {
+        results: [],
+        total: 0,
+      });
+    }
+
+    // Search using vector store
+    const results = await searchChats({
+      query: query.trim(),
+      userId: user.id,
+      chatType: chatType || undefined,
+      topK: parseInt(topK) || 5,
+      minScore: 0.3,
+    });
+
+    // Fetch full chat data for the results
+    const chatIds = results.map((r) => parseInt(r.chatId)).filter(Boolean);
+    const fullChats = await Chat.findAll({
+      where: { id: chatIds },
+      attributes: [
+        "id",
+        "userId",
+        "dignosticId",
+        "discoveryId",
+        "chatType",
+        "isChatEnded",
+        "data",
+        "createdAt",
+        "updatedAt",
+      ],
+    });
+
+    // Merge full chat data with similarity scores
+    const enrichedResults = results.map((result) => {
+      const fullChat = fullChats.find((c) => c.id === parseInt(result.chatId));
+      return {
+        ...result,
+        transcript: fullChat?.data?.transcript || [],
+        pdfSummary: fullChat?.data?.pdfSummary || null,
+        diagnosticId: fullChat?.dignosticId,
+        discoveryId: fullChat?.discoveryId,
+        isChatEnded: fullChat?.isChatEnded,
+      };
+    });
+
+    return successResponse(res, "Search completed", {
+      results: enrichedResults,
+      total: enrichedResults.length,
+      query: query,
+    });
+  } catch (error) {
+    console.error("[searchChatHistorySemantic] Error:", error);
+    return errorResponse(res, "Failed to search chat history", 500);
+  }
+};
+
+/**
+ * Get relevant context from past conversations for the chatbot
+ * This is used internally by the chatbot to provide personalized responses
+ */
+const getContextForChatbot = async (userId, userMessage) => {
+  try {
+    if (!userId || !userMessage) {
+      return null;
+    }
+
+    const contextResult = await getRelevantContext({
+      query: userMessage,
+      userId: userId,
+      topK: 3,
+    });
+
+    return contextResult;
+  } catch (error) {
+    console.error("[getContextForChatbot] Error:", error);
+    return null;
+  }
+};
+
+/**
+ * Search across all history (chats and sessions)
+ */
+const searchAllChatAndSessionHistory = async (req, res) => {
+  try {
+    const { email } = req.user || {};
+    const { query, topK = 5 } = req.body || {};
+
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+
+    if (!query || query.trim().length === 0) {
+      return errorResponse(res, "Search query is required", 400);
+    }
+
+    // Find user by email
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return successResponse(res, "No history found", {
+        chats: [],
+        sessions: [],
+        combined: [],
+        total: 0,
+      });
+    }
+
+    // Search using vector store
+    const results = await searchAllHistory({
+      query: query.trim(),
+      userId: user.id,
+      topK: parseInt(topK) || 5,
+      minScore: 0.3,
+    });
+
+    return successResponse(res, "Search completed", {
+      chats: results.chats,
+      sessions: results.sessions,
+      combined: results.combined,
+      total: results.combined.length,
+      query: query,
+    });
+  } catch (error) {
+    console.error("[searchAllChatAndSessionHistory] Error:", error);
+    return errorResponse(res, "Failed to search history", 500);
+  }
+};
+
 module.exports = {
   saveChatIncrementally,
   getChatHistory,
+  searchChatHistorySemantic,
+  searchAllChatAndSessionHistory,
+  getContextForChatbot,
 };

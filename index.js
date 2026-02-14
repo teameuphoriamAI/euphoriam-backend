@@ -4,6 +4,7 @@ const app = require("./src/app");
 const { initDb, sequelize } = require("./src/config/sequelize");
 const cors = require("cors");
 const { initSockets } = require("./src/socket");
+const { initChromaDB, getChatCollection, getSessionCollection } = require("./src/config/chromadb");
 
 /* 🔓 CORS CONFIG */
 app.use(
@@ -20,7 +21,18 @@ const server = http.createServer(app);
 let io;
 
 initDb()
-  .then(() => {
+  .then(async () => {
+    // Initialize ChromaDB for vector search
+    try {
+      await initChromaDB();
+      await getChatCollection();
+      await getSessionCollection();
+      console.log("ChromaDB initialized successfully");
+    } catch (chromaErr) {
+      console.warn("ChromaDB initialization failed (non-fatal):", chromaErr.message);
+      // Continue without vector DB - the app will still work, just without semantic search
+    }
+
     io = initSockets(server);
 
     server.listen(PORT, () => {

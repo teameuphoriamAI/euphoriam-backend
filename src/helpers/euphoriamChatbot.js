@@ -5,6 +5,14 @@ const { Prompt } = require("../models/promptModel");
 const { UserSession } = require("../models/userSessionModel");
 const openai = require("../config/openai");
 const { withDbSlot } = require("../config/sequelize");
+
+// Vector store for semantic search of historical context
+let vectorStoreService = null;
+try {
+  vectorStoreService = require("../services/vectorStoreService");
+} catch (err) {
+  console.warn("Vector store service not available:", err.message);
+}
 const isQuestion = (text = "") => text.trim().endsWith("?");
 
 const SUPPORT_LOCK_PROMPT = `
@@ -342,39 +350,82 @@ FOLLOW THE DB BRAIN PROMPT FOR STRUCTURE, AND USE THESE HEADINGS EXACTLY:
   - Use blockquote format: > "**Correction Statement**: [exact correction]".
   - Include ONE daily rep (2–10 min) with explicit steps + win condition.
 
-3. **METRICS GAUGE** — Must show ACTUAL VALUES for parsing (for FULL_REPORT):
-- QGC Activation:      [gauge] XX%
-- Consciousness Level: [gauge] X.X
-- Gravity (Load):      [gauge] XX%
-- Signal Coherence:    [gauge] XX%
-- Signal Output:       [gauge] XX%
+3. **METRICS GAUGE (Current Snapshot)** — MANDATORY, must appear in the report:
+Format exactly like this with actual calculated values:
+QGC Activation:      ███████░░░░░░ XX%
+Consciousness Level: ████████░░░░ X.X
+Gravity (Load):      ██████████░░ XX%
+Signal Coherence:    ████░░░░░░░░ XX%
+Signal Output:       ██░░░░░░░░░░ XX%
 
-4. **METRICS INTERPRETATION TABLE**:
-- For each metric (QGC, CL, Gravity, Coherence, Output): briefly explain Low / Mid / High meaning.
+4. **METRICS INTERPRETATION TABLE** — MANDATORY:
+- For each metric (QGC Activation, Consciousness Level, Gravity, Signal Coherence, Signal Output):
+- Explain what the current value means (Low / Mid / High) in 1-2 sentences.
 
-5. **FRICTION ANALYSIS** (3 levels, high depth):
-- Surface Friction (Physics Level 1): Behavioural/Result friction.
-- Vortex Friction (Physics Level 2): Internal identity/Emotional friction.
-- Template Friction (Physics Level 3): Inherited/Ancestral structural friction.
-- State a single "Primary Friction Source" sentence.
+5. **FRICTION ANALYSIS** — MANDATORY (3 levels, high depth):
+- Surface Friction (Physics Level 1): Behavioural/Result friction — what's visibly not working.
+- Vortex Friction (Physics Level 2): Internal identity/Emotional friction — what's driving the behaviour.
+- Template Friction (Physics Level 3): Inherited/Ancestral structural friction — where did this pattern originate.
+- **Primary Friction Source**: State a single sentence identifying the core friction.
 
-6. **DISCOVERY RECOMMENDATIONS (Alignment / Freedom / Prosperity)**:
-- 2–3 bullets each; include exactly what to look for and what to log (Symbol → Rule → Action mapping).
+6. **DISCOVERY RECOMMENDATIONS (Alignment / Freedom / Prosperity)** — MANDATORY:
+- **Alignment**: 2–3 bullets — what to look for and log related to identity/purpose alignment.
+- **Freedom**: 2–3 bullets — what to look for and log related to releasing constraints.
+- **Prosperity**: 2–3 bullets — what to look for and log related to receiving/expansion.
+- Use Symbol → Rule → Action mapping for each.
 
-7. **RESOURCE RECOMMENDATIONS (UC MODULE / LIVE CALLS / AI COACH)**:
-- Recommend only what they have access to (respect access_flags).
+7. **UC MODULE RECOMMENDATION / LIVE CALLS / AI COACH RESOURCES** — MANDATORY:
+- Recommend resources they have access to (assume they have access unless told otherwise).
 - Max 3 items total across all resource types.
-- For each: WHY (mapped to constraint + opposite) + WHEN + WHAT TO LOG.
+- For each: WHY (mapped to constraint + opposite) + WHEN (timing recommendation) + WHAT TO LOG (what to observe).
 
-8. **FINAL SUMMARY + DIAGNOSTIC METADATA**:
-- FINAL SUMMARY: Tight, decisive, warm, "Legend" tone recap (3+ paragraphs).
-- DIAGNOSTIC METADATA: include structural snapshot, signature_id, gravity, CL, and any key routing meta needed by the app.
+8. **EVOLUTION NOTES** — MANDATORY:
+- Pattern detected (what structural shift is emerging)
+- Metric impact (what rises, what drops as they work the rep)
+- Next stabilisation action (what to do after the 7-day thread)
 
-Instructions for outputting:
-- 1) YOUR LIVED CONSTRAINT (THE RED / INVISIBLE BARRIER)
-- 2) PERSONALISED TREATMENT PLAN (7-Day Thread + Weekly Cadence + Sabotage Pre-empt)
-- 3) REQUIRED PREDICTIONS + FALSIFIERS + CONFIRMATION TEST
-- 4) REPORT (Use FULL_REPORT structure with ALL sections in high depth; do NOT skip any section between 1 and 10)
+9. **FINAL SUMMARY + DIAGNOSTIC METADATA** — MANDATORY:
+- **FINAL SUMMARY**: Tight, decisive, warm, "Legend" tone recap (3+ paragraphs). This explains me — and I know exactly what to do next.
+- **DIAGNOSTIC METADATA**: Include:
+  - Structural Snapshot
+  - Signature ID (e.g., NE_C_F)
+  - Gravity %
+  - Consciousness Level
+  - Key Routing Meta (any routing info for the app)
+
+🚨🚨🚨 MANDATORY OUTPUT STRUCTURE (in this exact order):
+1) **YOUR LIVED CONSTRAINT (THE RED / INVISIBLE BARRIER)** — 4-7 sentences describing the structural limiter
+2) **PERSONALISED TREATMENT PLAN**:
+   - A) Constraint Removal Objective (1 line)
+   - B) The 3 levers we'll pull (3 bullets)
+   - C) Your 7-Day Treatment Thread (Day 1–7; one line each)
+   - D) Weekly Cadence (Daily: AI coach + rep; 2-3x/week: UC/meditation; Live calls if available)
+   - E) Success Criteria (3 bullets)
+   - F) Sabotage Pre-empt (protector script: what it will say + what they will say + what they will do)
+3) **REQUIRED PREDICTIONS + FALSIFIERS + CONFIRMATION TEST**:
+   - 3 predictions (Trigger→Protector→Behaviour for next 7 days)
+   - 2 falsifiers (what would disprove the signature)
+   - 1 confirmation micro-test (30 seconds to validate Failure vs Rejection protector)
+4) **REPORT** — This header MUST be followed by the FULL diagnostic content below (do NOT just output "REPORT" as a standalone header):
+   - ✨ BEFORE YOU READ THIS DIAGNOSTIC (intro paragraph)
+   - SECTION 1 — Structure Type Detection (4-6 paragraphs)
+   - SECTION 2 — Avoidance Behaviour Mapping (4-6 paragraphs)
+   - SECTION 3 — Vortex Settings (4-6 paragraphs)
+   - SECTION 4 — 3D Code / Gravity (4-6 paragraphs)
+   - SECTION 5 — Consciousness Level (CL) (4-6 paragraphs)
+   - SECTION 6 — Quantum Genius Codes (QGC) (4-6 paragraphs)
+   - SECTION 7 — Signal Coherence (4-6 paragraphs)
+   - SECTION 8 — Signal Output (4-6 paragraphs)
+   - SECTION 9 — Angle of Growth (4-6 paragraphs)
+   - SECTION 10 — First Correction (4-6 paragraphs with daily rep)
+   - METRICS GAUGE (Current Snapshot) with visual bars
+   - METRICS INTERPRETATION TABLE
+   - FRICTION ANALYSIS (3 levels)
+   - DISCOVERY RECOMMENDATIONS (Alignment / Freedom / Prosperity)
+   - UC MODULE RECOMMENDATION / LIVE CALLS / AI COACH RESOURCES
+   - EVOLUTION NOTES
+   - FINAL SUMMARY + DIAGNOSTIC METADATA
+   🚨 ALL sections above MUST appear in full after the "REPORT" header. Do NOT skip any section.
 
 - **TONE**: Nathan (Tight, direct, human, cheeky, "Legend").
 - **IP PROTECTION**: NEVER reveal the exact formula "Signal = (QGC × CL) × Gravity".
@@ -512,23 +563,55 @@ The first piece is about direction — where you actually want to go.
 **Q1 — Desired Reality**
 When you imagine the version of your life that actually feels right — not impressive, not "successful," but *true* — what is different from how you're living now?`;
 
-  // Count unique questions (Q1-Q25) asked so far by parsing the content
+  // Count questions ANSWERED — use LAST (assistant Q, user) pair so we ask the sequential next (Q9→Q10, not Q11)
   const assistantMessages = transcript.filter(
     (m) => m?.role === "assistant" && m.content,
   );
+  let lastAnsweredQ = 0;
+  for (let i = 0; i < transcript.length - 1; i++) {
+    const curr = transcript[i];
+    const next = transcript[i + 1];
+    if (
+      curr?.role === "assistant" &&
+      next?.role === "user" &&
+      /Q\d+/i.test(curr.content || "") &&
+      !/CB\d+/i.test(curr.content || "")
+    ) {
+      const match = (curr.content || "").match(/Q(\d+)/i);
+      if (match) lastAnsweredQ = parseInt(match[1], 10);
+    }
+  }
   const qNums = assistantMessages
     .map((m) => {
-      const match = m.content.match(/Q(\d+)/i);
-      return match ? parseInt(match[1]) : null;
+      const match = (m.content || "").match(/Q(\d+)/i);
+      return match ? parseInt(match[1], 10) : null;
     })
     .filter((n) => n !== null);
   const uniqueQNums = [...new Set(qNums)];
-  const coreQuestionCount = uniqueQNums.length;
+  const coreQuestionCount =
+    lastAnsweredQ > 0 ? lastAnsweredQ : uniqueQNums.length;
 
-  // Count clarifier questions (CB1-CB6)
-  const cbCount = assistantMessages.filter((m) =>
+  // Count clarifier questions (CB1-CB6) and find the LAST CB asked (for rephrase — must stay on same CB)
+  const cbMessages = assistantMessages.filter((m) =>
     /CB\d+/i.test(m.content || ""),
-  ).length;
+  );
+  const cbCount = cbMessages.length;
+  let lastCBAsked = 0;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const m = transcript[i];
+    if (
+      m?.role === "assistant" &&
+      i + 1 < transcript.length &&
+      transcript[i + 1]?.role === "user"
+    ) {
+      const match = (m.content || "").match(/CB(\d+)/i);
+      if (match) {
+        lastCBAsked = parseInt(match[1], 10);
+        break;
+      }
+    }
+  }
+  const currentCB = lastCBAsked > 0 ? lastCBAsked : cbCount;
 
   // Detect if the last user message is gibberish / unclear / not a real answer
   const lastUserMsg =
@@ -568,18 +651,18 @@ ${confidenceBlock}
 🚨🚨🚨 CORE QUESTION FLOOR (STRICT):
 - You MUST ask and receive answers for exactly 25 core questions (Q1 through Q25).
 - You are currently at Core Question: ${coreQuestionCount}/25.
+${coreQuestionCount > 0 ? `- The user just answered Q${coreQuestionCount}. The NEXT question you MUST ask is Q${coreQuestionCount + 1} — and ONLY Q${coreQuestionCount + 1}. Do NOT skip to Q${coreQuestionCount + 2} or any later number.` : ""}
 - DO NOT attempt to finalize or signal completion until Core Question 25 has been answered.
 
 QUESTION FLOW:
 1. **Core Intake (Q1 - Q25)**: One question at a time.
-2. **Evaluation Point (After Q25)**: Only after Q25 is answered, evaluate if you have enough information (Confidence ≥ 85%).
-3. **Clarifier Burst (CB1 - CB6)**: If Confidence < 85% after Q25, you MUST:
-   - FIRST explain WHY you're asking additional questions. Do NOT jump straight to "CB1: ...". Tell the user we've completed the 25 core questions, then in 1–2 sentences say why a few more questions will help (e.g. "to pin down your trigger pattern", "to clarify how this shows up in different areas", "to make your report more accurate"). Use the confidence reasoning if provided.
-   - THEN ask the clarifier question (CB1, then CB2, etc.). For each CB, you may briefly say what this question is for (e.g. "This one helps me map the loop more clearly:" before CB1).
+2. **Evaluation Point (After Q25)**: Only after Q25 is answered, check Confidence. If Confidence ≥ 85%, use the Completion Signal immediately (report will be auto-generated and emailed to the user). If Confidence < 85%, go to step 3.
+3. **Clarifier Burst (CB1 - CB6, max 6)**: If Confidence < 85% after Q25, you MUST ask up to 6 clarifier questions until Confidence ≥ 85%:
+   - FIRST explain WHY you're asking additional questions. Do NOT jump straight to "CB1: ...". Tell the user we've completed the 25 core questions, then in 1–2 sentences say why a few more questions will help (e.g. "to pin down your trigger pattern", "to make your report more accurate"). Use the CONFIDENCE DATA "Reasoning" (if shown above).
+   - THEN ask the clarifier question (CB1, then CB2, … up to CB6). For each CB, you may briefly say what this question is for.
    - Example opening: "We've completed the core 25-question intake. To make your diagnostic as accurate as possible, I need to ask a few targeted follow-ups — mainly to clarify [specific reason from context]. Here's the first one: **CB1** ..."
-   - Use the CONFIDENCE DATA "Reasoning" (if shown above) when explaining why you're asking these follow-ups.
-4. **After Each Clarifying Question**: Re-evaluate confidence. If Confidence ≥ 85% after answering a clarifying question, IMMEDIATELY use the Completion Signal. Do NOT ask another clarifying question.
-5. **CB gibberish/unclear**: If the user's reply to a clarifier (CB1–CB6) is gibberish or not a real answer, treat it like core questions: say "That didn't come through clearly...", REPHRASE the same CB in simpler words, and do NOT move to the next CB until they give a valid answer.
+4. **After Each Clarifying Question**: Re-evaluate confidence. If Confidence ≥ 85%, IMMEDIATELY use the Completion Signal — the system will then auto-generate the report and email it to the user. If the user just answered CB6 (the 6th clarifier), also use the Completion Signal immediately — the system will generate and email the report. Do NOT ask another CB. If still < 85% and fewer than 6 CBs asked, ask the next CB.
+5. **CB gibberish/unclear**: If the user's reply to a clarifier (CB1–CB6) is gibberish or not a real answer, say "That didn't come through clearly...", REPHRASE the same CB in simpler words, and do NOT move to the next CB until they give a valid answer.
 
 🚨🚨🚨 CRITICAL RESPONSE FORMAT - ACKNOWLEDGEMENT STYLE:
 
@@ -591,6 +674,9 @@ QUESTION FLOW:
 - "Let's get back to where we were"
 - "I'm here to assist you through this process"
 - "I still need your input on this one"
+- "that seems like a lot of information" / "that's a lot at once" / "let's simplify it a bit"
+
+When the user gives a long, detailed answer: ACKNOWLEDGE it (e.g. "Got it."), reflect what it reveals, and move to the next question. Do NOT ask them to simplify or repeat.
 
 ✅ INSTEAD, USE NATURAL RESPONSES:
 - "Got it." / "That tracks." / "Noted." / "Makes sense."
@@ -599,7 +685,7 @@ QUESTION FLOW:
 
 Your response must flow naturally WITHOUT any labels like "STEP 1" or "STEP 2". Follow this structure invisibly:
 
-1. Start with a brief, NATURAL acknowledgement (1 line) — use "Got it.", "That tracks.", "Makes sense." — NEVER "I hear you"
+1. Start with a brief, NATURAL acknowledgement of the LAST user message only — use "Got it.", "That tracks.", "Makes sense." — NEVER "I hear you". You MUST respond to what they said most recently (see "LAST USER MESSAGE" above), not to an older message in the transcript.
 2. Then reflect/interpret what their answer reveals (2-4 sentences)
 3. Add a grounding statement (1 line)
 4. Then ask the next question with a brief intro
@@ -688,7 +774,7 @@ What specifically are you putting off? Is it a task, a conversation, a decision 
 - Do NOT say "Noted" or be cold/dismissive about invalid input.
 - Then REPHRASE the current question in simpler words — NEVER repeat the same wording verbatim.
   - If you're on a core question (Q1–Q25): rephrase **Q${coreQuestionCount}**, keep the same Q-number, do NOT move to the next Q.
-  - If you're on a clarifier (CB1–CB6): rephrase the current **CB${coreQuestionCount >= 25 && cbCount >= 1 ? `CB${cbCount}` : "Q" + coreQuestionCount}** only; do NOT move to the next CB. Stay on the same CB until they give a valid answer.
+  - If you're on a clarifier (CB1–CB6): rephrase the current **CB${coreQuestionCount >= 25 && cbCount >= 1 ? `CB${currentCB}` : "Q" + coreQuestionCount}** only; do NOT move to the next CB. Stay on the same CB until they give a valid answer.
 - Add a short example or analogy to make it easier to answer.
 - Do NOT move to the next question.
 
@@ -715,11 +801,16 @@ Current State:
 - Core Questions Asked So Far: ${coreQuestionCount}
 - Clarifiers Asked So Far: ${cbCount}
 
+🚨 LAST USER MESSAGE (you MUST respond to this — it is the most recent thing they said):
+"${lastUserMsg}"
+
+🚨 MANDATORY: Your reply MUST first acknowledge or respond to the message above. Do not respond to an older message (e.g. "im sleepy" if they just said "my head hurts"). Address exactly what they said last. Then continue with the question or next step.
+
 ${
   isNonAnswerButCoherent
     ? coreQuestionCount >= 25 && cbCount >= 1
       ? `🚨🚨🚨 USER SENT A NON-ANSWER MESSAGE: "${lastUserMsg}"
-The user's message is coherent but does not directly answer your clarifier question (CB${cbCount}). You MUST:
+The user's message is coherent but does not directly answer your clarifier question (CB${currentCB}). You MUST:
 1. RESPOND DIRECTLY AND NATURALLY — just answer, don't announce it:
    - "how many left?" → "Just a few more."
    - "am i okay?" → "You're doing fine."
@@ -728,13 +819,14 @@ The user's message is coherent but does not directly answer your clarifier quest
    🚫 NEVER start with "I hear you" or "You mentioned" — just respond naturally like a human would.
 
 2. Then just ask the question — no formal redirect phrase needed:
-   - "That's sweet — I'm right here. So — **CB${cbCount}...**"
+   - "That's sweet — I'm right here. So — **CB${currentCB}...**"
 
-3. REPHRASE **CB${cbCount}** using COMPLETELY DIFFERENT words than before.
-4. Do NOT move to CB${cbCount + 1}. Stay on CB${cbCount}.
+3. REPHRASE **CB${currentCB}** using COMPLETELY DIFFERENT words than before.
+4. Do NOT move to CB${currentCB + 1}. Stay on CB${currentCB}. You MUST output **CB${currentCB}** — the SAME number. Do NOT output CB${currentCB + 1}.
 
 🚫 FORBIDDEN: "I hear you", "You mentioned", "I hear you're asking"
 🚫 FORBIDDEN: "I'm here to assist you through this process"
+🚫 FORBIDDEN: Outputting CB${currentCB + 1} or any other CB number — you must rephrase CB${currentCB} only.
 🚫 FORBIDDEN: Repeating the same question wording you already used.`
       : `🚨🚨🚨 USER SENT A NON-ANSWER MESSAGE: "${lastUserMsg}"
 The user's message is coherent but does not directly answer your diagnostic question (Q${coreQuestionCount}). You MUST:
@@ -759,23 +851,23 @@ The user's message is coherent but does not directly answer your diagnostic ques
     : isLikelyGibberish || isRepeatLoop
       ? coreQuestionCount >= 25 && cbCount >= 1
         ? `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
-The user's response is NOT a valid answer. You are on a CLARIFIER question (CB${cbCount}). You MUST:
+The user's response is NOT a valid answer. You are on a CLARIFIER question (CB${currentCB}). You MUST:
 1. Start with a FRIENDLY, WARM message about the invalid input. Use one of these:
    - "Hmm, that doesn't look like a response I can work with. No worries — let me rephrase."
    - "I couldn't quite read that — let me try asking differently."
    - "That one didn't come through. Let me put it another way."
-2. Immediately after, REPHRASE the current clarifier question **CB${cbCount}** using COMPLETELY DIFFERENT words.
+2. Immediately after, REPHRASE the current clarifier question **CB${currentCB}** using COMPLETELY DIFFERENT words.
 3. Add a short example to help them answer.
-4. Do NOT move to CB${cbCount + 1}. Stay on CB${cbCount} until they give a valid answer.
+4. Do NOT move to CB${currentCB + 1}. Stay on CB${currentCB}. You MUST output **CB${currentCB}** — the SAME number. Do NOT output CB${currentCB + 1}.
 
 🚫 FORBIDDEN: Do NOT say "Noted." or be cold/dismissive.
-🚫 FORBIDDEN: Do NOT ask CB${cbCount + 1} or the next question.
+🚫 FORBIDDEN: Do NOT ask CB${currentCB + 1} or the next question — you must rephrase CB${currentCB} only.
 ✅ REQUIRED: Be warm and friendly about invalid input — it happens!
 
 Example of CORRECT response:
 "Hmm, that doesn't look like a response I can work with. No worries — let me rephrase.
 
-**CB${cbCount}**
+**CB${currentCB}**
 [Rewrite the question in simpler words and add an example]"`
         : `🚨🚨🚨 CRITICAL OVERRIDE — USER SENT UNCLEAR/GIBBERISH MESSAGE: "${lastUserMsg}"
 The user's response is NOT a valid answer. You MUST:
@@ -799,13 +891,16 @@ Think about the last time you stopped yourself from doing something important. W
       : ""
 }
 👉 ACTION:
-${coreQuestionCount < 25 ? `- If user answered the last question: Ask Core Question Q${coreQuestionCount + 1} — prefix with **Q${coreQuestionCount + 1} — [Question Name]**` : ""}
+${coreQuestionCount < 25 ? `- If user answered the last question: Ask Core Question Q${coreQuestionCount + 1} — prefix with **Q${coreQuestionCount + 1} — [Question Name]**. You MUST ask Q${coreQuestionCount + 1} and ONLY Q${coreQuestionCount + 1}. Do NOT skip to Q${coreQuestionCount + 2} or any later question.` : ""}
 ${coreQuestionCount < 25 ? `- If user did NOT answer, sent gibberish, or asked to rephrase: REPHRASE Core Question Q${coreQuestionCount} in simpler words (NEVER copy-paste the same wording) — keep **Q${coreQuestionCount} — [Question Name]** label but rewrite the body. Add an example to help.` : ""}
-${coreQuestionCount >= 25 && confidenceResult && confidenceResult.confidence >= 85 ? `👉 ACTION: Confidence is ${confidenceResult.confidence}% (≥ 85%). IMMEDIATELY use Completion Signal. Do NOT ask another question.` : ""}
-${coreQuestionCount >= 25 && (!confidenceResult || confidenceResult.confidence < 85) ? `👉 ACTION: If the user's last message was gibberish, unclear, or not a valid answer → REPHRASE the current clarifier (CB${cbCount}) and do NOT move to CB${cbCount + 1}. Only if they gave a valid answer: evaluate confidence. If < 85%, explain WHY you're asking more, then ask CB${cbCount + 1}. If ≥ 85%, use Completion Signal immediately.` : ""}
+${coreQuestionCount >= 25 && confidenceResult && confidenceResult.confidence >= 85 ? `👉 ACTION: Confidence is ${confidenceResult.confidence}% (≥ 85%). IMMEDIATELY use Completion Signal so the report is generated and emailed. Do NOT ask another question.` : ""}
+${coreQuestionCount >= 25 && cbCount >= 6 ? `👉 ACTION: All 6 clarifiers (CB1–CB6) have been asked and the user just answered. IMMEDIATELY use Completion Signal so the report is generated and emailed. Do NOT ask another question.` : ""}
+${coreQuestionCount >= 25 && (!confidenceResult || confidenceResult.confidence < 85) && cbCount < 6 ? `👉 ACTION: If the user's last message was gibberish, unclear, or not a valid answer → REPHRASE the current clarifier (CB${currentCB}) and do NOT move to CB${currentCB + 1}. You MUST output **CB${currentCB}** again, not CB${currentCB + 1}. Only if they gave a valid answer: evaluate confidence. If < 85%, explain WHY you're asking more, then ask CB${currentCB + 1}. If ≥ 85%, use Completion Signal immediately so the report is generated and emailed.` : ""}
 
-COMPLETION SIGNAL (ONLY if Core Q25 is answered AND Confidence ≥ 85%):
-- "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you."
+COMPLETION SIGNAL (use when Core Q25 is answered AND (Confidence ≥ 85% OR user just answered CB6)):
+- Say: "I have enough information to generate your full Euphoriam diagnostic report now. Let me generate it for you."
+- When you use this signal, the system will automatically generate the report and email it to the user. Do not ask for more questions after this.
+- If Confidence ≥ 85% after any CB answer, OR if the user just answered CB6, you MUST use this signal so the report is generated and emailed.
 
 ${lastMessageFromAssistant ? "The last message was from you. A brief acknowledgment is still required before moving to the next question." : ""}
 `;
@@ -4008,9 +4103,9 @@ const isLikelyGibberishMessage = (content) => {
     return true;
   }
 
-  // Consonant run check: 5 or more consonants in a row (excluding common names/words)
-  const consonantRuns = stripped.match(/[^aeiouy]{5,}/gi);
-  if (consonantRuns) {
+  // Consonant run check: 5+ consonant letters — only for SHORT messages; long messages often have runs from word boundaries ("month that" → "nthth", "clients whilst" → "ntswh")
+  const consonantRuns = stripped.match(/[bcdfghjklmnpqrstvwxz]{5,}/gi);
+  if (consonantRuns && stripped.length < 60) {
     console.log(
       `[isLikelyGibberishMessage] Consonant run detected: "${consonantRuns[0]}" in "${t}"`,
     );
@@ -4061,63 +4156,62 @@ const trackQuestionNumbers = (transcript) => {
     distinctQuestionsAnswered: distinctQuestionNumbers.length,
   };
 };
-// Lightweight AI check to decide if a user reply is an answer to the last question.
+
+const extractCoreQuestion = (content) => {
+  const s = (content || "").trim();
+  if (!s) return s;
+  const qMatch =
+    s.match(/\*\*Q[0-9]+[^*]*\*\*[\s\S]*/i) ||
+    s.match(/CB[0-9]+[^:]*:?[\s\S]*/i);
+  if (qMatch) return qMatch[0].trim();
+  return s.length > 400 ? s.slice(-400) : s;
+};
+
+// Pure LLM classifier: does the user's reply answer the diagnostic question (vs greeting, goodbye, off-topic)?
 const isAiLikelyAnswer = async ({ question, reply }) => {
   const t = (reply || "").trim();
   if (!t) return false;
 
-  // AI Classification - let AI determine if the reply is a valid answer
-  const prompt = `
-You are a binary classifier. Decide if the user's reply is a VALID answer to the given question.
+  const coreQuestion = extractCoreQuestion(question || "");
 
-Question: "${question || "N/A"}"
-Reply: "${reply}"
+  const prompt = `You are a binary classifier. Does the user's reply ANSWER the diagnostic question below?
 
-IMPORTANT: Be generous in accepting answers. If the user is attempting to answer the question in any meaningful way, accept it.
+DIAGNOSTIC QUESTION: "${coreQuestion || question || "N/A"}"
+USER'S REPLY: "${reply}"
 
-Rules:
-- Reply only "yes" or "no".
-- "yes" if the reply provides ANY relevant information that relates to the question.
-- "yes" if the reply describes a feeling, emotion, state, experience, or reaction — these ARE valid answers to questions about what happens, what changes, or what shifts.
-- "yes" for short but meaningful answers like "none", "nothing", "idk", "skip", "pass", "yes", "no" (when appropriate to the question type).
-- "yes" if user says "yes" or "no" to a yes/no question (e.g., "Do you feel anxious?" → "yes" is valid).
-- "no" ONLY if:
-  * The reply is asking the assistant a question (e.g., "can you repeat?", "what do you mean?", "how are you?")
-  * The reply is completely unrelated to the question topic
-  * The reply is purely a greeting or social pleasantry with no attempt to answer
-  * The reply is just "yes" or "no" to a question that explicitly asks for details/description/explanation (e.g., "What happens for you?" → "yes" alone is not valid)
+CRITICAL — Output "yes" (treat as answer) when:
+- The reply is long or detailed and discusses their situation, product, work, feelings, family, conditions, goals, or what they want/allow themselves. Output "yes".
+- The reply substantively addresses the question topic. Short on-topic answers count as "yes": e.g. "money", "nothing", "idk", "yes", "no", "my family", "no one", "my boss".
+- The reply names or describes people, groups, or examples in response to a "who" question (e.g. "other peers", "Pete Smith", "people at work", "my mom") — even if short or trailing off with " -" or "...". Output "yes".
+- The reply gives any concrete response to what was asked (a name, a type, a category, an example). When in doubt and the reply has real content, output "yes".
+- The reply expresses doubt, self-reflection, or engages with the question (e.g. "what if they're right and I do need some corrections", "maybe I do", "I wonder if", "could be", "I'm not sure but..."). These are valid answers — output "yes".
 
-Examples:
-- Q: "What's the first thing that shifts for you?" R: "I feel depressed" → yes (describes what shifts)
-- Q: "What changes when this happens?" R: "anxious" → yes (emotional state answers what changes)
-- Q: "What happens for you?" R: "I get tired" → yes (describes what happens)
-- Q: "What's your desired reality?" R: "to be happy" → yes (answers the question)
-- Q: "Where do you feel it in your body?" R: "chest" → yes (answers location)
-- Q: "What pattern stops you?" R: "procrastination" → yes (identifies pattern)
-- Q: "Do you feel anxious about this?" R: "yes" → yes (valid yes/no answer)
-- Q: "Is this something you've experienced before?" R: "no" → yes (valid yes/no answer)
-- Q: "What triggers this for you?" R: "I don't know" → yes (user processed the question)
-- Q: "Tell me more about that" R: "can you repeat?" → no (asking for clarification)
-- Q: "What triggers this?" R: "how are you?" → no (unrelated question back)
-- Q: "Describe what happens" R: "hi there" → no (greeting, no attempt to answer)
-`;
+CRITICAL — Output "no" only when the reply is clearly:
+- A greeting or social opener: "hi", "hello", "hey", "how are you", "how's it going", "what's up", "good morning", or similar (short, no substance about the question).
+- A goodbye or sign-off: "bye", "goodbye", "see you", "later", "gotta go", or similar.
+- A question directed at the assistant/system: "what's your name", "who are you", "how many questions left", "list users", or similar.
+- Short filler only: "ok", "alright", "cool", "nice" by itself with no attempt to answer.
+
+If the reply is substantive, expresses reflection/doubt about the topic, or has real content related to the question, output "yes". Default to "yes" unless the reply is clearly only a greeting, goodbye, or question to the bot.
+
+Reply with exactly one word: "yes" or "no".`;
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 20,
+      max_completion_tokens: 10,
     });
-    const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
-    const result = txt.includes("yes");
+    const txt = (resp?.choices?.[0]?.message?.content || "").trim().toLowerCase();
+    const result = txt.startsWith("yes");
     console.log(
-      `[isAiLikelyAnswer] AI Classification result: ${result} for "${reply}"`,
+      `[isAiLikelyAnswer] result=${result} raw="${txt}" reply="${(reply || "").slice(0, 80)}..."`,
     );
     return result;
   } catch (err) {
     console.error("[isAiLikelyAnswer] AI fail error:", err);
-    return true; // On AI failure, be generous and accept the answer
+    return false; // On failure do not advance — re-ask same question
   }
 };
 /**
@@ -4143,12 +4237,50 @@ const buildChatPrompts = async ({
   allUserSessions = null, // All 1:1 coaching sessions (preferred)
   aiAnswered, // Passed from controller to avoid redundant LLM calls
   confidenceResult = null, // Added to pass confidence to intake prompt
+  userId = null, // User ID for vector search
+  historicalContext = null, // Pre-fetched historical context from vector DB
 }) => {
   let userPrompt;
   let systemPrompt;
   const lastUserMessage = (
     transcript.filter((m) => m.role === "user").slice(-1)[0]?.content || ""
   ).toLowerCase();
+
+  // Fetch historical context from vector DB if not provided and userId available
+  let relevantHistory = historicalContext;
+  if (
+    !relevantHistory &&
+    userId &&
+    vectorStoreService &&
+    lastUserMessage.length > 10
+  ) {
+    try {
+      // Check if user is asking about past conversations or sessions
+      const isAskingAboutHistory =
+        /past|previous|before|earlier|last time|remember|history|old|session|chat/i.test(
+          lastUserMessage,
+        );
+
+      if (isAskingAboutHistory) {
+        relevantHistory = await vectorStoreService.getRelevantContext({
+          query: lastUserMessage,
+          userId: userId,
+          topK: 3,
+        });
+
+        if (relevantHistory?.hasRelevantHistory) {
+          console.log(
+            `[buildChatPrompts] Found ${relevantHistory.resultCount} relevant historical items for user query`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[buildChatPrompts] Error fetching historical context:",
+        err.message,
+      );
+    }
+  }
   const sessionsToCheck =
     allUserSessions && allUserSessions.length > 0
       ? allUserSessions
@@ -4160,6 +4292,20 @@ const buildChatPrompts = async ({
     /session|1:1|coaching.*session|session.*details|summarize.*session/i.test(
       lastUserMessage,
     );
+
+  // Build historical context section if available
+  let historicalContextSection = "";
+  if (relevantHistory?.hasRelevantHistory && relevantHistory?.context) {
+    historicalContextSection = `
+
+## Relevant Historical Context (from past conversations)
+The user may be referencing previous discussions. Here is relevant context from their chat history:
+
+${relevantHistory.context}
+
+Use this context to provide continuity and personalized responses when the user asks about past conversations.
+`;
+  }
 
   if (isDiscoveryMode) {
     // Discovery mode: fetch latest prompts from DB in parallel (Diagnostic Chat + Brain Prompt)
@@ -4179,6 +4325,11 @@ const buildChatPrompts = async ({
       allUserSessions,
       brainPrompt, // Pass brain prompt from DB
     );
+
+    // Add historical context from vector DB if available
+    if (historicalContextSection) {
+      systemPrompt += historicalContextSection;
+    }
 
     userPrompt = buildDiscoveryChatPrompt({
       transcript,
@@ -4204,7 +4355,8 @@ const buildChatPrompts = async ({
     const brainPrompt = brainPromptObj?.content;
     const diagnosticPrompt = diagnosticPromptObj?.content;
 
-    systemPrompt = `${brainPrompt}\n\n${diagnosticPrompt}\n\n${SUPPORT_LOCK_PROMPT}`;
+    // Add historical context from vector DB if available
+    systemPrompt = `${brainPrompt}\n\n${diagnosticPrompt}\n\n${SUPPORT_LOCK_PROMPT}${historicalContextSection}`;
 
     // Diagnostic mode: freeform intake (keep full transcript when switching from discovery so conversation continues)
     const intakeTranscript = transcript;

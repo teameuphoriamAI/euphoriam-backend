@@ -59,6 +59,55 @@ const isQuestion = (text = "") => text.trim().endsWith("?");
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+/** Map human-readable signature parts to canonical codes (EO_Lack_Avoid) */
+const SIGNATURE_EO_MAP = {
+  "not enough": "NE",
+  "not capable": "NC",
+  "not safe": "NS",
+  powerless: "PL",
+  "can't depend": "CD",
+  "needs not ok": "NON",
+  "vulnerable not ok": "NOV",
+  "happy/comfort not ok": "NOH",
+};
+const SIGNATURE_LACK_MAP = { connection: "C", security: "S", purpose: "P" };
+const SIGNATURE_AVOID_MAP = { failure: "F", rejection: "R" };
+
+const normalizeSignatureId = (value) => {
+  if (!value || typeof value !== "string") return value;
+  const s = value.trim();
+  if (!s) return value;
+  // Already canonical (e.g. NON_C_R, CD_P_R)
+  if (/^[A-Z]{2,3}_[CSP]_[FR]$/i.test(s)) return s.toUpperCase();
+  const parts = s.split(/[\s_]+/).map((p) => p.toLowerCase());
+  if (parts.length < 3) return value;
+  // Try "EO_Lack_Avoid" pattern: e.g. "Needs Not OK_Connection_Rejection"
+  const joined = s.toLowerCase().replace(/\s+/g, " ");
+  let eo = null,
+    lack = null,
+    avoid = null;
+  for (const [k, v] of Object.entries(SIGNATURE_EO_MAP)) {
+    if (joined.includes(k)) {
+      eo = v;
+      break;
+    }
+  }
+  for (const [k, v] of Object.entries(SIGNATURE_LACK_MAP)) {
+    if (joined.includes(k)) {
+      lack = v;
+      break;
+    }
+  }
+  for (const [k, v] of Object.entries(SIGNATURE_AVOID_MAP)) {
+    if (joined.includes(k)) {
+      avoid = v;
+      break;
+    }
+  }
+  if (eo && lack && avoid) return `${eo}_${lack}_${avoid}`;
+  return value;
+};
+
 /**
  * Finds or creates a user and checks/updates their Creator Club membership status
  * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
@@ -517,8 +566,8 @@ const buildFallbackDiscoveryReport = ({
 
   const phase1 =
     safeMetrics.gravity >= 70 ||
-      safeMetrics.signalOutput < 30 ||
-      safeMetrics.signalCoherence < 70
+    safeMetrics.signalOutput < 30 ||
+    safeMetrics.signalCoherence < 70
       ? [4, 6, 8]
       : [4];
   const phase2 = safeMetrics.consciousnessLevel < 2.5 ? [3] : [3];
@@ -1291,12 +1340,12 @@ const handleDiscoveryMode = async ({
 
       const qs =
         discoveryReadiness?.nextQuestions &&
-          discoveryReadiness.nextQuestions.length > 0
+        discoveryReadiness.nextQuestions.length > 0
           ? discoveryReadiness.nextQuestions
           : [
-            "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
-            "What’s the main loop/friction you keep noticing this week?",
-          ];
+              "What’s the biggest thing that feels different in your life right now compared to when you did your diagnostic?",
+              "What’s the main loop/friction you keep noticing this week?",
+            ];
 
       const userText = (lastUser?.content || "").toLowerCase();
       const isAskingHowManyQuestions =
@@ -1304,14 +1353,16 @@ const handleDiscoveryMode = async ({
 
       nextMessage = {
         role: "assistant",
-        content: `${isAskingHowManyQuestions
+        content: `${
+          isAskingHowManyQuestions
             ? `Typically discovery takes ~3–6 questions. Right now I only need ${qs.length} more to make your report accurate and relevant.\n\n`
-            : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${qs.length === 1 ? "" : "s"
-            } first:\n\n`
-          }${qs
-            .slice(0, 2)
-            .map((q, idx) => `${idx + 1}) ${q}`)
-            .join("\n")}`,
+            : `I can generate your discovery report, but I want it to be accurate and relevant. I need ${qs.length} quick clarifier${
+                qs.length === 1 ? "" : "s"
+              } first:\n\n`
+        }${qs
+          .slice(0, 2)
+          .map((q, idx) => `${idx + 1}) ${q}`)
+          .join("\n")}`,
       };
 
       // IMPORTANT:
@@ -1419,10 +1470,10 @@ const handleDiscoveryMode = async ({
       .map((s, idx) => {
         const sessionDate = s.sessionDate
           ? new Date(s.sessionDate).toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-          })
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
           : "Date not specified";
         return `Session ${idx + 1} (${sessionDate}):\n${s.summery}`;
       })
@@ -1448,79 +1499,82 @@ Evidence: ${discoveryReadiness?.stageEvidence || "N/A (readiness check disabled)
 Previous diagnostic (reference):
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-        ? `Previous discovery report (reference):
+${
+  previousDiscovery
+    ? `Previous discovery report (reference):
 ${truncateForContext(
-          previousDiscovery.data?.newReport ||
-          previousDiscovery.data?.previousReport ||
-          previousDiscovery.newReportSnippet ||
-          previousDiscovery.data?.newReportSnippet ||
-          "",
-          4000,
-        )}`
-        : ""
-      }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000,
+)}`
+    : ""
+}
 
-${sessionSummariesForReport
-        ? `============================
+${
+  sessionSummariesForReport
+    ? `============================
 USER SESSION SUMMARIES (Admin-uploaded 1:1 coaching session summaries - USE THESE FOR CONTEXT):
 ============================
 ${sessionSummariesForReport}
 ============================`
-        : ""
-      }
+    : ""
+}
 
 New conversation transcript (latest messages last):
 ${JSON.stringify(updatedTranscript, null, 2)}
 
-${(allUserSessions && allUserSessions.length > 0) ||
-        latestUserSession?.transcript
-        ? `All 1:1 Coaching Sessions (use these for additional context):
+${
+  (allUserSessions && allUserSessions.length > 0) ||
+  latestUserSession?.transcript
+    ? `All 1:1 Coaching Sessions (use these for additional context):
 
 ${(() => {
-          const sessionsToUse =
-            allUserSessions && allUserSessions.length > 0
-              ? allUserSessions
-              : latestUserSession
-                ? [latestUserSession]
-                : [];
-          // Limit to most recent 5 sessions to avoid token overflow
-          const sessionsToInclude = sessionsToUse.slice(0, 5);
-          const hasMoreSessions = sessionsToUse.length > 5;
+  const sessionsToUse =
+    allUserSessions && allUserSessions.length > 0
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : [];
+  // Limit to most recent 5 sessions to avoid token overflow
+  const sessionsToInclude = sessionsToUse.slice(0, 5);
+  const hasMoreSessions = sessionsToUse.length > 5;
 
-          return (
-            sessionsToInclude
-              .map((session, index) => {
-                const sessionNum =
-                  sessionsToUse.length > 1
-                    ? `Session ${index + 1} (${sessionsToUse.length} total)`
-                    : "Session";
-                const sessionDate = session.sessionDate
-                  ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-                    month: "long",
-                    day: "numeric",
-                    year: "numeric",
-                  })
-                  : "Date not specified";
+  return (
+    sessionsToInclude
+      .map((session, index) => {
+        const sessionNum =
+          sessionsToUse.length > 1
+            ? `Session ${index + 1} (${sessionsToUse.length} total)`
+            : "Session";
+        const sessionDate = session.sessionDate
+          ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "Date not specified";
 
-                // Prioritize summaries - only include full transcript for most recent session
-                const isMostRecent = index === 0;
-                const hasSummary = session.summery && session.summery.trim().length > 0;
+        // Prioritize summaries - only include full transcript for most recent session
+        const isMostRecent = index === 0;
+        const hasSummary = session.summery && session.summery.trim().length > 0;
 
-                if (hasSummary) {
-                  if (isMostRecent) {
-                    // Most recent: summary + brief transcript preview
-                    const transcriptPreview = Array.isArray(session.transcript)
-                      ? session.transcript
-                        .slice(0, 10)
-                        .map(
-                          (msg) =>
-                            `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
-                        )
-                        .join("\n")
-                      : "";
+        if (hasSummary) {
+          if (isMostRecent) {
+            // Most recent: summary + brief transcript preview
+            const transcriptPreview = Array.isArray(session.transcript)
+              ? session.transcript
+                  .slice(0, 10)
+                  .map(
+                    (msg) =>
+                      `${msg.role}: ${msg.content?.substring(0, 200) || ""}`,
+                  )
+                  .join("\n")
+              : "";
 
-                    return `--- ${sessionNum} ---
+            return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
@@ -1528,34 +1582,34 @@ ${session.summery}
 
 TRANSCRIPT PREVIEW (first 10 messages):
 ${transcriptPreview || "Full transcript available if needed"}`;
-                  } else {
-                    // Older sessions: summary only
-                    return `--- ${sessionNum} ---
+          } else {
+            // Older sessions: summary only
+            return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 SESSION SUMMARY:
 ${session.summery}`;
-                  }
-                } else {
-                  // No summary - include truncated transcript
-                  const transcriptText = Array.isArray(session.transcript)
-                    ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
-                    (session.transcript.length > 20 ? "\n...[truncated]" : "")
-                    : JSON.stringify(session.transcript, null, 2);
+          }
+        } else {
+          // No summary - include truncated transcript
+          const transcriptText = Array.isArray(session.transcript)
+            ? JSON.stringify(session.transcript.slice(0, 20), null, 2) +
+              (session.transcript.length > 20 ? "\n...[truncated]" : "")
+            : JSON.stringify(session.transcript, null, 2);
 
-                  return `--- ${sessionNum} ---
+          return `--- ${sessionNum} ---
 Session Date: ${sessionDate}
 
 TRANSCRIPT (${isMostRecent ? "full" : "truncated"}):
 ${transcriptText}`;
-                }
-              })
-              .join("\n\n") +
-            (hasMoreSessions
-              ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
-              : "")
-          );
-        })()}
+        }
+      })
+      .join("\n\n") +
+    (hasMoreSessions
+      ? `\n\nNote: ${sessionsToUse.length - 5} older session(s) not shown to save context space.`
+      : "")
+  );
+})()}
 
 ⚠️ IMPORTANT: Use these 1:1 coaching session${(allUserSessions && allUserSessions.length > 1) || (!allUserSessions && latestUserSession) ? "s" : ""} data to:
 - Understand their current state and what's happening in their life
@@ -1567,8 +1621,8 @@ ${transcriptText}`;
 - ${(allUserSessions && allUserSessions.some((s) => s.summery)) || latestUserSession?.summery ? "The summaries above provide key insights; use the full transcripts for specific details" : ""}
 
 `
-        : ""
-      }
+    : ""
+}
 
 Client Name: ${userName}
 Client ID: N/A
@@ -1605,11 +1659,15 @@ ABSOLUTE REQUIREMENTS:
 
 **METRICS CALCULATION RULE:**
 - Calculate UPDATED metrics based on the NEW conversation transcript above
-- Compare previous metrics (Gravity: ~${diagnosticMetrics.gravity || "N/A"
-      }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%, Signal Coherence: ~${diagnosticMetrics.signalCoherence || "N/A"
-      }%, Signal Output: ~${diagnosticMetrics.signalOutput || "N/A"
-      }%) with evidence from the new conversation
+- Compare previous metrics (Gravity: ~${
+      diagnosticMetrics.gravity || "N/A"
+    }%, CL: ~${diagnosticMetrics.consciousnessLevel || "N/A"}, QGC: ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%, Signal Coherence: ~${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%, Signal Output: ~${
+      diagnosticMetrics.signalOutput || "N/A"
+    }%) with evidence from the new conversation
 - Calculate what changed based on the new responses
 - Output updated metrics in the METRICS GAUGE section with actual calculated values
 - DO NOT use placeholders - calculate actual values based on evidence from the new conversation
@@ -1696,8 +1754,9 @@ Marker of shift:
 
 ### 7. SIGNAL COHERENCE
 
-**Signal Coherence:** [Current status - use exact calculated value: ${diagnosticMetrics.signalCoherence || "N/A"
-      }%]
+**Signal Coherence:** [Current status - use exact calculated value: ${
+      diagnosticMetrics.signalCoherence || "N/A"
+    }%]
 
 **Coherence Evidence:**
 [Specific examples from conversation transcript showing signal coherence:
@@ -1745,20 +1804,21 @@ That's it.
 
 ## METRICS GAUGE (Current Snapshot)
 
-* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${diagnosticMetrics.qgcActivation || "N/A"
-      }%
+* **QGC Activation:** ${renderGauge(diagnosticMetrics.qgcActivation || 0)}  ~${
+      diagnosticMetrics.qgcActivation || "N/A"
+    }%
 * **Consciousness Level:** ${renderGauge(
-        (diagnosticMetrics.consciousnessLevel || 0) * 20,
-      )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
+      (diagnosticMetrics.consciousnessLevel || 0) * 20,
+    )}  ~${diagnosticMetrics.consciousnessLevel || "N/A"}
 * **Gravity:** ${renderGauge(
-        diagnosticMetrics.gravity || 0,
-      )}  [Current status with arrow if changed]
+      diagnosticMetrics.gravity || 0,
+    )}  [Current status with arrow if changed]
 * **Signal Coherence:** ${renderGauge(
-        diagnosticMetrics.signalCoherence || 0,
-      )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
+      diagnosticMetrics.signalCoherence || 0,
+    )}  ${diagnosticMetrics.signalCoherence || "N/A"}%
 * **Signal Output:** ${renderGauge(
-        diagnosticMetrics.signalOutput || 0,
-      )}  [Current status]
+      diagnosticMetrics.signalOutput || 0,
+    )}  [Current status]
 
 ---
 
@@ -2180,10 +2240,11 @@ METRICS_JSON_END`;
         autoGenerated: true,
         status: "completed",
         statusMessage: "The report has been generated",
-        userMessage: `Your discovery report has been generated. ${shouldEmail
+        userMessage: `Your discovery report has been generated. ${
+          shouldEmail
             ? "Email will be sent shortly."
             : "You can access it in your account."
-          }`,
+        }`,
         emailed: false, // Will be updated in background
         // Don't include answeredCount or pendingQuestion in discovery mode - those are for diagnostic mode only
       });
@@ -2217,8 +2278,9 @@ METRICS_JSON_END`;
               const buffer = await fs.promises.readFile(pdfPath);
               const upload = await uploadBufferToSupabase({
                 buffer,
-                objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                  }-${Date.now()}.pdf`,
+                objectPath: `discoveries/discovery-${
+                  existingDiagnostic?.id || Date.now()
+                }-${Date.now()}.pdf`,
                 contentType: "application/pdf",
               });
 
@@ -2329,8 +2391,9 @@ METRICS_JSON_END`;
       await Diagnostic.create({
         userId: appUser.id || null,
         email,
-        title: `Discovery Chat (Draft) – ${name || email?.split("@")[0] || "User"
-          }`,
+        title: `Discovery Chat (Draft) – ${
+          name || email?.split("@")[0] || "User"
+        }`,
         data: {
           profile: { name, email },
           intakeState: discoveryIntakeState,
@@ -2342,7 +2405,7 @@ METRICS_JSON_END`;
   // Get updated state after saving
   const updatedState = existingDiagnostic
     ? (await Diagnostic.findByPk(existingDiagnostic.id))?.data?.intakeState ||
-    existingState
+      existingState
     : existingState;
 
   // Intercept nextMessage if we've asked 6+ questions and it's asking another question
@@ -2502,10 +2565,10 @@ const handleDiscoveryFinalize = async ({
     .map((s, idx) => {
       const sessionDate = s.sessionDate
         ? new Date(s.sessionDate).toLocaleDateString("en-US", {
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        })
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
         : "Date not specified";
       return `Session ${idx + 1} (${sessionDate}):\n${s.summery}`;
     })
@@ -2539,62 +2602,65 @@ Where previous reports offered a sentence, this report offers a full analytical 
 **Previous Diagnostic (Baseline - DO NOT COPY STYLE):**
 ${priorReportSnippet || "None"}
 
-${previousDiscovery
-      ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
+${
+  previousDiscovery
+    ? `**Prior Evolution History (Summaries - DO NOT COPY STYLE):**
 ${truncateForContext(
-        previousDiscovery.data?.newReport ||
-        previousDiscovery.data?.previousReport ||
-        previousDiscovery.newReportSnippet ||
-        previousDiscovery.data?.newReportSnippet ||
-        "",
-        4000,
-      )}`
-      : ""
-    }
+  previousDiscovery.data?.newReport ||
+    previousDiscovery.data?.previousReport ||
+    previousDiscovery.newReportSnippet ||
+    previousDiscovery.data?.newReportSnippet ||
+    "",
+  4000,
+)}`
+    : ""
+}
 
-${sessionSummariesForFinalize
-      ? `============================
+${
+  sessionSummariesForFinalize
+    ? `============================
 **USER SESSION SUMMARIES (Admin-uploaded 1:1 coaching session summaries):**
 ============================
 ${sessionSummariesForFinalize}
 ============================`
-      : ""
-    }
+    : ""
+}
  
-${(allUserSessions && allUserSessions.length > 0) ||
-      latestUserSession?.transcript
-      ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
+${
+  (allUserSessions && allUserSessions.length > 0) ||
+  latestUserSession?.transcript
+    ? `**1:1 COACHING SESSION TRANSCRIPTS (CORE SOURCE MATERIAL):**
 *Use this data to build your 300-word analysis sections. Analyze the user's specific language, fears, and breakthroughs.*
 
 ${(() => {
-        const sessionsToUse =
-          allUserSessions && allUserSessions.length > 0
-            ? allUserSessions
-            : latestUserSession
-              ? [latestUserSession]
-              : [];
-        return sessionsToUse
-          .map((session, index) => {
-            const sessionNum =
-              sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
-            const sessionDate = session.sessionDate
-              ? new Date(session.sessionDate).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })
-              : "Unknown Date";
+  const sessionsToUse =
+    allUserSessions && allUserSessions.length > 0
+      ? allUserSessions
+      : latestUserSession
+        ? [latestUserSession]
+        : [];
+  return sessionsToUse
+    .map((session, index) => {
+      const sessionNum =
+        sessionsToUse.length > 1 ? `Session ${index + 1}` : "Session";
+      const sessionDate = session.sessionDate
+        ? new Date(session.sessionDate).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Unknown Date";
 
-            return `--- ${sessionNum} (${sessionDate}) ---
+      return `--- ${sessionNum} (${sessionDate}) ---
 Summary: ${session.summery || "N/A"}
 Transcript Data: ${JSON.stringify(session.transcript)}
 `;
-          })
-          .join("\n\n");
-      })()}
+    })
+    .join("\n\n");
+})()}
 `
-      : ""
-    }
+    : ""
+}
 
 **Current Discovery Chat Transcript (Latest Data):**
 ${JSON.stringify(transcriptForFinal, null, 2)}
@@ -3019,8 +3085,9 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
       try {
         const discoveryForPdf = {
           id: existingDiagnostic?.id || Date.now(),
-          title: `Diagnostics Chat Report – ${name || email?.split("@")[0] || "User"
-            }`,
+          title: `Diagnostics Chat Report – ${
+            name || email?.split("@")[0] || "User"
+          }`,
           userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
           data: {
             profile: {
@@ -3042,8 +3109,9 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             const buffer = await fs.promises.readFile(pdfPath);
             const upload = await uploadBufferToSupabase({
               buffer,
-              objectPath: `discoveries/discovery-${existingDiagnostic?.id || Date.now()
-                }-${Date.now()}.pdf`,
+              objectPath: `discoveries/discovery-${
+                existingDiagnostic?.id || Date.now()
+              }-${Date.now()}.pdf`,
               contentType: "application/pdf",
             });
             pdfUrl = upload.url || null;
@@ -3749,10 +3817,10 @@ const handleDiagnosticMode = async ({
   // Optimization: Pass wantsNewDiagnostic to avoid redundant LLM call
   const userWantsToGenerateReport = lastUser?.content
     ? await detectUserWantsToEndOrGenerateReport({
-      userMessage: lastUser.content,
-      transcript: transcript,
-      wantsNewDiagnosticVal: wantsNewDiagnostic, // Pass pre-calculated value
-    })
+        userMessage: lastUser.content,
+        transcript: transcript,
+        wantsNewDiagnosticVal: wantsNewDiagnostic, // Pass pre-calculated value
+      })
     : false;
 
   // Calculate confidence after 25 questions to determine if we need clarifier questions
@@ -3899,17 +3967,13 @@ const handleDiagnosticMode = async ({
   ).length;
   const nextCBNumber = existingCBCount + 1;
 
-  // HARD STOP: If we've already asked 6 CB questions, force finalization regardless of confidence
+  // HARD STOP: If we've already asked 6 CB questions, force finalization regardless of confidence or 25-Q minimum
   if (existingCBCount >= maxClarifierQuestions) {
     console.log(
       "[diagnostic] 🛑 Maximum 6 CB questions reached - forcing finalization",
     );
-    // Set shouldAutoFinalize to true to trigger report generation
     needsClarifierQuestions = false;
-    if (hasMetMinimumQuestions) {
-      shouldAutoFinalize = true;
-    }
-    // Fall through to the shouldAutoFinalize block below
+    shouldAutoFinalize = true;
   } else if (
     needsClarifierQuestions &&
     !shouldAutoFinalize &&
@@ -4047,12 +4111,23 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       existingCBCount,
     });
 
-    // Override nextMessage with the CB question
-    nextMessage = cbMessage;
+    // Use main AI's response when it already contains a CB (so transcript and nextMessage match);
+    // otherwise use the generated short CB message.
+    // CRITICAL: Normalize the CB number in the message to nextCBNumber so we never skip (e.g. CB3 -> CB5).
+    let contentToUse = nextMessage?.content;
+    if (contentToUse && /CB\d+/i.test(contentToUse)) {
+      contentToUse = contentToUse.replace(/\*\*CB\d+/i, `**CB${nextCBNumber}`);
+    }
+    const assistantMessageToUse =
+      contentToUse && /CB\d+/i.test(contentToUse)
+        ? { role: "assistant", content: contentToUse }
+        : cbMessage;
+
+    nextMessage = assistantMessageToUse;
     aiAnswered = true;
 
-    // Update transcript with CB question
-    updatedTranscript = [...transcript, cbMessage];
+    // Update transcript with the same message we return as nextMessage
+    updatedTranscript = [...transcript, assistantMessageToUse];
 
     // Save the chat with the CB question
     if (appUser) {
@@ -4065,13 +4140,14 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       });
     }
 
-    // Return early with the CB question
+    // Return early with the CB question (nextMessage matches last message in transcript)
     return successResponse(res, "Clarifier question", {
-      nextMessage: cbMessage,
+      nextMessage: assistantMessageToUse,
       introPageText: introText,
       transcript: updatedTranscript,
       intakeState: {
         ...existingState,
+        transcript: updatedTranscript,
         askedQuestions: assistantMessages.length + 1,
         totalQuestions: 31, // 25 core + 6 clarifiers
         pendingQuestions: Math.max(0, 6 - nextCBNumber),
@@ -4090,13 +4166,17 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
     });
   }
 
-  // FORCE FINALIZATION after 6 CB questions regardless of confidence
-  if (
-    existingCBCount >= maxClarifierQuestions &&
-    hasMetMinimumQuestions &&
-    !shouldAutoFinalize
-  ) {
+  // FORCE FINALIZATION after 6 CB questions regardless of confidence or 25-Q count
+  if (existingCBCount >= maxClarifierQuestions && !shouldAutoFinalize) {
     console.log("[diagnostic] 🛑 Forcing finalization after 6 CB questions");
+    shouldAutoFinalize = true;
+  }
+
+  // When assistant explicitly says "I have enough information to generate...", trust it and finalize (even if Q count is slightly off)
+  const nextMessageCompletionOnly =
+    nextMessage?.content && hasExplicitCompletionSignal(nextMessage.content);
+  if (nextMessageCompletionOnly && existingCBCount >= maxClarifierQuestions && !shouldAutoFinalize) {
+    console.log("[diagnostic] ✅ Assistant sent completion message with 6 CBs - forcing finalization");
     shouldAutoFinalize = true;
   }
 
@@ -4121,15 +4201,22 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
     const finalizeRetrieved = lastUser?.content
       ? await retrieveSimilarChunks({ query: lastUser.content, topK: 3 })
       : [];
-    const prompt = await getLatestPromptFromDb();
-    const promptContent =
-      typeof prompt === "string"
-        ? prompt
-        : prompt?.fullPrompt || prompt?.content || "";
 
-    // Ensure promptContent is always a string, never null or undefined
+    // CRITICAL: Fetch BOTH Brain Prompt and Diagnostic prompt for full report with Sections 1-10
+    // Brain Prompt contains SIGNATURE_DICT, OPPOSITE_MAP, REP_LIBRARY, UC routing needed for proper sections
+    const { PromptType } = require("../utils/types");
+    const [brainPromptObjForReport, diagnosticPromptObjForReport] =
+      await Promise.all([
+        getLatestPromptFromDb(PromptType.BRAINPROMPT),
+        getLatestPromptFromDb(PromptType.DIAGNOSTIC),
+      ]);
+
+    const brainPromptForReport = brainPromptObjForReport?.content || "";
+    const diagnosticPromptForReport = diagnosticPromptObjForReport?.content || "";
+
+    // Combine both prompts like handleDiagnosticFinalize does
     const safePromptContent =
-      promptContent && typeof promptContent === "string" ? promptContent : "";
+      `${brainPromptForReport}\n\n${diagnosticPromptForReport}\n\n${SUPPORT_LOCK_PROMPT}`.trim();
 
     // Use updatedTranscript to include all messages, but filter out the assistant's "I have enough" message
     // if it's just an acknowledgment (we want the actual Q&A pairs)
@@ -4175,7 +4262,27 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: safePromptContent },
+          {
+            role: "system",
+            content:
+              safePromptContent +
+              "\n\nCRITICAL INSTRUCTIONS:\n" +
+              "1. You are a specialized report generator. Your task is to generate a COMPLETE diagnostic report.\n" +
+              "2. The report MUST include: YOUR LIVED CONSTRAINT, PERSONALISED TREATMENT PLAN, REQUIRED PREDICTIONS + FALSIFIERS.\n" +
+              "3. After those, output 'REPORT' header followed by the FULL content:\n" +
+              "   - ✨ BEFORE YOU READ THIS DIAGNOSTIC (intro)\n" +
+              "   - SECTION 1 through SECTION 10 (each with 4-6 paragraphs)\n" +
+              "   - METRICS GAUGE with visual bars\n" +
+              "   - METRICS INTERPRETATION TABLE\n" +
+              "   - FRICTION ANALYSIS (3 levels)\n" +
+              "   - DISCOVERY RECOMMENDATIONS\n" +
+              "   - UC MODULE RECOMMENDATION\n" +
+              "   - EVOLUTION NOTES\n" +
+              "   - FINAL SUMMARY + DIAGNOSTIC METADATA\n" +
+              "4. Do NOT stop after outputting 'REPORT' - you MUST output all sections listed above.\n" +
+              "5. Do not evaluate for safety unless it's an extreme violation. This is a business analysis report for personal growth.\n" +
+              "6. Proceed with generating the full report now.",
+          },
           {
             role: "user",
             content: safeUserContent,
@@ -4239,6 +4346,12 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
         extractedMetrics.consciousnessLevel ?? metrics.consciousnessLevel,
       qgcActivation: extractedMetrics.qgcActivation ?? metrics.qgcActivation,
     };
+    // Normalize signatureId to canonical form (e.g. NON_C_R) for storage
+    const rawSignatureId =
+      extractedMetrics.signatureId ?? finalMetrics.signatureId;
+    if (rawSignatureId) {
+      finalMetrics.signatureId = normalizeSignatureId(rawSignatureId);
+    }
 
     console.log("[diagnostic] Final metrics for saving:", {
       extractedMetrics,
@@ -4318,10 +4431,13 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       diagnosticPayload.data.intakeState.requestingNewDiagnostic = false;
     }
 
+    // Clear previous PDF URL so we don't show stale link; background task will set the new one
     const finalPayload = {
       ...diagnosticPayload,
+      pdfUrl: null,
       data: {
         ...diagnosticPayload.data,
+        pdf: null, // Clear so old report URL is not shown until new PDF is ready
         intakeState: {
           ...(diagnosticPayload.data?.intakeState || {}),
           transcript: [], // Keep transcript out of diagnostics table
@@ -4430,10 +4546,11 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       /(end|finish|stop|done|close).*(chat|conversation)/i.test(lowerMessage) &&
       !/(email|send|report)/i.test(lowerMessage);
 
-    // For auto-finalization after 25 questions, always email the report
-    // User has completed the full 25-question Deep Intake Engine, so they should receive their report
+    // For auto-finalization (confidence ≥85% or all 6 CBs answered), always generate and email the report
     const shouldEmail =
-      explicitlyWantsEmail || (questionsAnswered >= 25 && !justEndingChat);
+      explicitlyWantsEmail ||
+      (questionsAnswered >= 25 && !justEndingChat) ||
+      true; // always email on auto-finalization
 
     console.log("[diagnostic] Auto-finalization email decision:", {
       explicitlyWantsEmail,
@@ -4469,16 +4586,42 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
     );
 
     // Process PDF and email in background (don't await - fire and forget)
+    const diagnosticIdForBackground = diagnostic.id;
+    const emailForBackground = email;
+    const userNameForBackground = name || email?.split("@")[0] || "User";
+    // Pass in-memory diagnostic (with aiReport) so PDF generation doesn't rely on re-fetch
+    const diagnosticForPdfInMemory = {
+      id: diagnostic.id,
+      data: {
+        ...(diagnostic.data || {}),
+        aiReport: reportText,
+        metrics: finalMetrics,
+        profile: diagnostic.data?.profile || {
+          name: userNameForBackground,
+          email: email.trim(),
+        },
+      },
+    };
     (async () => {
       try {
-        const pdfPath = await generateDiagnosticPdf(diagnostic);
+        if (!reportText || reportText.length < 50) {
+          console.error("[diagnostic] Background PDF skipped: aiReport missing or too short", {
+            diagnosticId: diagnosticIdForBackground,
+            reportLength: reportText?.length ?? 0,
+          });
+          return;
+        }
+        const pdfPath = await generateDiagnosticPdf(diagnosticForPdfInMemory);
         let pdf = { path: pdfPath, url: null };
+        console.log("[diagnostic] PDF generated (background)", { diagnosticId: diagnosticIdForBackground, pdfPath });
 
         try {
           const buffer = await fs.promises.readFile(pdfPath);
+          // Use unique path per report so rediagnostic gets a new URL (not overwriting old file)
+          const uniquePath = `diagnostics/${diagnosticIdForBackground}-${Date.now()}.pdf`;
           const upload = await uploadBufferToSupabase({
             buffer,
-            objectPath: `diagnostics/${diagnostic.id || Date.now()}.pdf`,
+            objectPath: uniquePath,
             contentType: "application/pdf",
           });
           pdf = upload;
@@ -4487,11 +4630,13 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
             upload,
           );
 
-          // Update diagnostic with PDF URL
-          await diagnostic.update({
+          // Re-fetch to get latest data then update with new PDF URL only
+          const freshDiagnostic = await Diagnostic.findByPk(diagnosticIdForBackground);
+          if (!freshDiagnostic) return;
+          await freshDiagnostic.update({
             pdfUrl: pdf.url || null,
             data: {
-              ...(diagnostic.data || {}),
+              ...(freshDiagnostic.data || {}),
               pdf,
             },
           });
@@ -4542,13 +4687,13 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
           );
         }
 
-        // Send email in background if user requested it OR if they completed 12 questions
+        // Send email in background when user requested it OR when auto-finalized after 25+ questions (or 25 + up to 6 CBs)
         if (shouldEmail && pdfPath) {
           try {
             await sendEmail(
               email,
               "Your Diagnostic Report – Euphoraum-AI",
-              diagnosticReportEmail(userName),
+              diagnosticReportEmail(userNameForBackground),
               pdfPath,
             );
             console.log("[diagnostic] Email sent successfully (background)", {
@@ -4565,7 +4710,7 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
           }
         } else if (!shouldEmail) {
           console.log(
-            "[diagnostic] Email not sent - user did not request it and questionsAnswered < 12",
+            "[diagnostic] Email not sent - user did not request it and did not complete 25+ questions",
             { questionsAnswered, explicitlyWantsEmail, autoFinalized: true },
           );
         } else if (!pdfPath) {
@@ -4758,6 +4903,48 @@ const chatbotDiagnosticFreeform = async (req, res) => {
 
     // If user has a completed diagnostic report and no messages (empty request),
     // and they don't have an ongoing discovery chat, start a NEW discovery chat
+    // CRITICAL: Check Chat model for existing discovery chat to prevent duplicate welcome messages on refresh
+    let existingDiscoveryChat = null;
+    if (appUser && hasExistingReportGenerated) {
+      const { Chat } = require("../models/chatModel");
+      existingDiscoveryChat = await Chat.findOne({
+        where: {
+          userId: appUser.id,
+          chatType: "discovery",
+          isChatEnded: false,
+        },
+        order: [["updatedAt", "DESC"]],
+      });
+
+      // If we found an existing discovery chat with messages, return it instead of generating new welcome
+      if (
+        existingDiscoveryChat?.data?.transcript &&
+        existingDiscoveryChat.data.transcript.length > 0
+      ) {
+        transcriptInternal = existingDiscoveryChat.data.transcript;
+        console.log(
+          "[diagnostic] Found existing discovery chat with transcript, returning it instead of generating new welcome message",
+          { chatId: existingDiscoveryChat.id, transcriptLength: transcriptInternal.length }
+        );
+
+        // Return the existing transcript without generating a new welcome message
+        const lastMessage = transcriptInternal[transcriptInternal.length - 1];
+        return successResponse(res, "Resuming discovery mode", {
+          hasExistingReport: true,
+          mode: "discovery",
+          nextMessage: lastMessage?.role === "assistant" ? lastMessage : null,
+          transcript: transcriptInternal,
+          intakeState: {
+            transcript: transcriptInternal,
+            mode: "discovery",
+          },
+          diagnosticMetrics: metricsForResponse,
+          status: "discovery_ready",
+          statusMessage: "Resuming discovery chat.",
+        });
+      }
+    }
+
     if (
       hasExistingReportGenerated &&
       (!messages || messages.length === 0) &&
@@ -4951,7 +5138,7 @@ ${Math.round(signalOutput)}%`;
 
       const welcomeTranscript = [welcomeMessage];
 
-      // Save the welcome message to chat
+      // Save the welcome message to chat AND update intakeState to prevent duplicate on refresh
       if (appUser) {
         await saveChatIncrementally({
           userId: appUser.id,
@@ -4960,6 +5147,21 @@ ${Math.round(signalOutput)}%`;
           transcript: welcomeTranscript,
           isChatEnded: false,
           forceNewChat: true, // ALWAYS start a new chat record for the welcome message
+        });
+      }
+
+      // Also update intakeState in Diagnostic model so the transcript is available on refresh
+      if (existingDiagnostic) {
+        await existingDiagnostic.update({
+          data: {
+            ...(existingDiagnostic.data || {}),
+            intakeState: {
+              ...(existingDiagnostic.data?.intakeState || {}),
+              transcript: welcomeTranscript,
+              mode: "discovery",
+              updatedAt: new Date().toISOString(),
+            },
+          },
         });
       }
 
@@ -5043,9 +5245,9 @@ ${Math.round(signalOutput)}%`;
 
       if (lastAssistantInternal && lastUserInternal) {
         const aiAns = await isAiLikelyAnswer({
-          question: lastAssistantInternal.content,
-          reply: lastUserInternal.content,
-        });
+              question: lastAssistantInternal.content,
+              reply: lastUserInternal.content,
+            });
         pendingQ = !aiAns;
       } else if (lastAssistantInternal) {
         pendingQ = true;
@@ -5069,7 +5271,7 @@ ${Math.round(signalOutput)}%`;
           pendingQuestions: Math.max(
             0,
             25 -
-            transcriptInternal.filter((m) => m.role === "assistant").length,
+              transcriptInternal.filter((m) => m.role === "assistant").length,
           ),
         },
         diagnosticMetrics: metricsForResponse,
@@ -5306,9 +5508,9 @@ ${Math.round(signalOutput)}%`;
     aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-          question: lastAssistant.content,
-          reply: lastUser.content,
-        })
+              question: lastAssistant.content,
+              reply: lastUser.content,
+            })
         : false;
 
     const qStats = trackQuestionNumbers(transcript);
@@ -5653,9 +5855,49 @@ ${Math.round(signalOutput)}%`;
           30000,
         );
         nextMessage = response.choices[0].message;
-        if (nextMessage?.content) aiAnswered = true;
       } catch (err) {
         console.error("[diagnostic] AI Call failed or timed out:", err);
+      }
+
+      // ENFORCE: User did not answer — if the model advanced to next Q anyway, force re-ask same Q
+      if (
+        !isDiscoveryMode &&
+        aiAnswered === false &&
+        nextMessage?.content &&
+        lastAssistant?.content
+      ) {
+        const lastQNum = extractQuestionNumber(lastAssistant.content);
+        if (lastQNum != null) {
+          const nextQNum = lastQNum + 1;
+          const advancedToNextQ = new RegExp(
+            `\\*\\*Q\\s*${nextQNum}\\s*[—–-]|Q\\s*${nextQNum}\\s*[—–-]`,
+            "i",
+          ).test(nextMessage.content);
+          if (advancedToNextQ) {
+            try {
+              const reaskPrompt = `The user did NOT answer the question. They said: "${(lastUser?.content || "").slice(0, 300)}".
+You MUST re-ask ONLY **Q${lastQNum}** in completely different words. Do NOT ask Q${nextQNum}.
+Output: (1) A brief acknowledgment that matches what they said: if they asked how you are / said hi → "Doing well, thanks!" or "Hi!". If they said something else (e.g. asked to pause, made a comment), acknowledge that in one short sentence (e.g. "No problem." or "Got it."). (2) Then **Q${lastQNum} — [Title]** and the same question rephrased in new words.
+Previous question: ${(lastAssistant.content || "").slice(0, 400)}`;
+              const reaskResp = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                  { role: "system", content: "You re-ask the same diagnostic question in different words. Never advance to the next question number." },
+                  { role: "user", content: reaskPrompt },
+                ],
+                temperature: 0.3,
+                max_tokens: 350,
+              });
+              const reaskContent = reaskResp?.choices?.[0]?.message?.content;
+              if (reaskContent && /Q\s*\d+/i.test(reaskContent)) {
+                nextMessage = { ...nextMessage, content: reaskContent };
+                console.log("[diagnostic] Enforced re-ask same Q after model advanced on non-answer");
+              }
+            } catch (err) {
+              console.error("[diagnostic] Re-ask enforcement failed:", err);
+            }
+          }
+        }
       }
     }
   }
@@ -5670,13 +5912,13 @@ ${Math.round(signalOutput)}%`;
     : false;
   const hasWelcomeAlready = Array.isArray(transcript)
     ? transcript.some(
-      (m) =>
-        m?.role === "assistant" &&
-        /welcome back/i.test(m.content || "") &&
-        /(loaded your last report|loaded your previous diagnostic report)/i.test(
-          m.content || "",
-        ),
-    )
+        (m) =>
+          m?.role === "assistant" &&
+          /welcome back/i.test(m.content || "") &&
+          /(loaded your last report|loaded your previous diagnostic report)/i.test(
+            m.content || "",
+          ),
+      )
     : false;
 
   if (
@@ -5755,22 +5997,22 @@ ${Math.round(signalOutput)}%`;
         : undefined;
     const signalCoherence =
       metricsToUse.signalCoherence !== undefined &&
-        metricsToUse.signalCoherence !== null
+      metricsToUse.signalCoherence !== null
         ? metricsToUse.signalCoherence
         : undefined;
     const signalOutput =
       metricsToUse.signalOutput !== undefined &&
-        metricsToUse.signalOutput !== null
+      metricsToUse.signalOutput !== null
         ? metricsToUse.signalOutput
         : undefined;
     const consciousnessLevel =
       metricsToUse.consciousnessLevel !== undefined &&
-        metricsToUse.consciousnessLevel !== null
+      metricsToUse.consciousnessLevel !== null
         ? metricsToUse.consciousnessLevel
         : undefined;
     const qgcActivation =
       metricsToUse.qgcActivation !== undefined &&
-        metricsToUse.qgcActivation !== null
+      metricsToUse.qgcActivation !== null
         ? metricsToUse.qgcActivation
         : undefined;
 
@@ -5854,10 +6096,12 @@ ${formatPercentage(signalOutput)}`
     }
 
     const qText = correction
-      ? `Since this report (${reportDate || "recently"
-      }), have you made any progress on ${correction}?`
-      : `Since this report (${reportDate || "recently"
-      }), what has changed or stayed the same?`;
+      ? `Since this report (${
+          reportDate || "recently"
+        }), have you made any progress on ${correction}?`
+      : `Since this report (${
+          reportDate || "recently"
+        }), what has changed or stayed the same?`;
 
     nextMessage = {
       role: "assistant",
@@ -5868,19 +6112,21 @@ I want to reflect it back to you first — simply and cleanly — before we move
 Your structure at the last check-in was very clear:
 ${metricsSection}
 
-${keySentence
-          ? `This is the key sentence from your map, distilled:
+${
+  keySentence
+    ? `This is the key sentence from your map, distilled:
 > *"${keySentence}"*
 
 `
-          : ""
-        }${correction
+    : ""
+}${
+        correction
           ? `Your **entire correction** was about one thing only:
 **${correction}**
 
 `
           : ""
-        }Before I update anything, I need to check one thing — slowly.
+      }Before I update anything, I need to check one thing — slowly.
 
 **Since this report (${reportDate || "recently"}):**
 
@@ -5921,9 +6167,9 @@ Take your time and share what feels true for you.`,
       isChatEnded: false,
       forceNewChat: isNewDiscoverySession, // Force new session if this was the welcome message turn
       ...(wantsNewDiagnostic &&
-        hasIncompleteChat &&
-        isIncompleteChatDiscoveryMode &&
-        incompleteChatId
+      hasIncompleteChat &&
+      isIncompleteChatDiscoveryMode &&
+      incompleteChatId
         ? { existingChatId: incompleteChatId }
         : {}),
     });
@@ -5963,14 +6209,19 @@ Take your time and share what feels true for you.`,
     );
   }).length;
 
+  // Use acceptedAnswers.length as source of truth when available (avoids undercount when extractQuestionNumber misses a Q in transcript)
+  const derivedAnsweredCount = Math.max(
+    0,
+    (distinctQuestionsAnswered || 0) -
+      (pendingQuestion || lastTurnWasRephrasing ? 1 : 0),
+  );
   const intakeState = {
     transcript: updatedTranscript,
     acceptedAnswers,
-    answeredCount: Math.max(
-      0,
-      (distinctQuestionsAnswered || 0) -
-      (pendingQuestion || lastTurnWasRephrasing ? 1 : 0),
-    ),
+    answeredCount:
+      acceptedAnswers.length > 0
+        ? Math.max(acceptedAnswers.length, derivedAnsweredCount)
+        : derivedAnsweredCount,
     lastQuestionNumber: maxQuestionNumber,
     pendingQuestion,
     updatedAt: new Date().toISOString(),
@@ -6081,7 +6332,7 @@ Take your time and share what feels true for you.`,
   if (finalize) {
     const transcriptForFinal =
       (Array.isArray(existingState.transcript) &&
-        existingState.transcript.length
+      existingState.transcript.length
         ? existingState.transcript
         : transcript) || [];
     const finalUser = [...transcriptForFinal]
@@ -6726,6 +6977,94 @@ const getUCRecommendations = (metrics = {}) => {
  * Retrieves all chat history for a user (both diagnostic and discovery)
  */
 
+/**
+ * ============================================
+ * REGENERATE PDF FROM EXISTING DIAGNOSTIC
+ * ============================================
+ * Regenerates the PDF from an existing diagnostic's aiReport
+ * Useful after code fixes or when PDF needs to be updated
+ */
+const regeneratePdf = async (req, res) => {
+  try {
+    const { diagnosticId, email } = req.body;
+
+    if (!diagnosticId && !email) {
+      return errorResponse(
+        res,
+        "Either diagnosticId or email is required",
+        400,
+      );
+    }
+
+    // Find the diagnostic
+    let diagnostic;
+    if (diagnosticId) {
+      diagnostic = await Diagnostic.findByPk(diagnosticId);
+    } else {
+      diagnostic = await Diagnostic.findOne({
+        where: { email },
+        order: [["updatedAt", "DESC"]],
+      });
+    }
+
+    if (!diagnostic) {
+      return errorResponse(res, "Diagnostic not found", 404);
+    }
+
+    const aiReport = diagnostic.data?.aiReport;
+    if (!aiReport) {
+      return errorResponse(
+        res,
+        "No aiReport found in diagnostic. Cannot regenerate PDF.",
+        400,
+      );
+    }
+
+    console.log("[regeneratePdf] Regenerating PDF for diagnostic:", {
+      diagnosticId: diagnostic.id,
+      email: diagnostic.email,
+      aiReportLength: aiReport.length,
+    });
+
+    // Generate new PDF
+    const pdfPath = await generateDiagnosticPdf(diagnostic);
+
+    // Upload to Supabase
+    let pdf = { path: pdfPath, url: null };
+    try {
+      const buffer = await fs.promises.readFile(pdfPath);
+      const upload = await uploadBufferToSupabase({
+        buffer,
+        objectPath: `diagnostics/${diagnostic.id || Date.now()}-regenerated.pdf`,
+        contentType: "application/pdf",
+      });
+      pdf = upload;
+      console.log("[regeneratePdf] PDF uploaded to Supabase:", upload);
+
+      // Update diagnostic with new PDF URL
+      await diagnostic.update({
+        pdfUrl: pdf.url || null,
+        data: {
+          ...(diagnostic.data || {}),
+          pdf,
+          pdfRegeneratedAt: new Date().toISOString(),
+        },
+      });
+    } catch (uploadErr) {
+      console.error("[regeneratePdf] Failed to upload PDF:", uploadErr.message);
+    }
+
+    return successResponse(res, "PDF regenerated successfully", {
+      diagnosticId: diagnostic.id,
+      pdfPath,
+      pdfUrl: pdf.url,
+    });
+  } catch (err) {
+    console.error("[regeneratePdf] Error:", err);
+    return errorResponse(res, `Failed to regenerate PDF: ${err.message}`, 500);
+  }
+};
+
 module.exports = {
   listMine,
   listAll,
@@ -6740,5 +7079,5 @@ module.exports = {
   findOrCreateCreatorUser,
   getDignosticById,
   generateOTP,
+  regeneratePdf,
 };
-

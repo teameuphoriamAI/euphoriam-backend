@@ -14,6 +14,12 @@ const { createEmbeddings } = require("../config/Embedding");
 const { generateSessionSummary } = require("../config/sessionSummary");
 const { cleanTranscriptText } = require("../helpers/euphoriamChatbot");
 const { PromptType } = require("../utils/types");
+
+// Vector store service for semantic search
+const {
+  storeSessionInVectorDB,
+  searchSessions,
+} = require("../services/vectorStoreService");
 // Admin login (uses existing auth but ensures admin role)
 const adminLogin = async (req, res) => {
   // This will be handled by the existing auth/login endpoint
@@ -703,6 +709,19 @@ const uploadUserSession = async (req, res) => {
       sessionDate: parsedDate,
     });
 
+    // Store in vector DB for semantic search (async, non-blocking)
+    storeSessionInVectorDB({
+      sessionId: userSession.id,
+      userId: userId,
+      email: email || null,
+      transcript: parsedTranscript,
+      summary: summary,
+      metadata: {
+        sessionDate: parsedDate,
+        createdAt: userSession.createdAt,
+      },
+    }).catch((err) => console.error("[uploadUserSession] Vector DB error:", err));
+
     return successResponse(res, "User session uploaded successfully", {
       session: userSession,
       message: userId
@@ -888,6 +907,63 @@ const singleUserSessionToUser = async (req, res) => {
   }
 };
 
+/**
+ * Semantic search for user sessions
+ * Find relevant past coaching sessions based on meaning
+ */
+const searchUserSessionsSemantic = async (req, res) => {
+  try {
+    const { query, email, userId, topK = 5 } = req.body || {};
+
+    if (!query || query.trim().length === 0) {
+      return errorResponse(res, "Search query is required", 400);
+    }
+
+    // Search using vector store
+    const results = await searchSessions({
+      query: query.trim(),
+      userId: userId || undefined,
+      email: email || undefined,
+      topK: parseInt(topK) || 5,
+      minScore: 0.3,
+    });
+
+    // Fetch full session data for the results
+    const sessionIds = results.map((r) => parseInt(r.sessionId)).filter(Boolean);
+    const fullSessions = await UserSession.findAll({
+      where: { id: sessionIds },
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "email", "name"],
+        },
+      ],
+    });
+
+    // Merge full session data with similarity scores
+    const enrichedResults = results.map((result) => {
+      const fullSession = fullSessions.find((s) => s.id === parseInt(result.sessionId));
+      return {
+        ...result,
+        transcript: fullSession?.transcript || [],
+        summary: fullSession?.summery || null,
+        user: fullSession?.user || null,
+        sessionDate: fullSession?.sessionDate,
+      };
+    });
+
+    return successResponse(res, "Search completed", {
+      results: enrichedResults,
+      total: enrichedResults.length,
+      query: query,
+    });
+  } catch (error) {
+    console.error("[searchUserSessionsSemantic] Error:", error);
+    return errorResponse(res, "Failed to search sessions", 500);
+  }
+};
+
 module.exports = {
   adminLogin,
   getAllUsers,
@@ -905,4 +981,5 @@ module.exports = {
   getUserSessions,
   getUserLatestSession,
   singleUserSessionToUser,
+  searchUserSessionsSemantic,
 };

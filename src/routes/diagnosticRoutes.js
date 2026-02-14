@@ -29,6 +29,14 @@ router.get("/pdf-urls", auth, asyncHandler(diagnosticController.getAllPdfUrls));
 
 router.post("/pdf-urls", auth, asyncHandler(diagnosticController.getAllPdfUrls));
 
+// Regenerate PDF from existing diagnostic (admin only)
+router.post(
+  "/regenerate-pdf",
+  auth,
+  requireRole(["admin"]),
+  asyncHandler(diagnosticController.regeneratePdf)
+);
+
 // User metrics endpoint (for dashboard)
 router.get("/metrics/user", asyncHandler(diagnosticController.getUserMetrics));
 

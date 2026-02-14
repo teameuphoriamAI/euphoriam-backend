@@ -779,11 +779,13 @@ const renderStyledReport = (
     }
 
     if (inIntroSection && !introEnded) {
-      // actually, let's keep it simple: just detect end of intro
+      // End intro on divider, markdown header, or main report section (SECTION 1, METRICS GAUGE, etc.)
       const isDivider = /^[\-─_]{3,}/.test(line);
+      const isSectionStart = /^SECTION\s+\d+/i.test(line) || /^STRUCTURE\s+TYPE/i.test(line);
+      const isMainContentHeader = /^METRICS\s+GAUGE/i.test(line) || /^FRICTION\s+ANALYSIS/i.test(line);
       const isHeader = /^##/.test(line) || /SHORT SUMMARY/i.test(line);
 
-      if (isDivider || isHeader) {
+      if (isDivider || isHeader || isSectionStart || isMainContentHeader) {
         introEnded = true;
         inIntroSection = false;
         // Render intro
@@ -793,6 +795,7 @@ const renderStyledReport = (
           doc.fillColor("#111111").fontSize(11).font("Helvetica");
           doc.moveDown(1);
         }
+        // Fall through so this line (e.g. SECTION 1) is processed as content
       } else {
         introLines.push(line);
         continue; // don't render yet

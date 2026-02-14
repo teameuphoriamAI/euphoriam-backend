@@ -9,6 +9,7 @@ const {
   calculateDiagnosticConfidence,
   getLatestPromptFromDb,
   buildChatPrompts,
+  isAiLikelyAnswer,
 } = require("../helpers/euphoriamChatbot");
 const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
 const { PromptType } = require("../utils/types");
@@ -518,6 +519,22 @@ const wireChatbotFreeform = (io) => {
           : Promise.resolve(null),
       ]);
 
+      // In diagnostic mode, use LLM to decide if user's message answers the last question (don't advance on greetings/goodbye/off-topic)
+      let aiAnswered = true;
+      let lastQuestionNumForEnforcement = null;
+      if (session.mode === "diagnostic" && assistantQuestions > 0) {
+        const lastAssistant = [...session.transcript]
+          .reverse()
+          .find((m) => m?.role === "assistant");
+        if (lastAssistant?.content) {
+          aiAnswered = await isAiLikelyAnswer({
+            question: lastAssistant.content,
+            reply: content,
+          });
+          if (!aiAnswered) lastQuestionNumForEnforcement = extractQuestionNumber(lastAssistant.content);
+        }
+      }
+
       // Use robust buildChatPrompts helper to construct both system and user prompts
       const { systemPrompt, userPrompt: chatPrompt } = await buildChatPrompts({
         isDiscoveryMode: session.mode === "discovery",
@@ -542,6 +559,7 @@ const wireChatbotFreeform = (io) => {
           : null,
         latestUserSession: session.latestUserSession || null,
         confidenceResult,
+        aiAnswered,
       });
 
       const safeSystemPrompt = systemPrompt || (session.mode === "discovery" ? "You are Euphoriam AI." : "EUPHORIAM_FREEFORM_INTAKE_SYSTEM_PROMPT");
@@ -626,6 +644,48 @@ const wireChatbotFreeform = (io) => {
       });
 
       let msg = aiResponse.choices[0].message;
+
+      // ENFORCE: User did not answer — if the model advanced to the next Q anyway, force re-ask same Q
+      if (
+        session.mode === "diagnostic" &&
+        aiAnswered === false &&
+        lastQuestionNumForEnforcement != null &&
+        msg?.content
+      ) {
+        const nextQNum = lastQuestionNumForEnforcement + 1;
+        const advancedToNextQ = new RegExp(
+          `\\*\\*Q\\s*${nextQNum}\\s*[—–-]|Q\\s*${nextQNum}\\s*[—–-]`,
+          "i",
+        ).test(msg.content);
+        if (advancedToNextQ) {
+          const lastAssistant = [...session.transcript]
+            .reverse()
+            .find((m) => m?.role === "assistant");
+          const qText = lastAssistant?.content || "";
+          const reaskPrompt = `The user did NOT answer the question. They said: "${(content || "").slice(0, 300)}".
+You MUST re-ask ONLY **Q${lastQuestionNumForEnforcement}** in completely different words. Do NOT ask Q${nextQNum}.
+Output: (1) A brief acknowledgment that matches what they said: if they asked how you are / said hi → "Doing well, thanks!" or "Hi!". If they said something else (e.g. asked to pause, made a comment), acknowledge that in one short sentence (e.g. "No problem." or "Got it."). (2) Then **Q${lastQuestionNumForEnforcement} — [Title]** and the same question rephrased in new words.
+Previous question text for reference: ${qText.slice(0, 400)}`;
+          try {
+            const reaskResp = await openai.chat.completions.create({
+              model: "gpt-4o",
+              messages: [
+                { role: "system", content: "You re-ask the same diagnostic question in different words. Never advance to the next question number." },
+                { role: "user", content: reaskPrompt },
+              ],
+              temperature: 0.3,
+              max_completion_tokens: 350,
+            });
+            const reaskContent = reaskResp?.choices?.[0]?.message?.content;
+            if (reaskContent && /Q\s*\d+/i.test(reaskContent)) {
+              msg = { ...msg, content: reaskContent };
+              console.log("[socket] Enforced re-ask same Q after model advanced on non-answer");
+            }
+          } catch (err) {
+            console.error("[socket] Re-ask enforcement failed:", err);
+          }
+        }
+      }
 
       // Clean up any numbered questions in discovery mode
       if (session.mode === "discovery" && msg.content) {

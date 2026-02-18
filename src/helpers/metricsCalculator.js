@@ -1,12 +1,22 @@
 /**
  * Metrics Calculator using Euphoriam Formula
  * 
- * Calculates metrics using: (QGC × CL) × Gravity = Signal to the Field
+ * Core Euphoriam Master Formula (theoretical): (QGC × CL) × Gravity = Signal to the Field
+ * 
+ * Operational Signal Output Formula (implemented): Signal Output = (QGC × CL) - Gravity
+ * 
+ * Where:
+ * - QGC = Quantum Genius Codes (activation 0-100)
+ * - CL = Consciousness Level (1-5, converted to holding capacity 0-100)
+ * - Gravity = Gravity Load × Depth Multiplier (distortion force that reduces signal)
+ * 
+ * The subtractive formula represents Gravity as a penalty/distortion force that reduces
+ * the signal, rather than a multiplier. This is the operational implementation.
  * 
  * This module:
  * 1. Extracts vortex signature (EO + Lack + Avoid) from conversation/report
- * 2. Calculates signal output using the formula
- * 3. Determines gravity depth
+ * 2. Calculates signal output using the formula: (QGC × CL) - Gravity
+ * 3. Determines gravity depth (1, 2, or 3)
  * 4. Provides calculated metrics for discovery reports
  */
 
@@ -99,14 +109,35 @@ const extractVortexSignature = (text = '', existingMetrics = {}) => {
   if (totalScore >= 5) confidence = 'high';
   else if (totalScore >= 2) confidence = 'medium';
 
-  // If no clear pattern found, return null
+  // If no clear pattern found, fall back to existing metrics if available
   if (totalScore === 0) {
+    if (existingMetrics.vortexSignature) {
+      // Parse existing signature (format: "EO+Lack+Avoid")
+      const parts = existingMetrics.vortexSignature.split('+');
+      return {
+        eo: existingMetrics.eo || parts[0] || null,
+        lack: existingMetrics.lack || parts[1] || null,
+        avoid: existingMetrics.avoid || parts[2] || null,
+        signatureId: existingMetrics.vortexSignature,
+        confidence: 'low',
+        scores: {
+          eo: scoreEO,
+          lack: scoreLack,
+          avoid: scoreAvoid
+        }
+      };
+    }
     return {
       eo: null,
       lack: null,
       avoid: null,
       signatureId: null,
-      confidence: 'low'
+      confidence: 'low',
+      scores: {
+        eo: scoreEO,
+        lack: scoreLack,
+        avoid: scoreAvoid
+      }
     };
   }
 
@@ -219,6 +250,12 @@ const calculateDiscoveryMetrics = ({
   // Extract vortex signature
   const signature = extractVortexSignature(conversationText, existingMetrics);
   console.log('[calculateDiscoveryMetrics] Extracted signature:', signature);
+  
+  // Log if signature is falling back to existing metrics (might indicate conversation didn't change enough)
+  if (signature.signatureId && existingMetrics.vortexSignature && 
+      signature.signatureId === existingMetrics.vortexSignature) {
+    console.log('[calculateDiscoveryMetrics] ⚠️ Signature unchanged from previous discovery - conversation may need more distinct content');
+  }
   
   // Determine gravity depth
   const gravityDepth = determineGravityDepth(conversationText, existingMetrics);
@@ -355,12 +392,14 @@ const updateMetricsFromDiscovery = ({
   const merged = {
     ...existingMetrics,
     ...calculatedMetrics,
-    // Prefer extracted metrics for QGC, CL, Gravity if available (AI may have better insight)
+    // Prefer extracted metrics for QGC, CL, Gravity, and Signal Coherence if available (AI may have better insight)
     qgcActivation: extractedMetrics.qgcActivation ?? calculatedMetrics.qgcActivation,
     consciousnessLevel: extractedMetrics.consciousnessLevel ?? calculatedMetrics.consciousnessLevel,
     gravity: extractedMetrics.gravity ?? calculatedMetrics.gravity,
     signalCoherence: extractedMetrics.signalCoherence ?? calculatedMetrics.signalCoherence,
-    // Always use calculated signal output (formula-based)
+    // IMPORTANT: Signal Output MUST always come from formula calculation, not extracted from AI report
+    // Signal Output is a calculated metric: (QGC × CL) - Gravity = Signal Output
+    // The AI may incorrectly set it to the same value as Signal Coherence, so we always use the formula
     signalOutput: calculatedMetrics.signalOutput,
     // Always include formula-based additions
     gravityDepth: calculatedMetrics.gravityDepth,
@@ -378,7 +417,9 @@ const updateMetricsFromDiscovery = ({
     gravity: merged.gravity,
     signalCoherence: merged.signalCoherence,
     signalOutput: merged.signalOutput,
-    signalOutputSource: extractedMetrics.signalOutput !== undefined ? 'extracted (overridden by formula)' : 'calculated',
+    signalOutputSource: 'calculated (formula-based, always)',
+    extractedSignalOutput: extractedMetrics.signalOutput,
+    note: 'Signal Output is always calculated from formula, not extracted from AI report',
     formula: merged.formula
   });
   

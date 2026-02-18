@@ -51,10 +51,10 @@ const extractQuestionNumber = (text = "") => {
 
 const isCreatorClubMember = (context = {}) => {
   const hasProduct = (context.products || []).some((p) =>
-    (p.title || "").toLowerCase().includes("creator club")
+    (p.title || "").toLowerCase().includes("creator club"),
   );
   const hasOffer = (context.offers || []).some((o) =>
-    (o.title || "").toLowerCase().includes("creator club")
+    (o.title || "").toLowerCase().includes("creator club"),
   );
   return hasProduct || hasOffer;
 };
@@ -98,36 +98,46 @@ const isAiLikelyAnswer = async ({ question, reply }) => {
     const questionText = (question || "").toLowerCase();
     const isYesNoQuestion =
       /^(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\s+/i.test(
-        question
+        question,
       ) || // Starts with auxiliary verb
-      /\?$/.test(question.trim()) && // Ends with question mark AND
-      /(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\s+/.test(
-        question
-      ); // Contains auxiliary verb
+      (/\?$/.test(question.trim()) && // Ends with question mark AND
+        /(do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\s+/.test(
+          question,
+        )); // Contains auxiliary verb
 
     // Also check if question is open-ended (what/how/why/when/where/who/describe/explain)
     const isOpenEnded =
       /^(what|how|why|when|where|who|describe|explain|tell\s+me|share)/i.test(
-        question
+        question,
       ) ||
       /\b(what|how|why|when|where|who|describe|explain|tell|share)\b/i.test(
-        question
+        question,
       );
 
     if (isYesNoQuestion && !isOpenEnded) {
-      console.log(`[isAiLikelyAnswer] Accepting yes/no for yes/no question: "${question}"`);
+      console.log(
+        `[isAiLikelyAnswer] Accepting yes/no for yes/no question: "${question}"`,
+      );
       return true; // Accept yes/no for yes/no questions
     }
 
     // STRICT HEURISTIC: If it's strictly open-ended (starts with what/how/etc and NOT a yes/no structure)
     // then a solitary "yes" or "no" is NEVER a valid answer.
-    if (!isYesNoQuestion && isOpenEnded && simpleAnswers.includes(normalizedReply)) {
-      console.log(`[isAiLikelyAnswer] STRICT REJECT: soliltary "${normalizedReply}" for open-ended question: "${question}"`);
+    if (
+      !isYesNoQuestion &&
+      isOpenEnded &&
+      simpleAnswers.includes(normalizedReply)
+    ) {
+      console.log(
+        `[isAiLikelyAnswer] STRICT REJECT: soliltary "${normalizedReply}" for open-ended question: "${question}"`,
+      );
       return false;
     }
 
     // For open-ended questions, "yes" or "no" alone is NOT a valid answer - pass to AI classifier
-    console.log(`[isAiLikelyAnswer] Passing yes/no for complex check to AI classifier: "${question}" (isYesNoQuestion=${isYesNoQuestion}, isOpenEnded=${isOpenEnded})`);
+    console.log(
+      `[isAiLikelyAnswer] Passing yes/no for complex check to AI classifier: "${question}" (isYesNoQuestion=${isYesNoQuestion}, isOpenEnded=${isOpenEnded})`,
+    );
   }
 
   // Single letter answers (A, B, C, etc.) - only accept if question has multiple choice options
@@ -282,10 +292,10 @@ Examples:
 
   try {
     const resp = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5.2",
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_completion_tokens: 20,
+      max_completion_tokens: 30,
     });
     const txt = (resp?.choices?.[0]?.message?.content || "").toLowerCase();
     return txt.includes("yes");
@@ -560,7 +570,7 @@ export async function detectUserWantsNewDiagnostic({
 }) {
   console.log(
     "[detectUserWantsNewDiagnostic] Checking user message:",
-    userMessage?.substring(0, 100)
+    userMessage?.substring(0, 100),
   );
 
   // Check if assistant just said they're ready to generate the current report
@@ -569,7 +579,7 @@ export async function detectUserWantsNewDiagnostic({
     "";
   const assistantSaysReadyToGenerate =
     /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|can generate|will generate)/i.test(
-      lastAssistantMessage
+      lastAssistantMessage,
     );
 
   // If assistant just said they're ready to generate, and user says "generate it" or similar,
@@ -577,11 +587,11 @@ export async function detectUserWantsNewDiagnostic({
   if (assistantSaysReadyToGenerate) {
     const userWantsToGenerateCurrent =
       /^(generate|generate it|generate my report|generate report|yes|go ahead|do it|please|ok)$/i.test(
-        userMessage.trim()
+        userMessage.trim(),
       );
     if (userWantsToGenerateCurrent) {
       console.log(
-        "[detectUserWantsNewDiagnostic] Assistant is ready to generate, user wants to generate CURRENT report (not new diagnostic)"
+        "[detectUserWantsNewDiagnostic] Assistant is ready to generate, user wants to generate CURRENT report (not new diagnostic)",
       );
       return false; // They want to generate current report, not start new diagnostic
     }
@@ -649,7 +659,7 @@ Reply:`;
       result,
       "(response:",
       txt,
-      ")"
+      ")",
     );
 
     return result;
@@ -664,10 +674,11 @@ export async function detectUserWantsToEndOrGenerateReport({
   userMessage,
   transcript = [],
   wantsNewDiagnosticVal = null, // Optional pre-calculated value to save an LLM call
+  ignoreEndChatIntent = false, // If true, only return "yes" for report-related requests, not for ending the chat
 }) {
   console.log(
     "[detectUserWantsToEndOrGenerateReport] Checking user message:",
-    userMessage?.substring(0, 100)
+    userMessage?.substring(0, 100),
   );
 
   // FIRST: Check if user wants a new diagnostic - if so, they DON'T want to end/generate report
@@ -675,18 +686,18 @@ export async function detectUserWantsToEndOrGenerateReport({
     wantsNewDiagnosticVal !== null
       ? wantsNewDiagnosticVal
       : await detectUserWantsNewDiagnostic({
-        userMessage,
-        transcript,
-      });
+          userMessage,
+          transcript,
+        });
 
   console.log(
     "[detectUserWantsToEndOrGenerateReport] wantsNewDiagnostic:",
-    wantsNewDiagnostic
+    wantsNewDiagnostic,
   );
 
   if (wantsNewDiagnostic) {
     console.log(
-      "[detectUserWantsToEndOrGenerateReport] ❌ User wants new diagnostic, NOT to end/generate report"
+      "[detectUserWantsToEndOrGenerateReport] ❌ User wants new diagnostic, NOT to end/generate report",
     );
     return false; // User wants new diagnostic, NOT to end/generate report
   }
@@ -711,10 +722,11 @@ ${JSON.stringify(transcript.slice(-5), null, 2)}
 CRITICAL RULES - BE VERY STRICT:
 - Reply ONLY "yes" or "no"
 - Return "yes" ONLY if the user EXPLICITLY and CLEARLY uses ACTION WORDS like:
-  * "end chat", "finish chat", "stop chat", "close chat"
+  * ${ignoreEndChatIntent ? "" : '"end chat", "finish chat", "stop chat", "close chat",'}
   * "generate report", "generate my report", "get my report", "send report", "email report"
-  * "I'm done", "I'm finished", "that's enough for me", "we're done here"
-  * "I want to end", "let's end this", "end the conversation"
+  * ${ignoreEndChatIntent ? "" : '"I\'m done", "I\'m finished", "that\'s enough for me", "we\'re done here",'}
+  * ${ignoreEndChatIntent ? "" : '"I want to end", "let\'s end this", "end the conversation"'}
+${ignoreEndChatIntent ? '- CRITICAL: ignoreEndChatIntent is TRUE. You MUST return "no" if the user only wants to end, stop, or finish the chat. ONLY return "yes" if they explicitly ask for a REPORT to be generated, emailed, or sent.' : ""}
 - Return "no" for ANY casual responses, status updates, or answers to questions, including:
   * "doing good" / "doing good for now" → NO (casual response to "how are you doing?")
   * "I'm good" / "I'm good for now" → NO (casual response, NOT a request to end)
@@ -783,7 +795,7 @@ Examples:
 Reply:`;
 
   console.log(
-    "[detectUserWantsToEndOrGenerateReport] Falling back to LLM classifier"
+    "[detectUserWantsToEndOrGenerateReport] Falling back to LLM classifier",
   );
 
   try {
@@ -803,7 +815,7 @@ Reply:`;
       result,
       "(response:",
       txt,
-      ")"
+      ")",
     );
 
     return result;
@@ -824,6 +836,23 @@ export async function detectDiscoveryEndIntents({
     return { endChat: false, generateReport: false };
   }
 
+  // CRITICAL SAFEGUARD: If message is clearly a question, return false immediately
+  // This prevents questions from being misclassified as end-chat intents
+  const trimmedMessage = (userMessage || "").trim();
+  const isQuestion =
+    trimmedMessage.endsWith("?") ||
+    /^(what|how|why|when|where|who|which|can|could|would|should|will|do|does|did|is|are|was|were|if|tell me|explain|describe)/i.test(
+      trimmedMessage,
+    );
+
+  if (isQuestion) {
+    console.log(
+      "[detectDiscoveryEndIntents] Message is a question - returning false immediately:",
+      trimmedMessage,
+    );
+    return { endChat: false, generateReport: false, wantsEmail: false };
+  }
+
   const prompt = `
 You are an intent classifier for a discovery follow-up chat.
 
@@ -836,15 +865,26 @@ ${JSON.stringify((Array.isArray(transcript) ? transcript : []).slice(-5), null, 
 Return ONLY valid JSON in this exact format:
 {
   "endChat": boolean,
-  "generateReport": boolean
+  "generateReport": boolean,
+  "wantsEmail": boolean
 }
 
 Rules:
-- "endChat" is true if the user clearly wants to stop/pause/end for now (e.g., "end chat", "stop", "pause", "I'm done for now", "I'm done", "I'm finished").
-- "generateReport" is true ONLY if the user explicitly requests a report/email (e.g., "generate report", "email me the report", "send the report")
-  OR if the last assistant message clearly said they are ready to generate the discovery report AND the user confirms (e.g., "go ahead", "yes", "do it").
-- If the user says "I'm done for now" without mentioning report/email, set generateReport=false.
-- Be strict. When unsure, set generateReport=false.
+- "endChat" is true ONLY if the user clearly wants to stop/pause/end for now (e.g., "end chat", "stop", "pause", "I'm done for now", "I'm done", "I'm finished", "that's it").
+- "generateReport" is true ONLY if the user explicitly requests a report (e.g., "generate report", "make a report", "I want the report", "create my report") or email.
+- "generateReport" is ALSO true if the assistant just offered to generate a report (e.g., "I have enough information to generate...") and the user says "yes", "ok", "go ahead", "do it", "sure", or similar affirmative response.
+- "wantsEmail" is true ONLY if the user explicitly mentions "email", "send it to me", "send my report", "email me the report", etc.
+- CRITICAL: All flags MUST be false if the message is:
+  1) A greeting (e.g., "hi", "hello", "hey")
+  2) Gibberish or keyboard mashing
+  3) A question asked by the user (e.g., "what will you do...", "how do I...", "what is...", "can you...", "will you...", "if you...", "tell me...", "explain...", "describe...", or ANY message asking for information, explanation, or advice)
+  4) A statement describing something (e.g., "I feel...", "I think...", "I notice...", "when I...")
+  5) An answer to a question
+  6) A casual response or acknowledgment (e.g., "ok", "thanks", "sounds good")
+  7) Any message that is continuing the conversation rather than ending it
+- If the user says "I'm done for now" without mentioning report/email, set generateReport=false and wantsEmail=false.
+- Be VERY strict. When unsure, set these to false. Only return true for EXPLICIT and CLEAR requests to end or generate.
+- IMPORTANT: Questions are NEVER end-chat intents. If the user is asking something, all flags must be false.
 `;
 
   try {
@@ -860,6 +900,7 @@ Rules:
     return {
       endChat: parsed.endChat === true,
       generateReport: parsed.generateReport === true,
+      wantsEmail: parsed.wantsEmail === true,
     };
   } catch (err) {
     console.error("[detectDiscoveryEndIntents] ❌ LLM error", err);
@@ -885,7 +926,7 @@ export async function detectCombinedIntents({
   // Check for assistant ready to generate state
   const assistantSaysReadyToGenerate =
     /(I have|have enough|enough to generate|generate.*diagnostic|ready to generate|can generate|will generate)/i.test(
-      lastAssistantQuestion
+      lastAssistantQuestion,
     );
 
   const prompt = `
@@ -962,7 +1003,7 @@ export async function detectBotSignaledEnd({
     /\?[\s]*$/.test(msgContent) || /\?[\s]*\n/.test(msgContent);
   const asksPhrases =
     /(feel free to share|what do you|how do you|can you|tell me|share your|answer that|what happened|what was)/i.test(
-      msgContent
+      msgContent,
     );
 
   if (hasQuestion || asksPhrases) {
@@ -1034,7 +1075,7 @@ export async function detectConversationComplete({
 
   if (!transcript.length || !lastUserMessage) {
     console.log(
-      "[detectConversationComplete] early exit → missing transcript or lastUserMessage"
+      "[detectConversationComplete] early exit → missing transcript or lastUserMessage",
     );
     return false;
   }
@@ -1042,7 +1083,7 @@ export async function detectConversationComplete({
   console.log("[detectConversationComplete] lastUserMessage:", lastUserMessage);
   console.log(
     "[detectConversationComplete] lastAssistantMessage:",
-    lastAssistantMessage
+    lastAssistantMessage,
   );
 
   // 1. Check if bot explicitly signaled end
@@ -1062,24 +1103,24 @@ export async function detectConversationComplete({
 
     const isExplicitConfirmation =
       /^(yes|yeah|yep|ok|okay|sure|go ahead|do it|generate|email|send)$/i.test(
-        userText
+        userText,
       );
 
     console.log("[detectConversationComplete] userText:", userText);
     console.log(
       "[detectConversationComplete] isExplicitConfirmation:",
-      isExplicitConfirmation
+      isExplicitConfirmation,
     );
 
     if (isExplicitConfirmation) {
       console.log(
-        "[detectConversationComplete] ✅ COMPLETE → bot signaled end + user explicitly confirmed"
+        "[detectConversationComplete] ✅ COMPLETE → bot signaled end + user explicitly confirmed",
       );
       return true;
     }
 
     console.log(
-      "[detectConversationComplete] ❌ bot signaled end but user did NOT explicitly confirm"
+      "[detectConversationComplete] ❌ bot signaled end but user did NOT explicitly confirm",
     );
     return false;
   }
@@ -1123,7 +1164,7 @@ Reply:
 
     console.log(
       "[detectConversationComplete] LLM decision:",
-      result ? "COMPLETE" : "NOT COMPLETE"
+      result ? "COMPLETE" : "NOT COMPLETE",
     );
 
     return result;
@@ -1189,7 +1230,8 @@ Strict rules:
 
     return {
       ready: parsed.ready === true,
-      stageLabel: typeof parsed.stageLabel === "string" ? parsed.stageLabel : "Unknown",
+      stageLabel:
+        typeof parsed.stageLabel === "string" ? parsed.stageLabel : "Unknown",
       stageEvidence:
         typeof parsed.stageEvidence === "string" ? parsed.stageEvidence : "",
       missingInfo: Array.isArray(parsed.missingInfo)
@@ -1219,4 +1261,3 @@ export async function handleFinalize(req, res, input, context) {
 
   return finalizeNewDiagnostic(req, res, input, context);
 }
-

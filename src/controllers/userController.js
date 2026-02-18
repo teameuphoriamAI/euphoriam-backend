@@ -9,7 +9,7 @@ const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { CoachingSession } = require("../models/coachingSessionModel");
 const { buildKajabiDiagnosticContext } = require("./kajabi");
-const { sequelize } = require("../config/sequelize");
+const { sequelize, withDbSlot } = require("../config/sequelize");
 const { Op } = require("sequelize");
 const {
   loadDiagnosticState,
@@ -322,11 +322,13 @@ const getUserProfile = async (req, res) => {
       return errorResponse(res, " email is required", 400);
     }
 
-    // Find user
-    const user = await User.findOne({
-      where: { email },
-      attributes: { exclude: ["password"] },
-    });
+    // Find user (guarded by DB slot to avoid pool exhaustion on low-connection plans)
+    const user = await withDbSlot(() =>
+      User.findOne({
+        where: { email },
+        attributes: { exclude: ["password"] },
+      }),
+    );
 
     if (!user) {
       return errorResponse(res, "User not found", 404);
@@ -397,21 +399,24 @@ const getUserProfile = async (req, res) => {
       existingDiagnosticId: existingDiagnostic?.id,
     });
 
-    // Run 3 independent DB queries in parallel
-    const [discoveries, latestDiagnostic, latestDiscovery] = await Promise.all([
-      Discovery.findAll({
-        where: { userId: user.id },
-        attributes: ["discoveryType"],
-      }),
-      Diagnostic.findOne({
-        where: { email: user.email },
-        order: [["updatedAt", "DESC"]],
-      }),
-      Discovery.findOne({
-        where: { userId: user.id },
-        order: [["updatedAt", "DESC"]],
-      }),
-    ]);
+    // Run 3 independent DB queries behind the semaphore to respect pool limits
+    const [discoveries, latestDiagnostic, latestDiscovery] = await withDbSlot(
+      () =>
+        Promise.all([
+          Discovery.findAll({
+            where: { userId: user.id },
+            attributes: ["discoveryType"],
+          }),
+          Diagnostic.findOne({
+            where: { email: user.email },
+            order: [["updatedAt", "DESC"]],
+          }),
+          Discovery.findOne({
+            where: { userId: user.id },
+            order: [["updatedAt", "DESC"]],
+          }),
+        ]),
+    );
 
     const discoveryCounts = {
       alignment: 0,

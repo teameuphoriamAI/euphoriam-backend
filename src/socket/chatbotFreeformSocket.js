@@ -32,6 +32,7 @@ const { uploadBufferToSupabase } = require("../utils/storage");
 const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
+const { detectDiscoveryEndIntents } = require("../utils/validation");
 
 const fs = require("fs");
 
@@ -454,10 +455,20 @@ const wireChatbotFreeform = (io) => {
           lowerContent,
         );
 
-      // If user wants new diagnostic, don't end chat - switch to diagnostic mode instead
+      const lastAssistant = [...session.transcript]
+        .reverse()
+        .find((m) => m.role === "assistant");
+      const discoveryIntents = session.mode === "discovery"
+        ? await detectDiscoveryEndIntents({
+          userMessage: content,
+          transcript: session.transcript,
+          lastAssistantMessage: lastAssistant?.content || "",
+        })
+        : { endChat: false, generateReport: false };
+
       if (
         session.mode === "discovery" &&
-        /end chat|finish chat|stop chat/i.test(content) &&
+        (discoveryIntents.endChat || discoveryIntents.generateReport) &&
         !wantsNewDiagnostic
       ) {
         socket.emit("ended", { reason: "user" });

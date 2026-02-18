@@ -1,7 +1,11 @@
 /**
  * Euphoriam Formula Matrix Generator
  *
- * Core Formula: (QGC × CL) × Gravity = Signal to the Field → mirrored reality
+ * Core Formula: Signal Output = (QGC × CL) - Gravity
+ * Where Gravity acts as a penalty/distortion force that reduces signal
+ * 
+ * Note: The theoretical formula (QGC × CL) × Gravity represents the full field interaction,
+ * but for Signal Output calculation, we use: (QGC × CL) - Gravity (subtractive model)
  *
  * This module generates:
  * 1. The 48 Vortex Signature Matrix (Failure Cards)
@@ -431,7 +435,20 @@ const getReceivedLanguage = (eo, lack, avoid) => {
 
 /**
  * Calculates Signal Output using the Euphoriam Formula:
- * (QGC × CL) × Gravity = Signal to the Field
+ * Signal Output = (QGC × CL) - Gravity
+ * 
+ * Where:
+ * - QGC = Quantum Genius Codes (activation 0-100)
+ * - CL = Consciousness Level (1-5, converted to holding capacity 0-100)
+ * - Gravity = Gravity Load × Depth Multiplier (distortion force that reduces signal)
+ * 
+ * Formula breakdown:
+ * 1. QGC × CL product = (QGC × CL Holding) / 100
+ * 2. Gravity Penalty = Gravity Load × Depth Multiplier (1.0, 1.4, or 1.9)
+ * 3. Signal Output = QGC×CL Product - Gravity Penalty
+ * 
+ * When Gravity > (QGC × CL), signal is negative (repulsion state)
+ * When (QGC × CL) > Gravity, signal is positive (attraction/lock-in state)
  *
  * @param {Object} params
  * @param {number} params.qgcActivation - QGC Activation (0-100)
@@ -537,13 +554,33 @@ const calculateSignal = ({
     gravityPenalty
   );
 
-  // Normalize to 0-100
-  const signalOutput = Math.max(0, Math.min(100, signalRaw));
+  // Normalize Signal Output to 0-100 scale
+  // According to Euphoriam Formula: Signal Output = (QGC × CL) - Gravity
+  // This can be negative when Gravity > (QGC × CL), representing repulsion state
+  // For display purposes, we normalize:
+  // - Negative values (repulsion) map to 0-50 range
+  // - Positive values (attraction/lock-in) map to 50-100 range
+  // This preserves the information that negative = repulsion while keeping 0-100 scale
+  let signalOutput;
+  if (signalRaw < 0) {
+    // Negative signal (repulsion): map to 0-50 range
+    // Example: -56 maps to ~22, -100 maps to 0, 0 maps to 50
+    signalOutput = Math.max(0, 50 + (signalRaw / 2)); // Divide by 2 to compress negative range
+  } else {
+    // Positive signal (attraction/lock-in): map to 50-100 range
+    // Example: 0 maps to 50, 50 maps to 75, 100 maps to 100
+    signalOutput = Math.min(100, 50 + (signalRaw / 2)); // Divide by 2 to compress positive range
+  }
+  
+  // Alternative: Simple clamp (loses negative information)
+  // const signalOutput = Math.max(0, Math.min(100, signalRaw));
+  
   console.log(
     "[calculateSignal] Normalized signal output:",
     signalOutput,
     "(raw was",
     signalRaw,
+    signalRaw < 0 ? "- repulsion state" : "- attraction/lock-in state",
     ")"
   );
 

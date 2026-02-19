@@ -6,6 +6,7 @@ const { User } = require("../models/userModel");
 const { Chat } = require("../models/chatModel");
 const validate = require("../helpers/validate");
 const openai = require("../config/openai");
+const { withDbSlot } = require("../config/sequelize");
 const { withTimeout } = require("../utils/timeout");
 const {
   discoveryReportEmail,
@@ -37,6 +38,7 @@ const {
   calculateDiagnosticConfidence,
   isAiLikelyAnswer, // Consistently use helper implementation
   isLikelyGibberishMessage,
+  isSocialOrGreetingLLM,
 } = require("../helpers/euphoriamChatbot");
 const jwt = require("jsonwebtoken");
 const { retrieveSimilarChunks } = require("../helpers/rag");
@@ -54,6 +56,8 @@ const {
   detectDiscoveryReportReadiness,
   detectDiscoveryEndIntents,
 } = require("../utils/validation");
+const { updateMetricsFromDiscovery } = require("../helpers/metricsCalculator");
+const { PromptType } = require("../utils/types");
 const { isCreatorClubMember } = require("./userController");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const generateOTP = () =>
@@ -373,37 +377,16 @@ const removeDuplicateDiscoveryWelcomeBlock = (transcript) => {
   return [...transcript.slice(0, secondIdx), ...transcript.slice(removeEnd)];
 };
 
-/** Returns true if content is gibberish or too short/invalid for diagnostic intake */
-const isDiagnosticInputInvalid = (userContent) => {
+/** LLM-based: Returns true if content is gibberish or truly invalid for diagnostic intake.
+ *  Delegates to the shared isLikelyGibberishMessage which uses GPT for classification.
+ */
+const isDiagnosticInputInvalid = async (userContent) => {
   if (!userContent || typeof userContent !== "string") return true;
   const text = userContent.trim();
-  const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
-  const validShortResponses =
-    /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah)$/i;
+  if (text.length === 0) return true;
 
-  if (text.length <= 1) return true;
-  if (wordCount === 0 && text.length <= 2) return true;
-  if (
-    wordCount === 1 &&
-    text.length <= 3 &&
-    !validShortResponses.test(text) &&
-    !/[aeiou]/i.test(text)
-  )
-    return true;
-
-  const lowerText = text.toLowerCase();
-  const vowels = (lowerText.match(/[aeiou]/gi) || []).length;
-  const consonants = (lowerText.match(/[bcdfghjklmnpqrstvwxyz]/gi) || [])
-    .length;
-  const totalLetters = vowels + consonants;
-  if (totalLetters > 0 && vowels === 0) return true;
-  if (totalLetters >= 8 && vowels / totalLetters < 0.15) return true;
-  if (/^(.{1,3})\1{3,}$/i.test(text)) return true;
-  if (wordCount === 1 && text.length >= 6 && consonants > 0 && vowels === 0)
-    return true;
-  if (/^[bcdfghjklmnpqrstvwxyz]{6,}$/i.test(text)) return true;
-
-  return false;
+  // Use the shared LLM-based gibberish detector
+  return await isLikelyGibberishMessage(text);
 };
 
 const buildDiscoveryEmail = ({ transcript = [], email }) => {
@@ -958,100 +941,85 @@ const handleDiscoveryMode = async ({
   //   }
   // }
 
-  // Validate user input for incomplete/invalid messages (discovery mode)
-  if (lastUser && lastUser.content) {
+  // Classify input type early (used for both gibberish return and end-chat skip logic)
+  let isSocialInput = false;
+  let isGibberishInput = false;
+
+  // Detect questions more comprehensively - not just ending with "?"
+  // Check for question words at the start, or question patterns
+  const userContentForQuestionCheck = (lastUser?.content || "").trim();
+  const isQuestionByPunctuation = userContentForQuestionCheck.endsWith("?");
+  const isQuestionByPattern =
+    /^(what|how|why|when|where|who|which|can|could|would|should|will|do|does|did|is|are|was|were|if|tell me|explain|describe|show me|help me)/i.test(
+      userContentForQuestionCheck,
+    );
+  let isUserQuestionInput = isQuestionByPunctuation || isQuestionByPattern;
+
+  if (lastUser?.content) {
     const userContent = lastUser.content.trim();
-    const wordCount = userContent
-      .split(/\s+/)
-      .filter((w) => w.length > 0).length;
+    const [social, gibberish] = await Promise.all([
+      isSocialOrGreetingLLM(userContent),
+      isLikelyGibberishMessage(userContent),
+    ]);
+    isSocialInput = social;
+    isGibberishInput = gibberish;
 
-    // Valid short responses that should be accepted (including greetings)
-    const validShortResponses =
-      /^(yes|no|maybe|idk|ok|okay|sure|fine|good|bad|better|worse|nope|yep|yeah|nah|hi|hello|hey)$/i;
+    // Log question detection for debugging
+    if (isUserQuestionInput) {
+      console.log("[handleDiscoveryMode] Detected user question:", {
+        content: userContent.substring(0, 100),
+        isQuestionByPunctuation,
+        isQuestionByPattern,
+      });
+    }
 
-    // Treat ultra-short, non-standard replies (like "l") as incomplete
-    const isIncompleteInput =
-      userContent.length <= 1 ||
-      (wordCount === 0 && userContent.length <= 2) ||
-      (wordCount === 1 &&
-        userContent.length <= 3 &&
-        !validShortResponses.test(userContent));
-
-    if (isIncompleteInput) {
-      console.log("[handleDiscoveryMode] Invalid/incomplete input detected:", {
+    if (isGibberishInput) {
+      console.log("[handleDiscoveryMode] LLM detected gibberish input:", {
         content: userContent,
         length: userContent.length,
-        wordCount,
-        isIncomplete: isIncompleteInput,
       });
-
-      // Use the last *real* question (skip our own validation messages)
-      const ourValidationPrefix =
-        "I see your message came through incomplete or unclear.";
-      const lastRealAssistant = [...transcript]
-        .reverse()
-        .find(
-          (m) =>
-            m?.role === "assistant" &&
-            m.content &&
-            !String(m.content).trim().startsWith(ourValidationPrefix),
-        );
-      const lastQuestion = (
-        lastRealAssistant?.content ||
-        lastAssistant?.content ||
-        ""
-      ).trim();
-
-      // Do NOT crop the question or inject "Here's the question again".
-      // Just restate the validation line and then show the full last question text.
-      const validationPrefix =
-        "I see your message came through incomplete or unclear. Could you share a bit more so I can understand what you're experiencing right now?";
-      const withQuestion =
-        lastQuestion && !lastQuestion.startsWith(ourValidationPrefix)
-          ? `${validationPrefix}\n\n${lastQuestion}`
-          : validationPrefix;
-
-      const incompleteResponse = {
-        role: "assistant",
-        content: withQuestion,
-      };
-
-      const incompleteTranscript = [...transcript, incompleteResponse];
-
-      // Save corrected transcript
-      if (appUser?.id) {
-        await saveChatIncrementally({
-          userId: appUser.id,
-          diagnosticId: existingDiagnostic?.id || null,
-          chatType: "discovery",
-          transcript: incompleteTranscript,
-          isChatEnded: false,
-        });
-      }
-
-      // Return validation message in normal discovery shape
-      return successResponse(res, "Next chatbot message", {
-        nextMessage: incompleteResponse,
-        introPageText: introText,
-        transcript: incompleteTranscript,
-        intakeState: {
-          ...existingState,
-          transcript: incompleteTranscript,
-          mode: "discovery",
-        },
-        retrieved: [],
-        resumeNotice: null,
-        status: "chatting",
-        statusMessage: "Chatting in progress",
-        canResume: true,
-        incompleteInput: true,
-      });
+      // We no longer return early here.
+      // Instead, we let the AI (gpt-4o) handle the rephrasing as instructed in the prompts.
     }
   }
 
   // Check if user has confirmed ending via frontend modal
   const userConfirmedEndChat = req.body.userConfirmedEndChat === true;
   const userDeclinedEndChat = req.body.userConfirmedEndChat === false;
+
+  // Detect if user implicitly declined end chat by sending a regular message
+  // (when modal was shown but user didn't click buttons, just sent a message)
+  const previousStatusWasAskEndChat =
+    existingState?.status === "ask_end_chat" ||
+    req.body.previousStatus === "ask_end_chat";
+  const userSentRegularMessage =
+    lastUser &&
+    lastUser.content &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat;
+
+  // If modal was shown and user sent a regular message (not explicit end intent),
+  // treat it as declining to end chat
+  let implicitDeclineEndChat = false;
+  if (previousStatusWasAskEndChat && userSentRegularMessage) {
+    // Check if the message is NOT an explicit end chat intent
+    const userMessage = (lastUser?.content || "").toLowerCase().trim();
+    const isExplicitEndIntent =
+      /^(end|finish|stop|done|close|yes|generate|create).*(chat|report|conversation)/i.test(
+        userMessage,
+      ) ||
+      /(end chat|finish chat|stop chat|generate report|create report)/i.test(
+        userMessage,
+      );
+
+    if (!isExplicitEndIntent) {
+      implicitDeclineEndChat = true;
+      console.log(
+        "[handleDiscoveryMode] User implicitly declined end chat by sending regular message:",
+        userMessage.substring(0, 50),
+      );
+    }
+  }
 
   // Discovery mode: Check if user wants to end/generate report
   // If nextMessage is null, it means we're skipping bot response to generate report directly
@@ -1070,6 +1038,7 @@ const handleDiscoveryMode = async ({
   let discoveryReadiness = null;
   let wantsToEndChat = false;
   let wantsToGenerateReport = false;
+  let intents = null; // Declare at function scope
 
   // Count questions asked in discovery mode for logging (but don't force completion based on count)
   // The bot should ask enough questions to understand the user's current state, then end naturally
@@ -1137,12 +1106,46 @@ const handleDiscoveryMode = async ({
   // If user has given 2+ non-answers in last 3 messages, treat as wanting to end
   const hasRepeatedNonAnswers = nonAnswerCount >= 2;
 
+  // Get last declined exchanges count (when user clicked "Continue chat" on the modal)
+  // If substantialExchanges is less than lastDeclinedExchanges, it means we're in a new session
+  // or the chat was reset, so we should reset the counter
   const lastDeclinedExchanges =
-    existingState.exchangesAtLastDeclinedEndChat || 0;
-  const exchangesSinceLastAsked = substantialExchanges - lastDeclinedExchanges;
+    existingState.exchangesAtLastDeclinedEndChat &&
+    existingState.exchangesAtLastDeclinedEndChat < substantialExchanges
+      ? existingState.exchangesAtLastDeclinedEndChat
+      : 0;
+
+  // Calculate exchanges since last asked (never negative)
+  const exchangesSinceLastAsked = Math.max(
+    0,
+    substantialExchanges - lastDeclinedExchanges,
+  );
+
+  // (Classification already performed at top of handleDiscoveryMode)
+
+  // IMPORTANT:
+  // We intentionally DO NOT skip end-check logic for purely "social" inputs anymore.
+  // Previously, messages like "end chat" could be misclassified as social/greeting,
+  // which prevented explicit end-intent detection from running.
+  // Now we only skip for:
+  // - gibberish inputs (where intent can't be trusted), or
+  // - direct user questions (where the user is clearly asking something, not ending).
+  const shouldSkipEndCheckForThisTurn = isGibberishInput || isUserQuestionInput;
+
+  if (shouldSkipEndCheckForThisTurn) {
+    console.log(
+      "[handleDiscoveryMode] Skipping end-chat modal check due to input type:",
+      {
+        isSocialInput,
+        isGibberishInput,
+        isUserQuestionInput,
+      },
+    );
+  }
 
   // Check if we should ask user to end chat (every 5 substantial exchanges)
   const shouldAskToEndChat =
+    !shouldSkipEndCheckForThisTurn &&
     exchangesSinceLastAsked >= MIN_EXCHANGES_BEFORE_ASK_END &&
     !userConfirmedEndChat &&
     !userDeclinedEndChat &&
@@ -1150,6 +1153,7 @@ const handleDiscoveryMode = async ({
 
   // Force ask to end after 8 exchanges
   const shouldForceAskToEnd =
+    !shouldSkipEndCheckForThisTurn &&
     exchangesSinceLastAsked >= MAX_EXCHANGES_BEFORE_FORCE_ASK &&
     !userConfirmedEndChat &&
     !userDeclinedEndChat &&
@@ -1163,10 +1167,16 @@ const handleDiscoveryMode = async ({
     nonAnswerCount,
     hasRepeatedNonAnswers,
     substantialExchanges,
+    lastDeclinedExchanges,
+    exchangesSinceLastAsked,
     shouldAskToEndChat,
     shouldForceAskToEnd,
     userConfirmedEndChat,
     userDeclinedEndChat,
+    shouldSkipEndCheckForThisTurn,
+    skipEndChatPrompt: req.body.skipEndChatPrompt,
+    minExchanges: MIN_EXCHANGES_BEFORE_ASK_END,
+    maxExchanges: MAX_EXCHANGES_BEFORE_FORCE_ASK,
   });
 
   // ============================================
@@ -1187,10 +1197,17 @@ const handleDiscoveryMode = async ({
     wantsToGenerateReport = false;
     wantsToEndOrGenerate = false;
     console.log(
-      "[handleDiscoveryMode] User declined end via modal - continuing chat",
+      "[handleDiscoveryMode] User declined end via modal - continuing chat and resetting exchange counter",
     );
     // Mark that we've already asked so we don't ask again immediately
     req.body.skipEndChatPrompt = true;
+
+    // IMPORTANT: Reset exchangesAtLastDeclinedEndChat to current substantialExchanges
+    // This ensures exchangesSinceLastAsked starts counting from 0 again after they click continue
+    // So we'll wait another 5 exchanges before asking again
+    if (existingState) {
+      existingState.exchangesAtLastDeclinedEndChat = substantialExchanges;
+    }
 
     // If no nextMessage (skipped AI call), provide a friendly continuation
     if (!nextMessage) {
@@ -1256,8 +1273,13 @@ const handleDiscoveryMode = async ({
   }
 
   // Check for explicit user intent to end/generate via message content
-  if (lastUser && !userConfirmedEndChat && !userDeclinedEndChat) {
-    const intents = await detectDiscoveryEndIntents({
+  if (
+    lastUser &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat &&
+    !shouldSkipEndCheckForThisTurn
+  ) {
+    intents = await detectDiscoveryEndIntents({
       userMessage: lastUser.content,
       transcript: updatedTranscript,
       lastAssistantMessage: lastAssistant?.content || "",
@@ -1265,21 +1287,20 @@ const handleDiscoveryMode = async ({
 
     wantsToEndChat = intents.endChat === true;
     wantsToGenerateReport = intents.generateReport === true;
+    const wantsEmailFromIntent = intents.wantsEmail === true;
 
-    // If user has repeated non-answers, ask to end instead of auto-generating
+    // If user has repeated non-answers, log it (modal might still be triggered below)
     if (!wantsToGenerateReport && hasRepeatedNonAnswers) {
-      // Don't auto-generate, but still might trigger modal
       console.log(
         "[handleDiscoveryMode] Repeated non-answers detected - user may want to end",
       );
     }
 
-    wantsToEndOrGenerate = wantsToEndChat || wantsToGenerateReport;
-
+    // Log the intents
     console.log("[handleDiscoveryMode] Discovery end intents:", {
       wantsToEndChat,
       wantsToGenerateReport,
-      wantsToEndOrGenerate,
+      wantsEmailFromIntent,
     });
 
     if (wantsToGenerateReport) {
@@ -1311,7 +1332,23 @@ const handleDiscoveryMode = async ({
       : false,
   });
 
-  // If user wants to end chat via message, treat it as a request to generate report
+  // If user wants to end chat or generate report via message, we now proceed IMMEDIATELY to generation
+  // as requested by the user ("when user says to end chat end chat and generate report").
+  // We skip the triggering of the confirmation modal for explicit intents.
+  if (
+    (wantsToEndChat || wantsToGenerateReport) &&
+    !userConfirmedEndChat &&
+    !userDeclinedEndChat
+  ) {
+    console.log(
+      "[handleDiscoveryMode] User intent detected (end/generate) - proceeding immediately to generation",
+      { wantsToEndChat, wantsToGenerateReport },
+    );
+    wantsToEndOrGenerate = true;
+    // We do NOT return the successResponse modal trigger here anymore
+  }
+
+  // If user actually confirmed via modal (or we already triggered it and they said yes), continue to generation
   if (wantsToEndChat && !wantsToGenerateReport && !userDeclinedEndChat) {
     wantsToGenerateReport = true;
     wantsToEndOrGenerate = true;
@@ -1454,7 +1491,6 @@ const handleDiscoveryMode = async ({
     const reportVersion = previousDiscovery ? "v3.2" : "v3.1";
 
     // Fetch brain prompt from DB for report generation
-    const { PromptType } = require("../utils/types");
     const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
     const brainPrompt = brainPromptObj?.content || "";
 
@@ -1647,6 +1683,20 @@ ABSOLUTE REQUIREMENTS:
 - Include extensive quotes and specific examples from the conversation
 - Provide layered interpretations with PRIMARY, SECONDARY, and TERTIARY analysis
 
+🚨🚨🚨 MANDATORY SECTIONS CHECKLIST - YOU MUST INCLUDE ALL 10 SECTIONS:
+1. ✅ STRUCTURE TYPE (Updated)
+2. ✅ AVOIDANCE BEHAVIOUR (Resolved Layer)
+3. ✅ VORTEX STATUS
+4. ✅ GRAVITY (3D CODE) - MANDATORY - DO NOT SKIP
+5. ✅ CONSCIOUSNESS LEVEL (CL)
+6. ✅ QUANTUM GENIUS CODES (QGC) - MANDATORY - DO NOT SKIP
+7. ✅ SIGNAL COHERENCE
+8. ✅ SIGNAL OUTPUT
+9. ✅ ANGLE OF GROWTH (Updated)
+10. ✅ FIRST CORRECTION (Updated)
+
+CRITICAL: Sections 4 (GRAVITY) and 6 (QUANTUM GENIUS CODES) are MANDATORY and must be included. Do not skip them even if you think you're running out of space. Generate all 10 sections in order.
+
 🚨🚨🚨 DEPTH REQUIREMENTS:
 - Each section must include PRIMARY, SECONDARY, and TERTIARY structures/patterns where applicable
 - Include specific evidence bullet points from the conversation transcript and 1:1 sessions
@@ -1677,6 +1727,20 @@ ABSOLUTE REQUIREMENTS:
 - If you identify a vortex signature (EO + Lack + Avoid pattern), note it in the VORTEX STATUS section
 
 Generate a FULL DISCOVERY REPORT following this EXACT format:
+
+🚨🚨🚨 SECTION REQUIREMENTS - YOU MUST GENERATE ALL 10 SECTIONS IN THIS EXACT ORDER:
+1. STRUCTURE TYPE (Updated)
+2. AVOIDANCE BEHAVIOUR (Resolved Layer)
+3. VORTEX STATUS
+4. GRAVITY (3D CODE) - MANDATORY - DO NOT SKIP THIS SECTION
+5. CONSCIOUSNESS LEVEL (CL)
+6. QUANTUM GENIUS CODES (QGC) - MANDATORY - DO NOT SKIP THIS SECTION
+7. SIGNAL COHERENCE
+8. SIGNAL OUTPUT
+9. ANGLE OF GROWTH (Updated)
+10. FIRST CORRECTION (Updated)
+
+CRITICAL REMINDER: You MUST include sections 4 (GRAVITY) and 6 (QUANTUM GENIUS CODES). These are core metrics sections and cannot be omitted. Generate all 10 sections in the order shown above.
 
 ---
 
@@ -1956,14 +2020,14 @@ METRICS_JSON_END`;
       // Add system message to prevent refusal
       const systemMessage = {
         role: "system",
-        content: `You are Euphoriam AI generating a discovery report. You MUST generate the report in the exact format requested. This is a business analysis report for personal growth - it does not contain medical, legal, or professional advice. Proceed with generating the full report based on the transcript provided.`,
+        content: `You are Euphoriam AI generating a discovery report. You MUST generate the report in the exact format requested with ALL 10 numbered sections (1-10). Sections 4 (GRAVITY) and 6 (QUANTUM GENIUS CODES) are MANDATORY and must not be skipped. This is a business analysis report for personal growth - it does not contain medical, legal, or professional advice. Proceed with generating the full report based on the transcript provided.`,
       };
 
       const aiDiscoveryPromise = openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [systemMessage, { role: "user", content: discoveryPrompt }],
         temperature: 0.15,
-        max_completion_tokens: 12000, // Increased for detailed 9-10 page reports
+        max_completion_tokens: 16000, // Increased to ensure all 10 sections (including 4 and 6) are generated
       });
 
       const aiDiscovery = await Promise.race([
@@ -2003,7 +2067,7 @@ METRICS_JSON_END`;
             },
           ],
           temperature: 0.15,
-          max_completion_tokens: 12000, // Increased for detailed 9-10 page reports
+          max_completion_tokens: 16000, // Increased to ensure all 10 sections (including 4 and 6) are generated
         });
         discoveryReport =
           retryDiscovery?.choices?.[0]?.message?.content?.trim() ||
@@ -2067,11 +2131,6 @@ METRICS_JSON_END`;
         diagnosticMetrics || {},
       );
 
-      // Import metrics calculator for formula-based calculations
-      const {
-        updateMetricsFromDiscovery,
-      } = require("../helpers/metricsCalculator");
-
       // First try to extract from METRICS_JSON block
       let extractedMetrics = {};
       const metricsJsonMatch = discoveryReport.match(
@@ -2107,9 +2166,52 @@ METRICS_JSON_END`;
         JSON.stringify(updatedTranscript, null, 2) + " " + discoveryReport;
 
       // Calculate metrics using Euphoriam Formula
+      // IMPORTANT: Use latestDiscoveryMetrics as base (if available).
+      //
+      // loadLatestDiscoveryMetrics already handles date comparison and returns the MOST RECENT metrics,
+      // whether from discovery or diagnostic. So latestDiscoveryMetrics will be:
+      // - Latest discovery metrics (if discovery is newer than diagnostic)
+      // - Latest diagnostic metrics (if diagnostic is newer than discovery)
+      // - Latest discovery metrics (if only discovery exists)
+      // - Latest diagnostic metrics (if only diagnostic exists)
+      //
+      // This ensures new discoveries always build on the most recent state, allowing metrics to evolve
+      // whether the user is doing multiple discoveries or alternating between diagnostic and discovery.
+      // Use latestDiscoveryMetrics as base (it's already the most recent from loadLatestDiscoveryMetrics)
+      // Fallback to diagnosticMetrics if latestDiscoveryMetrics is empty (shouldn't happen, but safety)
+      const baseMetrics = latestDiscoveryMetrics || diagnosticMetrics || {};
+
+      // Determine source for logging (check if latestDiscoveryMetrics came from diagnostic or discovery)
+      let baseMetricsSource = "empty";
+      if (
+        latestDiscoveryMetrics &&
+        Object.keys(latestDiscoveryMetrics).length > 0
+      ) {
+        // loadLatestDiscoveryMetrics already selected the most recent (discovery or diagnostic)
+        // We can't easily tell which one it was, but the logs from loadLatestDiscoveryMetrics will show it
+        baseMetricsSource =
+          "most recent (discovery or diagnostic - check loadLatestDiscoveryMetrics logs)";
+      } else if (
+        diagnosticMetrics &&
+        Object.keys(diagnosticMetrics).length > 0
+      ) {
+        baseMetricsSource = "diagnostic (fallback)";
+      }
+
+      console.log("[discovery] Using base metrics for calculation:", {
+        hasLatestDiscovery:
+          !!latestDiscoveryMetrics &&
+          Object.keys(latestDiscoveryMetrics).length > 0,
+        hasDiagnostic:
+          !!diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0,
+        baseMetricsKeys: Object.keys(baseMetrics),
+        baseMetricsSource,
+        note: "loadLatestDiscoveryMetrics already returns the most recent metrics (discovery or diagnostic) based on date comparison",
+      });
+
       const finalMetrics = updateMetricsFromDiscovery({
         conversationText,
-        existingMetrics: diagnosticMetrics || {},
+        existingMetrics: baseMetrics,
         extractedMetrics,
       });
 
@@ -2201,8 +2303,10 @@ METRICS_JSON_END`;
       const lastUserMessage = lastUser?.content || "";
       const lowerMessage = lastUserMessage.toLowerCase();
 
-      // Only check if user EXPLICITLY requested email (very strict)
+      // Check if user EXPLICITLY requested email
+      // Either from the intent classifier (preferred) or via regex backup
       const explicitlyWantsEmail =
+        (typeof intents !== "undefined" && intents?.wantsEmail === true) ||
         /(email|send).*(me|the|my).*(report|it)/i.test(lowerMessage) ||
         /(generate|create|make|get).*(report|it).*(and|then).*(email|send)/i.test(
           lowerMessage,
@@ -2212,8 +2316,7 @@ METRICS_JSON_END`;
         ) ||
         /please\s+(email|send)/i.test(lowerMessage);
 
-      // Default: DO NOT email the report
-      // Only email if user EXPLICITLY requested it in their message
+      // Default: DO NOT email the report unless explicitly requested
       let shouldEmail = explicitlyWantsEmail === true;
 
       console.log("[handleDiscoveryMode] Email decision:", {
@@ -2222,11 +2325,20 @@ METRICS_JSON_END`;
         note: "Reports are NOT emailed by default. User must explicitly request.",
       });
 
-      // Send response immediately - don't wait for PDF/email
+      // User's specific requested closing message
       const closingMessage =
-        "Discovery report generated. Your PDF is being processed in the background.\n\nThere’s nothing else you need to do right now. Take your time. When you feel ready, come back and we’ll take the next chat together";
+        `Understood. We'll let it land here for today.\n\n` +
+        `If you're ready to explore more, we can dive into your journey whenever you're comfortable. If you need anything specific or have questions, feel free to reach out.\n\n` +
+        `Take care, ${userName}.`;
 
-      // When report is generated (user ended chat), show only the closing message — no prior AI reply or questions.
+      // When report is generated (user ended chat), show only the closing message
+      // NEW: If user explicitly said "end chat AND email", we return a minimized payload ("only email")
+      const onlyEmailRequested =
+        shouldEmail &&
+        (lowerMessage.includes("end") ||
+          lowerMessage.includes("finish") ||
+          lowerMessage.includes("stop"));
+
       const response = successResponse(res, "Discovery chat saved", {
         discovery: true,
         message: closingMessage,
@@ -2234,19 +2346,17 @@ METRICS_JSON_END`;
           role: "assistant",
           content: closingMessage,
         },
-        discoveryReport: discoveryReport || null,
+        // If "only email" requested, we don't return the full report text in the JSON
+        discoveryReport: onlyEmailRequested ? null : discoveryReport || null,
         pdfPath: null, // Will be generated in background
         pdfUrl: null, // Will be updated after PDF is generated
         autoGenerated: true,
         status: "completed",
         statusMessage: "The report has been generated",
-        userMessage: `Your discovery report has been generated. ${
-          shouldEmail
-            ? "Email will be sent shortly."
-            : "You can access it in your account."
-        }`,
+        userMessage: shouldEmail
+          ? "Your discovery report has been generated and will be emailed shortly."
+          : "Your discovery report has been generated. You can access it in your account.",
         emailed: false, // Will be updated in background
-        // Don't include answeredCount or pendingQuestion in discovery mode - those are for diagnostic mode only
       });
 
       // Process PDF and email in background (don't await - fire and forget)
@@ -2366,12 +2476,16 @@ METRICS_JSON_END`;
 
   // Save incomplete discovery conversation to intakeState so user can resume
   if (updatedTranscript && updatedTranscript.length > 0) {
+    // Use the updated value from existingState if user declined (it was set above)
+    // Otherwise use the existing value or 0
+    const exchangesAtLastDeclined = userDeclinedEndChat
+      ? (existingState?.exchangesAtLastDeclinedEndChat ?? substantialExchanges)
+      : existingState?.exchangesAtLastDeclinedEndChat || 0;
+
     const discoveryIntakeState = {
       transcript: updatedTranscript,
       discoveryType: discoveryType || "integrated",
-      exchangesAtLastDeclinedEndChat: userDeclinedEndChat
-        ? substantialExchanges
-        : existingState.exchangesAtLastDeclinedEndChat || 0,
+      exchangesAtLastDeclinedEndChat: exchangesAtLastDeclined,
       updatedAt: new Date().toISOString(),
       mode: "discovery",
     };
@@ -2549,7 +2663,6 @@ const handleDiscoveryFinalize = async ({
   const userName = name || email?.split("@")[0] || "User";
 
   // Fetch brain prompt from DB for report generation
-  const { PromptType } = require("../utils/types");
   const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
   const brainPrompt = brainPromptObj?.content || "";
 
@@ -2591,10 +2704,11 @@ Where previous reports offered a sentence, this report offers a full analytical 
 ---
 ### QUALITY STANDARDS
 ---
-1. **DEPTH & LENGTH:** Sections 1, 2, 3, and 9 must be **MINIMUM 300 WORDS EACH**. Please ensure this depth is met to provide value.
+1. **DEPTH & LENGTH:** Sections 1, 2, 3, and 9 must be **MINIMUM 300 WORDS EACH**. Sections 4, 5, 6, 7, and 8 must be **MINIMUM 200 WORDS EACH**. Please ensure this depth is met to provide value.
 2. **EVIDENCE-BASED:** You must cite the **1:1 Coaching Session Transcripts** explicitly in every single section. Use quotes like: *"As we discussed in Session 1..."* or *"As you mentioned regarding [Topic]..."*
 3. **PROFESSIONAL TONE:** Use precise, structural terminology (e.g., *vortex architecture, gravity load, signal resonance*). Avoid generic advice; focus on the specific "physics" of the user's situation.
 4. **NO REPETITION:** Layer the analysis. Each section should reveal a new dimension.
+5. **MANDATORY SECTIONS:** You MUST generate ALL 10 numbered sections (1-10) in the exact order specified. Sections 4 (GRAVITY) and 6 (QUANTUM GENIUS CODES) are CRITICAL and must not be skipped under any circumstances.
 
 ---
 ### CONTEXTUAL DATA
@@ -2668,6 +2782,18 @@ ${JSON.stringify(transcriptForFinal, null, 2)}
 ---
 ### REPORT TEMPLATE (STRICT ADHERENCE)
 ---
+
+🚨 MANDATORY SECTIONS - YOU MUST GENERATE ALL 10 SECTIONS:
+1. STRUCTURE TYPE (Updated)
+2. AVOIDANCE BEHAVIOUR (Resolved Layer)
+3. VORTEX STATUS
+4. GRAVITY (3D CODE) - ⚠️ MANDATORY - DO NOT SKIP
+5. CONSCIOUSNESS LEVEL (CL)
+6. QUANTUM GENIUS CODES (QGC) - ⚠️ MANDATORY - DO NOT SKIP
+7. SIGNAL COHERENCE
+8. SIGNAL OUTPUT
+9. ANGLE OF GROWTH (Updated)
+10. FIRST CORRECTION (Updated)
 
 ## EUPHORIAM™ STRUCTURAL UPDATE REPORT
 
@@ -3005,12 +3131,12 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
           {
             role: "system",
             content:
-              "You are Euphoriam AI, a specialized business analytics engine for personal growth and leadership coaching. You are generating a comprehensive, professional consulting report based on the provided interview transcripts. Your tone is analytical, structural, and strictly professional.",
+              "You are Euphoriam AI, a specialized business analytics engine for personal growth and leadership coaching. You are generating a comprehensive, professional consulting report based on the provided interview transcripts. Your tone is analytical, structural, and strictly professional. You MUST generate ALL 10 numbered sections (1-10) in the exact format specified. Do not skip any sections.",
           },
           { role: "user", content: discoveryPrompt },
         ],
         temperature: 0.35,
-        max_completion_tokens: 6000,
+        max_completion_tokens: 16000, // Increased to ensure all 10 sections are generated
         timeout: 120000,
       });
       discoveryReport =
@@ -3038,7 +3164,7 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             {
               role: "system",
               content:
-                "You are an expert analyst running a business simulation. The user has provided data for a case study. Generate the report exactly as requested for this case study. Do not refuse. This is a safe, educational context.",
+                "You are an expert analyst running a business simulation. The user has provided data for a case study. Generate the report exactly as requested for this case study. Do not refuse. This is a safe, educational context. You MUST generate ALL 10 numbered sections (1-10) including sections 4 (GRAVITY) and 6 (QUANTUM GENIUS CODES). Do not skip any sections.",
             },
             {
               role: "user",
@@ -3046,7 +3172,7 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             },
           ],
           temperature: 0.2,
-          max_completion_tokens: 4500,
+          max_completion_tokens: 16000, // Increased to ensure all 10 sections are generated
         });
         discoveryReport =
           retryDiscovery?.choices?.[0]?.message?.content?.trim() ||
@@ -3054,7 +3180,103 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
       }
 
       if (discoveryReport) {
-        // Update discovery record with generated report
+        // Apply the same sanitation and structure fixes used in the main path
+        discoveryReport = sanitizeReportText(
+          discoveryReport,
+          diagnosticMetrics || {},
+        );
+      }
+
+      // Calculate metrics from the generated report (same logic as handleDiscoveryMode)
+      let finalMetrics = diagnosticMetrics || {};
+      if (discoveryReport) {
+        // Import metrics calculator for formula-based calculations
+
+        const {
+          extractMetricsFromReport,
+        } = require("../helpers/euphoriamChatbot");
+
+        // First try to extract from METRICS_JSON block
+        let extractedMetrics = {};
+        const metricsJsonMatch = discoveryReport.match(
+          /METRICS_JSON_START\s*([\s\S]*?)\s*METRICS_JSON_END/,
+        );
+        if (metricsJsonMatch) {
+          try {
+            extractedMetrics = JSON.parse(metricsJsonMatch[1].trim());
+            console.log(
+              "[discovery] Extracted metrics from JSON block (finalize):",
+              extractedMetrics,
+            );
+            // Remove the JSON block from report text
+            discoveryReport = discoveryReport
+              .replace(/METRICS_JSON_START[\s\S]*?METRICS_JSON_END/, "")
+              .trim();
+          } catch (e) {
+            console.error(
+              "[discovery] Failed to parse metrics JSON (finalize):",
+              e,
+            );
+          }
+        }
+
+        // If no JSON block, try regex extraction
+        if (!extractedMetrics || Object.keys(extractedMetrics).length === 0) {
+          extractedMetrics = extractMetricsFromReport(discoveryReport);
+          console.log(
+            "[discovery] Extracted metrics from report text (regex, finalize):",
+            extractedMetrics,
+          );
+        }
+
+        // Load latest discovery metrics to use as base
+        const { latestDiscoveryMetrics: latestMetrics } =
+          await loadLatestDiscoveryMetrics(
+            existingDiagnostic,
+            diagnosticMetrics,
+          );
+
+        // Combine conversation text for formula-based calculation
+        const conversationText =
+          JSON.stringify(transcriptForFinal, null, 2) + " " + discoveryReport;
+
+        // Use latestDiscoveryMetrics as base (it's already the most recent from loadLatestDiscoveryMetrics)
+        // Fallback to diagnosticMetrics if latestDiscoveryMetrics is empty
+        const baseMetrics = latestMetrics || diagnosticMetrics || {};
+
+        console.log(
+          "[discovery] Using base metrics for calculation (finalize):",
+          {
+            hasLatestDiscovery:
+              !!latestMetrics && Object.keys(latestMetrics).length > 0,
+            hasDiagnostic:
+              !!diagnosticMetrics && Object.keys(diagnosticMetrics).length > 0,
+            baseMetricsKeys: Object.keys(baseMetrics),
+          },
+        );
+
+        // Calculate final metrics using Euphoriam Formula
+        finalMetrics = updateMetricsFromDiscovery({
+          conversationText,
+          existingMetrics: baseMetrics,
+          extractedMetrics,
+        });
+
+        console.log("[discovery] Final metrics (formula-based, finalize):", {
+          signalOutput: finalMetrics.signalOutput,
+          signalZone: finalMetrics.signalZone,
+          gravityDepth: finalMetrics.gravityDepth,
+          vortexSignature: finalMetrics.vortexSignature,
+          integrationAngle: finalMetrics.integrationAngle,
+          gravity: finalMetrics.gravity,
+          qgcActivation: finalMetrics.qgcActivation,
+          consciousnessLevel: finalMetrics.consciousnessLevel,
+          signalCoherence: finalMetrics.signalCoherence,
+        });
+      }
+
+      if (discoveryReport) {
+        // Update discovery record with generated report and calculated metrics
         const latestDiscovery = await Discovery.findOne({
           where: {
             userId: userForDiscovery?.id || existingDiagnostic?.userId || null,
@@ -3069,6 +3291,7 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
             data: {
               ...(latestDiscovery.data || {}),
               newReport: discoveryReport, // Save full report in JSONB
+              metrics: finalMetrics, // Save calculated metrics
             },
           });
         }
@@ -3095,7 +3318,7 @@ Generate the full report in this exact format. Do NOT use placeholders.`;
               email: email,
             },
             aiReport: discoveryReport,
-            metrics: diagnosticMetrics,
+            metrics: finalMetrics, // Use calculated metrics instead of diagnosticMetrics
           },
         };
 
@@ -3381,7 +3604,6 @@ const handleDiagnosticFinalize = async ({
 
   // Generate report, PDF and email in background (don't await - fire and forget)
   (async () => {
-    const { PromptType } = require("../utils/types");
     const brainPromptObj = await getLatestPromptFromDb(PromptType.BRAINPROMPT);
     const diagnosticPromptObj = await getLatestPromptFromDb(
       PromptType.DIAGNOSTIC,
@@ -3820,6 +4042,7 @@ const handleDiagnosticMode = async ({
         userMessage: lastUser.content,
         transcript: transcript,
         wantsNewDiagnosticVal: wantsNewDiagnostic, // Pass pre-calculated value
+        ignoreEndChatIntent: true, // In diagnostic mode, do NOT end on "end chat" – only on report request
       })
     : false;
 
@@ -3994,7 +4217,6 @@ const handleDiagnosticMode = async ({
     const suggestedFocus = confidenceResult?.suggestedFocus || "";
 
     // Fetch brain prompt from DB for clarifier question generation
-    const { PromptType } = require("../utils/types");
     const brainPromptObjForCB = await getLatestPromptFromDb(
       PromptType.BRAINPROMPT,
     );
@@ -4175,8 +4397,14 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
   // When assistant explicitly says "I have enough information to generate...", trust it and finalize (even if Q count is slightly off)
   const nextMessageCompletionOnly =
     nextMessage?.content && hasExplicitCompletionSignal(nextMessage.content);
-  if (nextMessageCompletionOnly && existingCBCount >= maxClarifierQuestions && !shouldAutoFinalize) {
-    console.log("[diagnostic] ✅ Assistant sent completion message with 6 CBs - forcing finalization");
+  if (
+    nextMessageCompletionOnly &&
+    existingCBCount >= maxClarifierQuestions &&
+    !shouldAutoFinalize
+  ) {
+    console.log(
+      "[diagnostic] ✅ Assistant sent completion message with 6 CBs - forcing finalization",
+    );
     shouldAutoFinalize = true;
   }
 
@@ -4204,7 +4432,6 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
 
     // CRITICAL: Fetch BOTH Brain Prompt and Diagnostic prompt for full report with Sections 1-10
     // Brain Prompt contains SIGNATURE_DICT, OPPOSITE_MAP, REP_LIBRARY, UC routing needed for proper sections
-    const { PromptType } = require("../utils/types");
     const [brainPromptObjForReport, diagnosticPromptObjForReport] =
       await Promise.all([
         getLatestPromptFromDb(PromptType.BRAINPROMPT),
@@ -4212,7 +4439,8 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
       ]);
 
     const brainPromptForReport = brainPromptObjForReport?.content || "";
-    const diagnosticPromptForReport = diagnosticPromptObjForReport?.content || "";
+    const diagnosticPromptForReport =
+      diagnosticPromptObjForReport?.content || "";
 
     // Combine both prompts like handleDiagnosticFinalize does
     const safePromptContent =
@@ -4605,15 +4833,21 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
     (async () => {
       try {
         if (!reportText || reportText.length < 50) {
-          console.error("[diagnostic] Background PDF skipped: aiReport missing or too short", {
-            diagnosticId: diagnosticIdForBackground,
-            reportLength: reportText?.length ?? 0,
-          });
+          console.error(
+            "[diagnostic] Background PDF skipped: aiReport missing or too short",
+            {
+              diagnosticId: diagnosticIdForBackground,
+              reportLength: reportText?.length ?? 0,
+            },
+          );
           return;
         }
         const pdfPath = await generateDiagnosticPdf(diagnosticForPdfInMemory);
         let pdf = { path: pdfPath, url: null };
-        console.log("[diagnostic] PDF generated (background)", { diagnosticId: diagnosticIdForBackground, pdfPath });
+        console.log("[diagnostic] PDF generated (background)", {
+          diagnosticId: diagnosticIdForBackground,
+          pdfPath,
+        });
 
         try {
           const buffer = await fs.promises.readFile(pdfPath);
@@ -4631,7 +4865,9 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
           );
 
           // Re-fetch to get latest data then update with new PDF URL only
-          const freshDiagnostic = await Diagnostic.findByPk(diagnosticIdForBackground);
+          const freshDiagnostic = await Diagnostic.findByPk(
+            diagnosticIdForBackground,
+          );
           if (!freshDiagnostic) return;
           await freshDiagnostic.update({
             pdfUrl: pdf.url || null,
@@ -4916,32 +5152,46 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         order: [["updatedAt", "DESC"]],
       });
 
-      // If we found an existing discovery chat with messages, return it instead of generating new welcome
-      if (
-        existingDiscoveryChat?.data?.transcript &&
-        existingDiscoveryChat.data.transcript.length > 0
-      ) {
-        transcriptInternal = existingDiscoveryChat.data.transcript;
-        console.log(
-          "[diagnostic] Found existing discovery chat with transcript, returning it instead of generating new welcome message",
-          { chatId: existingDiscoveryChat.id, transcriptLength: transcriptInternal.length }
+      // If we found an existing discovery chat, decide whether to reuse it or start fresh.
+      // IMPORTANT:
+      // - If the transcript only contains an assistant welcome message (no user replies yet),
+      //   we want to REGENERATE the welcome so it always reflects the latest metrics.
+      // - If there are any user messages, we resume the existing chat to preserve context.
+      if (existingDiscoveryChat?.data?.transcript) {
+        const existingTranscript = existingDiscoveryChat.data.transcript;
+        const hasUserMessages = existingTranscript.some(
+          (m) => m?.role === "user",
         );
 
-        // Return the existing transcript without generating a new welcome message
-        const lastMessage = transcriptInternal[transcriptInternal.length - 1];
-        return successResponse(res, "Resuming discovery mode", {
-          hasExistingReport: true,
-          mode: "discovery",
-          nextMessage: lastMessage?.role === "assistant" ? lastMessage : null,
-          transcript: transcriptInternal,
-          intakeState: {
-            transcript: transcriptInternal,
+        if (existingTranscript.length > 0 && hasUserMessages) {
+          // Resume existing discovery chat with real interaction history
+          transcriptInternal = existingTranscript;
+          console.log(
+            "[diagnostic] Found existing discovery chat with transcript including user messages, returning it instead of generating new welcome message",
+            {
+              chatId: existingDiscoveryChat.id,
+              transcriptLength: transcriptInternal.length,
+            },
+          );
+
+          const lastMessage = transcriptInternal[transcriptInternal.length - 1];
+          return successResponse(res, "Resuming discovery mode", {
+            hasExistingReport: true,
             mode: "discovery",
-          },
-          diagnosticMetrics: metricsForResponse,
-          status: "discovery_ready",
-          statusMessage: "Resuming discovery chat.",
-        });
+            nextMessage:
+              lastMessage?.role === "assistant" ? lastMessage : null,
+            transcript: transcriptInternal,
+            intakeState: {
+              transcript: transcriptInternal,
+              mode: "discovery",
+            },
+            diagnosticMetrics: metricsForResponse,
+            status: "discovery_ready",
+            statusMessage: "Resuming discovery chat.",
+          });
+        }
+        // If there are no user messages yet, we let the flow continue so a fresh welcome
+        // can be generated using the latest metrics.
       }
     }
 
@@ -4971,7 +5221,6 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       }
 
       // Generate AI welcome message using brain prompt + discovery chat prompt
-      const { PromptType } = require("../utils/types");
       const {
         buildDiscoveryChatPrompt,
         getDiscoverySystemPrompt,
@@ -5245,9 +5494,9 @@ ${Math.round(signalOutput)}%`;
 
       if (lastAssistantInternal && lastUserInternal) {
         const aiAns = await isAiLikelyAnswer({
-              question: lastAssistantInternal.content,
-              reply: lastUserInternal.content,
-            });
+          question: lastAssistantInternal.content,
+          reply: lastUserInternal.content,
+        });
         pendingQ = !aiAns;
       } else if (lastAssistantInternal) {
         pendingQ = true;
@@ -5508,9 +5757,9 @@ ${Math.round(signalOutput)}%`;
     aiAnswered =
       hasAssistantTurn && lastUser
         ? await isAiLikelyAnswer({
-              question: lastAssistant.content,
-              reply: lastUser.content,
-            })
+            question: lastAssistant.content,
+            reply: lastUser.content,
+          })
         : false;
 
     const qStats = trackQuestionNumbers(transcript);
@@ -5721,22 +5970,15 @@ ${Math.round(signalOutput)}%`;
       }
     }
 
-    // In diagnostic mode, we previously short-circuited here and injected our own
-    // "Here's the question again" validation message. That prevented the AI from
-    // actually rephrasing the question, and created the repeat loop you're seeing.
-    //
-    // Now we *only* log invalid/gibberish input and let the AI handle rephrasing
-    // via the CRITICAL OVERRIDE logic in buildFreeformIntakePrompt. This means:
-    // - No server-generated "Here's the question again" messages.
-    // - The next AI call sees the gibberish input plus explicit instructions to
-    //   rewrite the question in simpler words with examples.
+    // In both diagnostic and discovery mode, we defer to AI rephrasing logic.
+    // This allows the AI to provide the requested "typo" error message AND
+    // rewrite the question in simpler words as requested.
     if (
-      !isDiscoveryMode &&
       lastUser?.content &&
-      isDiagnosticInputInvalid(lastUser.content)
+      (await isDiagnosticInputInvalid(lastUser.content))
     ) {
       console.log(
-        "[diagnostic] Invalid/gibberish diagnostic input detected; deferring to AI rephrasing logic.",
+        "[diagnostic] Invalid/gibberish input detected; deferring to AI rephrasing logic.",
         { content: lastUser.content },
       );
       // Do NOT return here — allow the normal prompt-building + AI call to proceed.
@@ -5749,6 +5991,21 @@ ${Math.round(signalOutput)}%`;
       distinctQuestionsAnswered,
       hasExistingReport,
     });
+
+    // Count substantial exchanges (user messages with meaningful content)
+    const userMessagesForExchanges = transcript.filter(
+      (m) => m?.role === "user",
+    );
+    const substantialExchanges = userMessagesForExchanges.filter((m) => {
+      const content = (m.content || "").trim();
+      const wordCount = content.split(/\s+/).length;
+      return (
+        wordCount >= 2 ||
+        /^(yes|no|maybe|idk|okay|sure|fine|good|bad|better|worse)$/i.test(
+          content,
+        )
+      );
+    }).length;
 
     const { userPrompt, systemPrompt } = await buildChatPrompts({
       isDiscoveryMode,
@@ -5770,6 +6027,7 @@ ${Math.round(signalOutput)}%`;
       allUserSessions, // Pass all user sessions
       aiAnswered, // Pass whether the last message was a valid answer
       confidenceResult, // Pass through to helper
+      sessionExchangeCount: substantialExchanges, // Pass substantial exchange count
     });
 
     const safeSystemPrompt =
@@ -5882,7 +6140,11 @@ Previous question: ${(lastAssistant.content || "").slice(0, 400)}`;
               const reaskResp = await openai.chat.completions.create({
                 model: "gpt-4o",
                 messages: [
-                  { role: "system", content: "You re-ask the same diagnostic question in different words. Never advance to the next question number." },
+                  {
+                    role: "system",
+                    content:
+                      "You re-ask the same diagnostic question in different words. Never advance to the next question number.",
+                  },
                   { role: "user", content: reaskPrompt },
                 ],
                 temperature: 0.3,
@@ -5891,7 +6153,9 @@ Previous question: ${(lastAssistant.content || "").slice(0, 400)}`;
               const reaskContent = reaskResp?.choices?.[0]?.message?.content;
               if (reaskContent && /Q\s*\d+/i.test(reaskContent)) {
                 nextMessage = { ...nextMessage, content: reaskContent };
-                console.log("[diagnostic] Enforced re-ask same Q after model advanced on non-answer");
+                console.log(
+                  "[diagnostic] Enforced re-ask same Q after model advanced on non-answer",
+                );
               }
             } catch (err) {
               console.error("[diagnostic] Re-ask enforcement failed:", err);

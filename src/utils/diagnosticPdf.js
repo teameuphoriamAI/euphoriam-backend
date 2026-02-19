@@ -511,7 +511,13 @@ const renderTextWithBold = (doc, text, options = {}) => {
   // We check for the pattern **text**
   if (!cleanTextValue.match(/\*\*([^*]+)\*\*/)) {
     // No bold formatting, render normally (but strip any single asterisks if they are noise)
-    doc.font(normalFont).text(cleanTextValue.replace(/\*\*/g, "").replace(/\*/g, ""), { width, lineGap, indent });
+    doc
+      .font(normalFont)
+      .text(cleanTextValue.replace(/\*\*/g, "").replace(/\*/g, ""), {
+        width,
+        lineGap,
+        indent,
+      });
     return;
   }
 
@@ -679,9 +685,18 @@ const renderStyledReport = (
     // Title Handling - IMPROVED
     // Matches standard headers OR typically formatted title lines appearing early
     if (
-      /^[✨'\(]?\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC|ANALYSIS).*REPORT/i.test(line) ||
-      /^##\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC|ANALYSIS).*REPORT/i.test(line) ||
-      (!firstContentSectionStarted && i < 10 && /(?:analysis|diagnostic|structural|quantum)/i.test(line) && line.length < 100 && line.length > 15 && !line.includes(":"))
+      /^[✨'\(]?\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC|ANALYSIS).*REPORT/i.test(
+        line,
+      ) ||
+      /^##\s*EUPHORIAM.*(?:STRUCTURAL|DIAGNOSTIC|ANALYSIS).*REPORT/i.test(
+        line,
+      ) ||
+      (!firstContentSectionStarted &&
+        i < 10 &&
+        /(?:analysis|diagnostic|structural|quantum)/i.test(line) &&
+        line.length < 100 &&
+        line.length > 15 &&
+        !line.includes(":"))
     ) {
       flushTextBuffer();
       const titleText = line
@@ -781,8 +796,10 @@ const renderStyledReport = (
     if (inIntroSection && !introEnded) {
       // End intro on divider, markdown header, or main report section (SECTION 1, METRICS GAUGE, etc.)
       const isDivider = /^[\-─_]{3,}/.test(line);
-      const isSectionStart = /^SECTION\s+\d+/i.test(line) || /^STRUCTURE\s+TYPE/i.test(line);
-      const isMainContentHeader = /^METRICS\s+GAUGE/i.test(line) || /^FRICTION\s+ANALYSIS/i.test(line);
+      const isSectionStart =
+        /^SECTION\s+\d+/i.test(line) || /^STRUCTURE\s+TYPE/i.test(line);
+      const isMainContentHeader =
+        /^METRICS\s+GAUGE/i.test(line) || /^FRICTION\s+ANALYSIS/i.test(line);
       const isHeader = /^##/.test(line) || /SHORT SUMMARY/i.test(line);
 
       if (isDivider || isHeader || isSectionStart || isMainContentHeader) {
@@ -805,9 +822,11 @@ const renderStyledReport = (
     // Skip intro lines being collected
     if (inIntroSection && !introEnded) continue;
 
-
     // Intercept FRICTION ANALYSIS (or similar friction section) to inject Metrics BEFORE it
-    if (/##\s+FRICTION\s+ANALYSIS/i.test(line) || /FRICTION\s+ANALYSIS/i.test(line)) {
+    if (
+      /##\s+FRICTION\s+ANALYSIS/i.test(line) ||
+      /FRICTION\s+ANALYSIS/i.test(line)
+    ) {
       flushTextBuffer();
       if (hasMetrics && !metricsGaugeRendered) {
         doc.moveDown(0.5);
@@ -823,14 +842,24 @@ const renderStyledReport = (
 
         console.log(
           "[diagnosticPdf] Rendering METRICS GAUGE (at Friction Analysis) with metrics:",
-          metrics
+          metrics,
         );
 
         // Render all metrics
         renderMetricLine(doc, "QGC Activation:", metrics.qgcActivation, true);
-        renderMetricLine(doc, "Consciousness Level:", metrics.consciousnessLevel, false);
+        renderMetricLine(
+          doc,
+          "Consciousness Level:",
+          metrics.consciousnessLevel,
+          false,
+        );
         renderMetricLine(doc, "Gravity (Load):", metrics.gravity, true);
-        renderMetricLine(doc, "Signal Coherence:", metrics.signalCoherence, true);
+        renderMetricLine(
+          doc,
+          "Signal Coherence:",
+          metrics.signalCoherence,
+          true,
+        );
         renderMetricLine(doc, "Signal Output:", metrics.signalOutput, true);
 
         metricsGaugeRendered = true;
@@ -852,14 +881,19 @@ const renderStyledReport = (
         // Try to find custom table data in the future lines of the report
         let tableData = null;
         const searchRegex = /METRICS\s+INTERPRETATION/i;
-        const tableHeaderIdx = lines.findIndex((l, idx) => idx > i && searchRegex.test(l));
+        const tableHeaderIdx = lines.findIndex(
+          (l, idx) => idx > i && searchRegex.test(l),
+        );
 
         if (tableHeaderIdx !== -1) {
           // Found the header later in the doc, let's look for the table characters
           let k = tableHeaderIdx + 1;
           while (k < lines.length && !lines[k].trim()) k++;
 
-          if (k < lines.length && (lines[k].includes("|") || /[-]{3,}/.test(lines[k]))) {
+          if (
+            k < lines.length &&
+            (lines[k].includes("|") || /[-]{3,}/.test(lines[k]))
+          ) {
             // Supports Both Pipe tables and Dash-separated tables
             // TODO: Advanced parsing if dash separated.
             // For now, reuse pipe logic if pipe exists.
@@ -870,7 +904,9 @@ const renderStyledReport = (
                 k++;
               }
               if (extractedLines.length > 0) {
-                tableData = extractedLines.map(row => row.split("|").map(c => c.trim()));
+                tableData = extractedLines.map((row) =>
+                  row.split("|").map((c) => c.trim()),
+                );
               }
             }
           }
@@ -920,12 +956,17 @@ const renderStyledReport = (
 
       console.log(
         "[diagnosticPdf] Rendering METRICS GAUGE with metrics:",
-        metrics
+        metrics,
       );
 
       // Render all metrics using global helpers
       renderMetricLine(doc, "QGC Activation:", metrics.qgcActivation, true);
-      renderMetricLine(doc, "Consciousness Level:", metrics.consciousnessLevel, false);
+      renderMetricLine(
+        doc,
+        "Consciousness Level:",
+        metrics.consciousnessLevel,
+        false,
+      );
       renderMetricLine(doc, "Gravity (Load):", metrics.gravity, true);
       renderMetricLine(doc, "Signal Coherence:", metrics.signalCoherence, true);
       renderMetricLine(doc, "Signal Output:", metrics.signalOutput, true);
@@ -948,9 +989,9 @@ const renderStyledReport = (
             lines[i + 1]?.trim().startsWith("##") ||
             lines[i + 1]?.trim().startsWith("---") ||
             lines[i + 1]?.trim() ===
-            "----------------------------------------" ||
+              "----------------------------------------" ||
             lines[i + 1]?.trim() ===
-            "────────────────────────────────────────")) ||
+              "────────────────────────────────────────")) ||
         line === "----------------------------------------" ||
         line === "────────────────────────────────────────" ||
         /^SECTION\s+\d+/i.test(line) ||
@@ -1025,15 +1066,30 @@ const renderStyledReport = (
           let k = j;
           while (k < lines.length) {
             let curLine = lines[k].trim();
-            if (!curLine) { k++; continue; }
-            if (curLine.includes("---") && curLine.length > 10) { k++; continue; }
+            if (!curLine) {
+              k++;
+              continue;
+            }
+            if (curLine.includes("---") && curLine.length > 10) {
+              k++;
+              continue;
+            }
 
             // If it looks like a new section, stop
-            if (isAllCapsHeader(curLine) || curLine.startsWith("##") || curLine.startsWith("SECTION")) break;
+            if (
+              isAllCapsHeader(curLine) ||
+              curLine.startsWith("##") ||
+              curLine.startsWith("SECTION")
+            )
+              break;
 
             // Dash tables are often messy. Let's try to group lines into rows.
             // A row typically starts with a metric name.
-            if (/(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(curLine)) {
+            if (
+              /(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(
+                curLine,
+              )
+            ) {
               // Extract metric, value, and the rest as interpretation
               const match = curLine.match(/(.*?)\s+(\d+(?:\.\d+)?%?)\s+(.*)/i);
               if (match) {
@@ -1042,7 +1098,13 @@ const renderStyledReport = (
                 // Try to peek ahead for interpretation if it's on next line
                 let row = curLine;
                 let nextK = k + 1;
-                while (nextK < lines.length && lines[nextK].trim() && !/(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(lines[nextK])) {
+                while (
+                  nextK < lines.length &&
+                  lines[nextK].trim() &&
+                  !/(QGC Activation|Consciousness Level|Gravity|Signal Coherence|Signal Output)/i.test(
+                    lines[nextK],
+                  )
+                ) {
                   row += " " + lines[nextK].trim();
                   nextK++;
                 }
@@ -1059,7 +1121,7 @@ const renderStyledReport = (
 
       if (tableLines.length > 0) {
         const tableData = tableLines.map((row) =>
-          row.split("|").map((c) => c.trim())
+          row.split("|").map((c) => c.trim()),
         );
         if (tableData.length > 0) {
           // ... (render logic)
@@ -1080,12 +1142,14 @@ const renderStyledReport = (
         }
       }
 
-      // Fallback: If no pipe table found, DO NOT RENDER GENERIC TABLE if we have content.
-      // Just render the raw content.
-      // We do this by NOT setting skipUntilNextSection.
-      console.log("[diagnosticPdf] No pipe table found for Metrics Interpretation. Falling back to rendering raw text.");
+      // Fallback: If no pipe/dash table found, render the generic Metrics Interpretation Table
+      // derived from the current metrics instead of raw text.
+      console.log(
+        "[diagnosticPdf] No pipe table found for Metrics Interpretation. Rendering generic Metrics Interpretation Table from metrics.",
+      );
+      drawMetricsInterpretationTable(doc);
       metricsInterpretationRendered = true;
-      skipUntilNextSection = false; // Render raw lines!
+      skipUntilNextSection = true; // Skip raw lines for this section; we've rendered the table.
       continue;
     }
 
@@ -1106,7 +1170,11 @@ const renderStyledReport = (
       continue;
     }
 
-    if (/^SECTION\s+\d+/i.test(line) || /^PHASE\s+\d+/i.test(line) || isAllCapsHeader(line)) {
+    if (
+      /^SECTION\s+\d+/i.test(line) ||
+      /^PHASE\s+\d+/i.test(line) ||
+      isAllCapsHeader(line)
+    ) {
       flushTextBuffer();
       renderPlainHeader(line, 14);
       firstContentSectionStarted = true;
@@ -1148,7 +1216,14 @@ const renderStyledReport = (
       // Draw left border line
       doc
         .moveTo(doc.page.margins.left + 5, currentY)
-        .lineTo(doc.page.margins.left + 5, currentY + doc.heightOfString(cleanText(quoteContent), { width: availableWidth - 25 }) + 5)
+        .lineTo(
+          doc.page.margins.left + 5,
+          currentY +
+            doc.heightOfString(cleanText(quoteContent), {
+              width: availableWidth - 25,
+            }) +
+            5,
+        )
         .lineWidth(2)
         .strokeColor("#cccccc")
         .stroke();
@@ -1158,7 +1233,7 @@ const renderStyledReport = (
         width: availableWidth - 25,
         indent: 15,
         lineGap: 4,
-        oblique: true
+        oblique: true,
       });
 
       doc.fillColor("#111111");
@@ -1175,7 +1250,7 @@ const renderStyledReport = (
 
     // Default Text Render - Buffer for paragraph joining
     if (line.trim()) {
-      // If it looks like a "Metadata" line but we've already rendered metadata, 
+      // If it looks like a "Metadata" line but we've already rendered metadata,
       // or it's just plain text, buffer it.
       textBuffer.push(line.trim());
     } else {
@@ -1216,7 +1291,12 @@ const renderStyledReport = (
   }
 
   // FINALLY: Render UC Recommendations if provided and not already rendered manually in text
-  if (ucRecommendations && (ucRecommendations.phase1.length > 0 || ucRecommendations.phase2.length > 0 || ucRecommendations.phase3.length > 0)) {
+  if (
+    ucRecommendations &&
+    (ucRecommendations.phase1.length > 0 ||
+      ucRecommendations.phase2.length > 0 ||
+      ucRecommendations.phase3.length > 0)
+  ) {
     // Only render if we didn't see a "UC MODULE RECOMMENDATION" section in the text
     // (Actually, better to always render it for consistency since the AI output might be basic)
     renderUnlimitedCreatedRecommendations(doc, ucRecommendations);
@@ -1519,7 +1599,8 @@ const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
       doc
         .font("Helvetica")
         .fontSize(11)
-        .text(`● Week ${rec.week} — ${rec.title}`, {
+        // Use simple ASCII dash instead of a special bullet to avoid encoding issues like "%Ï"
+        .text(`- Week ${rec.week} — ${rec.title}`, {
           width: sectionWidth,
           lineGap: 1.5,
           indent: 10,
@@ -1542,7 +1623,7 @@ const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
       doc
         .font("Helvetica")
         .fontSize(11)
-        .text(`● Week ${rec.week} — ${rec.title}`, {
+        .text(`- Week ${rec.week} — ${rec.title}`, {
           width: sectionWidth,
           lineGap: 1.5,
           indent: 10,
@@ -1565,7 +1646,7 @@ const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
       doc
         .font("Helvetica")
         .fontSize(11)
-        .text(`● Week ${rec.week} — ${rec.title}`, {
+        .text(`- Week ${rec.week} — ${rec.title}`, {
           width: sectionWidth,
           lineGap: 1.5,
           indent: 10,
@@ -1749,10 +1830,14 @@ const generateDiagnosticPdf = (diagnostic) =>
         const startsWithMarkdownDivider =
           /^---+/.test(trimmed) || /^───+/.test(trimmed);
         // Phase C format: starts with "YOUR LIVED CONSTRAINT" section
+        // Normalize potential markdown emphasis or header markers for Phase C detection
+        const normalizedPhaseC = trimmed.replace(/^\s*(\*{1,3}|#+)\s*/, "");
         const startsWithPhaseC =
-          /^YOUR\s+LIVED\s+CONSTRAINT/i.test(trimmed) ||
-          /^SECTION\s+1|^STRUCTURE\s+TYPE/i.test(trimmed) ||
-          /^1\.\s*STRUCTURE\s+TYPE|^##?\s*YOUR\s+LIVED\s+CONSTRAINT/i.test(trimmed);
+          /^YOUR\s+LIVED\s+CONSTRAINT/i.test(normalizedPhaseC) ||
+          /^SECTION\s+1|^STRUCTURE\s+TYPE/i.test(normalizedPhaseC) ||
+          /^1\.\s*STRUCTURE\s+TYPE|^##?\s*YOUR\s+LIVED\s+CONSTRAINT/i.test(
+            normalizedPhaseC,
+          );
 
         if (
           !startsWithDivider &&
@@ -1800,7 +1885,6 @@ const generateDiagnosticPdf = (diagnostic) =>
           diagnostic.title?.toLowerCase().includes("chat report") ||
           cleanedReport.toLowerCase().includes("structural update report") ||
           cleanedReport.toLowerCase().includes("discovery report");
-
 
         // Always ensure x position is at left margin before processing any line
         doc.x = doc.page.margins.left;
@@ -1962,7 +2046,8 @@ const generateDiagnosticPdf = (diagnostic) =>
         const courses = facts.courses || metrics.assessments || {};
         addSection(doc, "Course Assessments", [
           `Courses: ${courses.coursesCount ?? 0}`,
-          `Assessments: total=${courses.totalAssessments ?? 0}, completed=${courses.completed ?? 0
+          `Assessments: total=${courses.totalAssessments ?? 0}, completed=${
+            courses.completed ?? 0
           }, pending=${courses.pending ?? 0}`,
           `Completion: ${courses.completionPercentage ?? 0}%`,
           `Pass rate: ${courses.passRate ?? 0}%`,

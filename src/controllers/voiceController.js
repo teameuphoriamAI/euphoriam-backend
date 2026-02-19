@@ -8,7 +8,9 @@ const { sequelize } = require("../config/sequelize");
 const { VoiceNote } = require("../models/voiceNoteModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { successResponse, errorResponse } = require("../utils/response");
-const { User } = require("../models");
+const { User } = require("../models/userModel");
+const { UserLesson } = require("../models/userLesson");
+const { message } = require("../schemas/userSchema");
 
 const ensureTempFile = async (file) => {
   const safeName = file.originalname.replace(/\s+/g, "_");
@@ -45,44 +47,49 @@ const transcribeAudio = async (file) => {
 // Helper function to ensure bucket exists
 const ensureBucketExists = async (bucketName) => {
   // Check if bucket exists by trying to list it
-  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
-  
+  const { data: buckets, error: listError } =
+    await supabase.storage.listBuckets();
+
   if (listError) {
     console.error("[voiceController] Error listing buckets:", listError);
     return false;
   }
 
   const bucketExists = buckets?.some((b) => b.name === bucketName);
-  
+
   if (!bucketExists) {
     // Try to create the bucket
-    const { data: newBucket, error: createError } = await supabase.storage.createBucket(bucketName, {
-      public: true, // Make it publicly accessible
-      fileSizeLimit: 52428800, // 50MB limit
-      allowedMimeTypes: ['audio/*', 'video/*', 'application/octet-stream'],
-    });
+    const { data: newBucket, error: createError } =
+      await supabase.storage.createBucket(bucketName, {
+        public: true, // Make it publicly accessible
+        fileSizeLimit: 52428800, // 50MB limit
+        allowedMimeTypes: ["audio/*", "video/*", "application/octet-stream"],
+      });
 
     if (createError) {
-      console.error(`[voiceController] Failed to create bucket "${bucketName}":`, createError);
+      console.error(
+        `[voiceController] Failed to create bucket "${bucketName}":`,
+        createError,
+      );
       throw new Error(
         `Storage bucket "${bucketName}" does not exist and could not be created. ` +
-        `Please create it in your Supabase dashboard: Storage > New bucket > Name: "${bucketName}" > Public: true`
+          `Please create it in your Supabase dashboard: Storage > New bucket > Name: "${bucketName}" > Public: true`,
       );
     }
-    
+
     console.log(`[voiceController] Created bucket "${bucketName}"`);
     return true;
   }
-  
+
   return true;
 };
 
 const uploadVoiceToSupabase = async (file) => {
   const bucket = process.env.SUPABASE_STORAGE_BUCKET || "voice-notes";
-  
+
   // Ensure bucket exists before uploading
   await ensureBucketExists(bucket);
-  
+
   const ext = path.extname(file.originalname) || ".bin";
   const objectPath = `voices/${Date.now()}-${Math.random()
     .toString(16)
@@ -97,10 +104,13 @@ const uploadVoiceToSupabase = async (file) => {
 
   if (error) {
     // Provide more helpful error messages
-    if (error.statusCode === "404" || error.message?.includes("Bucket not found")) {
+    if (
+      error.statusCode === "404" ||
+      error.message?.includes("Bucket not found")
+    ) {
       throw new Error(
         `Storage bucket "${bucket}" not found. ` +
-        `Please create it in your Supabase dashboard: Storage > New bucket > Name: "${bucket}" > Public: true`
+          `Please create it in your Supabase dashboard: Storage > New bucket > Name: "${bucket}" > Public: true`,
       );
     }
     throw error;
@@ -197,81 +207,298 @@ const getAll = async (req, res) => {
     return errorResponse(
       res,
       error.message || "Failed to fetch voice notes",
-      500
+      500,
     );
   }
 };
 
 const createVoiceNote = async (req, res) => {
-  const { email, text } = req.body;
-  const voiceFile = req.file;
-  console.log("voice", voiceFile);
+  try {
+    const { email, text, course, module, lesson, completed } = req.body;
+    const voiceFile = req.file;
 
-  // if (!email) {
-  //   return errorResponse(res, "Email is required to attach voice/text", 400);
-  // }
+    const findUser = await User.findOne({ where: { email } });
+    if (!findUser) {
+      return errorResponse(res, "user not found", 404);
+    }
 
-  // const diagnostic = await findDiagnosticByEmail(email);
-  // if (!diagnostic) {
-  //   return errorResponse(
-  //     res,
-  //     "No diagnostic found for the provided email",
-  //     404
-  //   );
-  // }
+    const lessonWhere = {
+      userId: String(findUser.id),
+      ...(course && { course }),
+      ...(module && { module }),
+      ...(lesson && { lesson }),
+    };
 
-  let content = (text || "").trim();
-  let sourceType = "text";
-  let transcriptMeta = null;
-  let audioPath = null;
-  let audioUrl = null;
+    const existingLesson = await UserLesson.findOne({
+      where: lessonWhere,
+      include: [{ model: VoiceNote }],
+    });
 
-  if (voiceFile) {
-    const upload = await uploadVoiceToSupabase(voiceFile);
-    const transcription = await transcribeAudio(voiceFile);
+    let content = (text || "").trim();
+    let sourceType = "text";
+    let transcriptMeta = null;
+    let audioPath = null;
+    let audioUrl = null;
 
-    if (!transcription?.text) {
+    // =========================
+    // HANDLE VOICE UPLOAD
+    // =========================
+    if (voiceFile) {
+      const upload = await uploadVoiceToSupabase(voiceFile);
+      const transcription = await transcribeAudio(voiceFile);
+
+      if (!transcription?.text) {
+        return errorResponse(
+          res,
+          "Unable to transcribe the provided voice file",
+          502,
+        );
+      }
+      // Check if transcription is likely a hallucination (silence detected)
+      const duration = transcription.meta?.duration;
+      const hasEmptyMetadata =
+        !transcription.meta || Object.keys(transcription.meta).length === 0;
+
+      // Empty metadata combined with common hallucination phrases is a strong indicator
+      // Always check for hallucinations
+      if (
+        isLikelyHallucination(transcription.text, duration) ||
+        (hasEmptyMetadata && isLikelyHallucination(transcription.text, null))
+      ) {
+        console.log("HAHAH");
+
+        return errorResponse(
+          res,
+          "No speech detected in the audio. Please ensure your recording contains clear speech.",
+          400,
+        );
+      }
+      content = transcription.text;
+      sourceType = "voice";
+      transcriptMeta = transcription.meta;
+      audioPath = upload.path;
+      audioUrl = upload.url;
+    }
+
+    if (!content) {
       return errorResponse(
         res,
-        "Unable to transcribe the provided voice file",
-        502
+        "Provide either text content or a voice recording",
+        400,
       );
     }
 
-    content = transcription.text;
-    sourceType = "voice";
-    transcriptMeta = transcription.meta;
-    audioPath = upload.path;
-    audioUrl = upload.url;
+    let voiceNote;
+
+    // =========================
+    // UPDATE EXISTING VOICE
+    // =========================
+    if (existingLesson && existingLesson.voiceId && existingLesson.VoiceNote) {
+      voiceNote = existingLesson.VoiceNote;
+
+      // Delete old audio file if replacing with new one
+      if (voiceFile && voiceNote.audioPath) {
+        const bucket = process.env.SUPABASE_STORAGE_BUCKET || "voice-notes";
+
+        await supabase.storage
+          .from(bucket)
+          .remove([voiceNote.audioPath])
+          .catch(() => {});
+      }
+
+      await voiceNote.update({
+        content,
+        sourceType,
+        transcriptMeta,
+        audioPath,
+        audioUrl,
+      });
+    } else {
+      // =========================
+      // CREATE NEW VOICENOTE
+      // =========================
+      voiceNote = await VoiceNote.create({
+        content,
+        sourceType,
+        transcriptMeta,
+        audioPath,
+        audioUrl,
+      });
+    }
+
+    // =========================
+    // UPSERT LESSON
+    // =========================
+    let saveLesson;
+
+    if (existingLesson) {
+      await existingLesson.update({
+        isCompleted: completed,
+        voiceId: voiceNote.id,
+      });
+      saveLesson = existingLesson;
+    } else {
+      saveLesson = await UserLesson.create({
+        userId: String(findUser.id),
+        course,
+        module,
+        lesson,
+        isCompleted: completed,
+        voiceId: voiceNote.id,
+      });
+    }
+
+    return successResponse(res, "Voice/Text note saved", {
+      saveLesson,
+      content,
+      audioUrl,
+      updated: !!existingLesson,
+    });
+  } catch (error) {
+    console.error("VoiceNote Upsert Error:", error);
+    return errorResponse(res, error.message || "Server error", 500);
   }
+};
 
-  if (!content) {
-    return errorResponse(
-      res,
-      "Provide either text content or a voice recording",
-      400
-    );
+const getLessonRecording = async (req, res) => {
+  try {
+    // 1. Destructure all fields from the body
+    const { email, course, module, lesson } = req.body;
+
+    // 2. Find the user first
+    const findUser = await User.findOne({ where: { email: String(email) } });
+    if (!findUser) {
+      return res.status(404).json({ status: false, message: "User not found" });
+    }
+
+    // 3. Query UserLesson – userId is VARCHAR in DB, use string
+    const findLessonAdded = await UserLesson.findOne({
+      where: {
+        userId: String(findUser.id),
+        ...(course !== undefined && { course: String(course) }),
+        ...(lesson !== undefined && { lesson: String(lesson) }),
+        ...(module !== undefined && { module: String(module) }),
+        voiceId: { [Op.ne]: null },
+      },
+      include: [
+        {
+          model: VoiceNote,
+          attributes: ["id", "content", "sourceType", "audioUrl"],
+        },
+        // Omit User include: userlesson.userId is VARCHAR, users.id is INTEGER – join would error
+      ],
+    });
+
+    if (!findLessonAdded) {
+      return res
+        .status(404)
+        .json({ status: false, message: "No recordings found" });
+    }
+
+    return res.status(200).json({
+      status: true,
+      message: "Recording fetched successfully",
+      data: findLessonAdded,
+    });
+  } catch (error) {
+    console.error("Database Error:", error);
+    // Explicitly check for the operator error to provide better feedback
+    return res.status(500).json({ status: false, error: error.message });
   }
+};
+const deleteLessonRecording = async (req, res) => {
+  try {
+    const { email, course, module, lesson } = req.body;
 
-  const voiceNote = await VoiceNote.create({
-    // diagnosticEmail: email,
-    content,
-    sourceType,
-    transcriptMeta,
-    audioPath,
-    audioUrl,
-  });
+    if (!email) {
+      return res.status(400).json({
+        status: false,
+        message: "Email is required",
+      });
+    }
 
-  return successResponse(res, "Voice/Text note saved", voiceNote);
+    const findUser = await User.findOne({
+      where: { email: String(email) },
+    });
+
+    if (!findUser) {
+      return res.status(404).json({
+        status: false,
+        message: "User not found",
+      });
+    }
+
+    const findLesson = await UserLesson.findOne({
+      where: {
+        userId: String(findUser.id),
+        ...(course && { course: String(course) }),
+        ...(module && { module: String(module) }),
+        ...(lesson && { lesson: String(lesson) }),
+        voiceId: { [Op.ne]: null },
+      },
+      include: [
+        {
+          model: VoiceNote,
+        },
+      ],
+    });
+
+    if (!findLesson || !findLesson.VoiceNote) {
+      return res.status(404).json({
+        status: false,
+        message: "No recording found to delete",
+      });
+    }
+
+    const voiceNote = findLesson.VoiceNote;
+
+    if (voiceNote.audioPath) {
+      const bucket = process.env.SUPABASE_STORAGE_BUCKET || "voice-notes";
+
+      const { error: storageError } = await supabase.storage
+        .from(bucket)
+        .remove([voiceNote.audioPath]);
+
+      if (storageError) {
+        console.error("Storage delete error:", storageError);
+      }
+    }
+
+    // 4️⃣ Delete VoiceNote record
+    await VoiceNote.destroy({
+      where: { id: voiceNote.id },
+    });
+
+    // 5️⃣ Remove voiceId from lesson
+    await findLesson.update({
+      voiceId: null,
+    });
+
+    return res.status(200).json({
+      status: true,
+      message: "Recording deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete Recording Error:", error);
+    return res.status(500).json({
+      status: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
 };
 
 // Common Whisper hallucinations for silence/empty audio
 const isLikelyHallucination = (text, duration) => {
   if (!text) return true;
-  
+
   // Normalize text: lowercase, remove punctuation, trim
-  const normalizedText = text.trim().toLowerCase().replace(/[.,!?;:]/g, "").trim();
-  
+  const normalizedText = text
+    .trim()
+    .toLowerCase()
+    .replace(/[.,!?;:]/g, "")
+    .trim();
+
   // Common Whisper hallucinations (normalized, no punctuation)
   const hallucinationPhrases = [
     "thank you for watching",
@@ -281,40 +508,44 @@ const isLikelyHallucination = (text, duration) => {
     "you",
     "",
   ];
-  
+
   // Check if transcript exactly matches common hallucinations
   if (hallucinationPhrases.includes(normalizedText)) {
     return true;
   }
-  
+
   // Check if transcript starts with or contains common hallucination phrases
-  const containsHallucination = hallucinationPhrases.some(phrase => {
+  const containsHallucination = hallucinationPhrases.some((phrase) => {
     if (!phrase) return false;
-    return normalizedText === phrase || 
-           normalizedText.startsWith(phrase + " ") ||
-           normalizedText === phrase;
+    return (
+      normalizedText === phrase ||
+      normalizedText.startsWith(phrase + " ") ||
+      normalizedText === phrase
+    );
   });
-  
+
   if (containsHallucination && normalizedText.length < 30) {
     return true;
   }
-  
+
   // Check if duration is very short (likely silence)
   if (duration && duration < 0.5) {
     return true;
   }
-  
+
   // Check if transcript is suspiciously short (less than 3 words)
-  const wordCount = normalizedText.split(/\s+/).filter(w => w.length > 0).length;
+  const wordCount = normalizedText
+    .split(/\s+/)
+    .filter((w) => w.length > 0).length;
   if (wordCount <= 3 && containsHallucination) {
     return true;
   }
-  
+
   // If metadata is empty/missing and text is very short, likely hallucination
   if (!duration && normalizedText.length < 20 && wordCount <= 4) {
     return true;
   }
-  
+
   return false;
 };
 
@@ -323,7 +554,11 @@ const transcribeRecording = async (req, res) => {
     const audioFile = req.file;
 
     if (!audioFile) {
-      return errorResponse(res, "No audio file provided. Please upload a recording.", 400);
+      return errorResponse(
+        res,
+        "No audio file provided. Please upload a recording.",
+        400,
+      );
     }
 
     // Validate file type
@@ -345,7 +580,7 @@ const transcribeRecording = async (req, res) => {
       return errorResponse(
         res,
         `Unsupported file type: ${audioFile.mimetype}. Supported formats: MP3, WAV, WebM, OGG, M4A, FLAC, AAC`,
-        400
+        400,
       );
     }
 
@@ -354,27 +589,31 @@ const transcribeRecording = async (req, res) => {
 
     if (!transcription?.text) {
       console.log("this is it");
-      
+
       return errorResponse(
         res,
         "Unable to transcribe the audio file. Please ensure the file contains clear audio.",
-        502
+        502,
       );
     }
 
     // Check if transcription is likely a hallucination (silence detected)
     const duration = transcription.meta?.duration;
-    const hasEmptyMetadata = !transcription.meta || Object.keys(transcription.meta).length === 0;
-    
+    const hasEmptyMetadata =
+      !transcription.meta || Object.keys(transcription.meta).length === 0;
+
     // Empty metadata combined with common hallucination phrases is a strong indicator
     // Always check for hallucinations
-    if (isLikelyHallucination(transcription.text, duration) || (hasEmptyMetadata && isLikelyHallucination(transcription.text, null))) {
+    if (
+      isLikelyHallucination(transcription.text, duration) ||
+      (hasEmptyMetadata && isLikelyHallucination(transcription.text, null))
+    ) {
       console.log("HAHAH");
-      
+
       return errorResponse(
         res,
         "No speech detected in the audio. Please ensure your recording contains clear speech.",
-        400
+        400,
       );
     }
 
@@ -387,10 +626,17 @@ const transcribeRecording = async (req, res) => {
       },
     });
   } catch (error) {
-    console.log("error",error);
-    
+    console.log("error", error);
+
     return errorResponse(res, error, 500);
   }
 };
 
-module.exports = { createVoiceNote, attachVoiceNoteToUser, getAll, transcribeRecording };
+module.exports = {
+  createVoiceNote,
+  attachVoiceNoteToUser,
+  getAll,
+  transcribeRecording,
+  getLessonRecording,
+  deleteLessonRecording,
+};

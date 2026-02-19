@@ -18,7 +18,7 @@ const handleMulterError = (err, req, res, next) => {
       return errorResponse(
         res,
         `File too large. Maximum file size is 500MB. Your file exceeds this limit. If you're on a serverless platform (like Vercel), consider using direct upload to storage instead.`,
-        413
+        413,
       );
     }
     return errorResponse(res, `Upload error: ${err.message}`, 400);
@@ -33,20 +33,28 @@ router.post(
   "/",
   upload.single("voice"),
   handleMulterError,
-  asyncHandler(voiceController.createVoiceNote)
+  asyncHandler(voiceController.createVoiceNote),
 );
 router.post(
   "/attachUser",
   upload.single("voice"),
   handleMulterError,
-  asyncHandler(voiceController.attachVoiceNoteToUser)
+  asyncHandler(voiceController.attachVoiceNoteToUser),
 );
 router.get("/getAll", asyncHandler(voiceController.getAll));
+router.post(
+  "/getLessonRecording",
+  asyncHandler(voiceController.getLessonRecording),
+);
+router.delete(
+  "/deleteLessonRecording",
+  asyncHandler(voiceController.deleteLessonRecording),
+);
 router.post(
   "/transcribe",
   upload.single("audio"),
   handleMulterError,
-  asyncHandler(voiceController.transcribeRecording)
+  asyncHandler(voiceController.transcribeRecording),
 );
 
 module.exports = router;

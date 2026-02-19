@@ -538,6 +538,35 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
     console.log("Chat table columns migration:", err.message);
   }
 
+  // Create userlesson table if it doesn't exist
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.tables 
+          WHERE table_name = 'userlesson'
+        ) THEN
+          CREATE TABLE "userlesson" (
+            "id" SERIAL PRIMARY KEY,
+            "userId" VARCHAR(255) NOT NULL UNIQUE,
+            "course" VARCHAR(255),
+            "module" VARCHAR(255),
+            "lesson" VARCHAR(255),
+            "isCompleted" VARCHAR(255),
+            "voiceId" INTEGER,
+            "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+          );
+          CREATE INDEX IF NOT EXISTS "userlesson_userId_idx" ON "userlesson"("userId");
+        END IF;
+      END $$;
+    `);
+    console.log("Userlesson table migration completed");
+  } catch (err) {
+    console.log("Userlesson table migration:", err.message);
+  }
+
   // Sync all models together to respect FK dependencies (e.g., users before diagnostics)
   // await sequelize.sync({ alter: true });
 

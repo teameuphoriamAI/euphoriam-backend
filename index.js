@@ -4,16 +4,20 @@ const app = require("./src/app");
 const { initDb, sequelize } = require("./src/config/sequelize");
 const cors = require("cors");
 const { initSockets } = require("./src/socket");
-const { initChromaDB, getChatCollection, getSessionCollection } = require("./src/config/chromadb");
+const {
+  initChromaDB,
+  getChatCollection,
+  getSessionCollection,
+} = require("./src/config/chromadb");
 
 /* 🔓 CORS CONFIG */
+
 app.use(
   cors({
-    origin: `${process.env.FRONTEND_URL}`,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  })
+  }),
 );
 
 const PORT = process.env.PORT;
@@ -29,7 +33,10 @@ initDb()
       await getSessionCollection();
       console.log("ChromaDB initialized successfully");
     } catch (chromaErr) {
-      console.warn("ChromaDB initialization failed (non-fatal):", chromaErr.message);
+      console.warn(
+        "ChromaDB initialization failed (non-fatal):",
+        chromaErr.message,
+      );
       // Continue without vector DB - the app will still work, just without semantic search
     }
 
@@ -42,10 +49,10 @@ initDb()
     // Graceful shutdown handlers
     const gracefulShutdown = async (signal) => {
       console.log(`\n${signal} received. Closing server gracefully...`);
-      
+
       server.close(async () => {
         console.log("HTTP server closed.");
-        
+
         // Close database connections
         try {
           await sequelize.close();
@@ -53,7 +60,7 @@ initDb()
         } catch (err) {
           console.error("Error closing database connections:", err);
         }
-        
+
         process.exit(0);
       });
 

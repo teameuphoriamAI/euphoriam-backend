@@ -377,6 +377,27 @@ const removeDuplicateDiscoveryWelcomeBlock = (transcript) => {
   return [...transcript.slice(0, secondIdx), ...transcript.slice(removeEnd)];
 };
 
+/**
+ * Remove consecutive duplicate messages (same role + content).
+ * Prevents duplicate user/assistant pairs from refresh or retries ending up in transcript.
+ */
+const removeConsecutiveDuplicateMessages = (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length <= 1) return transcript;
+  const out = [];
+  for (const m of transcript) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.role === m?.role &&
+      String(prev.content || "").trim() === String(m?.content || "").trim()
+    ) {
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+};
+
 /** LLM-based: Returns true if content is gibberish or truly invalid for diagnostic intake.
  *  Delegates to the shared isLikelyGibberishMessage which uses GPT for classification.
  */
@@ -1209,12 +1230,14 @@ const handleDiscoveryMode = async ({
       existingState.exchangesAtLastDeclinedEndChat = substantialExchanges;
     }
 
-    // If no nextMessage (skipped AI call), provide a friendly continuation
+    // If no nextMessage (skipped AI call), provide a structured continuation:
+    // acknowledge their choice to continue and bring them back to the LAST question
     if (!nextMessage) {
+      const lastQContent =
+        lastAssistant?.content || "Let's continue from where we left off.";
       nextMessage = {
         role: "assistant",
-        content:
-          "Understood. We'll let it land. What else would you like to explore or update regarding your patterns?",
+        content: `Got it, we'll keep going.\n\n${lastQContent}`,
       };
       // Keep transcript and nextMessage in sync: append this message to transcript
       updatedTranscript = [...(updatedTranscript || []), nextMessage];
@@ -2599,13 +2622,39 @@ NEVER use generic phrases like "I'm here" or "How can I help you today?". Answer
   // Note: Chat saving is handled in chatbotDiagnosticFreeform to avoid duplicate saves
   // Don't save here to prevent creating multiple chat entries
 
+  // In discovery mode, if multiple "Welcome back" intros are present in the transcript
+  // (from starting discovery off different reports), keep only the most recent one
+  const dedupeDiscoveryWelcome = (transcriptArr) => {
+    if (!Array.isArray(transcriptArr)) return transcriptArr;
+    const welcomeIndices = transcriptArr
+      .map((m, idx) =>
+        m?.role === "assistant" &&
+        typeof m.content === "string" &&
+        /^Welcome back\s+/i.test(m.content || "")
+          ? idx
+          : -1,
+      )
+      .filter((idx) => idx >= 0);
+    if (welcomeIndices.length <= 1) return transcriptArr;
+    const lastWelcomeIdx = welcomeIndices[welcomeIndices.length - 1];
+    return transcriptArr.filter(
+      (_m, idx) => idx === lastWelcomeIdx || !welcomeIndices.includes(idx),
+    );
+  };
+
+  const cleanedTranscript = dedupeDiscoveryWelcome(updatedTranscript);
+  const cleanedIntakeState = {
+    ...(updatedState || {}),
+    transcript: dedupeDiscoveryWelcome(updatedState?.transcript),
+  };
+
   // Return regular discovery chat response
   // Don't include answeredCount or pendingQuestion - those are for diagnostic mode only (12-question progress)
   return successResponse(res, "Next chatbot message", {
     nextMessage,
     introPageText: introText,
-    transcript: updatedTranscript,
-    intakeState: updatedState,
+    transcript: cleanedTranscript,
+    intakeState: cleanedIntakeState,
     retrieved: [],
     resumeNotice: null,
     // answeredCount and pendingQuestion removed - not applicable to discovery mode
@@ -5178,8 +5227,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           return successResponse(res, "Resuming discovery mode", {
             hasExistingReport: true,
             mode: "discovery",
-            nextMessage:
-              lastMessage?.role === "assistant" ? lastMessage : null,
+            nextMessage: lastMessage?.role === "assistant" ? lastMessage : null,
             transcript: transcriptInternal,
             intakeState: {
               transcript: transcriptInternal,
@@ -5649,26 +5697,44 @@ ${Math.round(signalOutput)}%`;
         },
       );
     } else {
-      // Incoming is same or smaller — use existing BUT check if the last incoming message
-      // is a NEW user message not in the DB transcript. This happens when the DB has more
-      // messages (e.g. stacked validation) and the frontend appends a new user message.
-      const lastIncoming = incomingMessages[incomingMessages.length - 1];
-      const lastExisting = transcriptInternal2[transcriptInternal2.length - 1];
-      if (
-        lastIncoming?.role === "user" &&
-        (!lastExisting ||
-          lastExisting.role !== "user" ||
-          lastExisting.content !== lastIncoming.content)
-      ) {
-        transcript = [...transcriptInternal2, lastIncoming];
-        console.log(
-          "[diagnostic] DB transcript longer but incoming has new user message — appended it",
+      // Incoming is same or smaller — use existing unless there's a truly new user message.
+      // If incoming is exactly a suffix of existing (e.g. frontend resent same history on refresh), don't append.
+      const len = incomingMessages.length;
+      const existingSuffix = transcriptInternal2.slice(-len);
+      const incomingIsSuffixOfExisting =
+        len > 0 &&
+        existingSuffix.length === len &&
+        existingSuffix.every(
+          (e, i) =>
+            e?.role === incomingMessages[i]?.role &&
+            String(e?.content || "").trim() ===
+              String(incomingMessages[i]?.content || "").trim(),
         );
-      } else {
+      if (incomingIsSuffixOfExisting) {
         transcript = transcriptInternal2;
         console.log(
-          "[diagnostic] Using existing transcript (incoming not larger)",
+          "[diagnostic] Incoming is suffix of existing (e.g. refresh) — using existing transcript",
         );
+      } else {
+        const lastIncoming = incomingMessages[incomingMessages.length - 1];
+        const lastExisting =
+          transcriptInternal2[transcriptInternal2.length - 1];
+        if (
+          lastIncoming?.role === "user" &&
+          (!lastExisting ||
+            lastExisting.role !== "user" ||
+            lastExisting.content !== lastIncoming.content)
+        ) {
+          transcript = [...transcriptInternal2, lastIncoming];
+          console.log(
+            "[diagnostic] DB transcript longer but incoming has new user message — appended it",
+          );
+        } else {
+          transcript = transcriptInternal2;
+          console.log(
+            "[diagnostic] Using existing transcript (incoming not larger)",
+          );
+        }
       }
     }
   } else if (hasIncompleteChat && incomingMessages.length > 0) {
@@ -5728,6 +5794,8 @@ ${Math.round(signalOutput)}%`;
 
   // Remove duplicate discovery welcome block (e.g. after refresh frontend can send duplicate)
   transcript = removeDuplicateDiscoveryWelcomeBlock(transcript);
+  // Remove consecutive duplicate messages (e.g. same user message sent on refresh/retry)
+  transcript = removeConsecutiveDuplicateMessages(transcript);
 
   lastUser = [...transcript].reverse().find((m) => m?.role === "user");
   lastAssistant = [...transcript]
@@ -6148,7 +6216,7 @@ Previous question: ${(lastAssistant.content || "").slice(0, 400)}`;
                   { role: "user", content: reaskPrompt },
                 ],
                 temperature: 0.3,
-                max_tokens: 350,
+                max_tokens: 400,
               });
               const reaskContent = reaskResp?.choices?.[0]?.message?.content;
               if (reaskContent && /Q\s*\d+/i.test(reaskContent)) {
@@ -6423,6 +6491,9 @@ Take your time and share what feels true for you.`,
     lastAssistantQ === nextMessageQ;
 
   if (appUser && updatedTranscript.length > 0) {
+    // Always pass existingChatId when resuming so we update the SAME chat (one active session).
+    // Prevents duplicate chat sessions on frontend refresh or retries.
+    const useExistingChat = incompleteChatId && !isNewDiscoverySession;
     await saveChatIncrementally({
       userId: appUser.id,
       diagnosticId: existingDiagnostic?.id || null,
@@ -6430,12 +6501,7 @@ Take your time and share what feels true for you.`,
       transcript: updatedTranscript,
       isChatEnded: false,
       forceNewChat: isNewDiscoverySession, // Force new session if this was the welcome message turn
-      ...(wantsNewDiagnostic &&
-      hasIncompleteChat &&
-      isIncompleteChatDiscoveryMode &&
-      incompleteChatId
-        ? { existingChatId: incompleteChatId }
-        : {}),
+      ...(useExistingChat ? { existingChatId: incompleteChatId } : {}),
     });
   }
 

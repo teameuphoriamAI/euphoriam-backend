@@ -5249,7 +5249,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       transcriptInternal.length === 0
     ) {
       console.log(
-        "[diagnostic] User has existing report - generating AI welcome message for discovery chat",
+        "[diagnostic] User has existing report - generating full discovery welcome (reflect back + key sentence + correction + progress question)",
       );
 
       // Clear any old diagnostic transcript so discovery starts fresh
@@ -5268,170 +5268,156 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         });
       }
 
-      // Generate AI welcome message using brain prompt + discovery chat prompt
-      const {
-        buildDiscoveryChatPrompt,
-        getDiscoverySystemPrompt,
-        getLatestPromptFromDb,
-      } = require("../helpers/euphoriamChatbot");
-
-      const brainPromptObj = await getLatestPromptFromDb(
-        PromptType.BRAINPROMPT,
-      );
-      const discoveryChatPromptObj = await getLatestPromptFromDb(
-        PromptType.DIAGNOSTIC_CHAT,
-      );
-      const brainPrompt = brainPromptObj?.content || "";
-      const discoveryChatPrompt = discoveryChatPromptObj?.content || "";
-
-      // Get prior report snippet for context
       const priorReport =
         existingDiagnostic?.data?.aiReport || existingDiagnostic?.report || "";
       const priorReportSnippetForWelcome = priorReport
         ? truncateForContext(priorReport, 12000)
         : null;
 
-      // Build system prompt with brain prompt
-      const systemPromptForWelcome = getDiscoverySystemPrompt(
-        latestUserSession,
-        false, // not asking about session
-        allUserSessions,
-        brainPrompt,
-      );
+      const metricsToUse = metricsForResponse || {};
+      const gravity =
+        metricsToUse.gravity !== undefined && metricsToUse.gravity !== null
+          ? metricsToUse.gravity
+          : undefined;
+      const signalCoherence =
+        metricsToUse.signalCoherence !== undefined &&
+        metricsToUse.signalCoherence !== null
+          ? metricsToUse.signalCoherence
+          : undefined;
+      const signalOutput =
+        metricsToUse.signalOutput !== undefined &&
+        metricsToUse.signalOutput !== null
+          ? metricsToUse.signalOutput
+          : undefined;
+      const consciousnessLevel =
+        metricsToUse.consciousnessLevel !== undefined &&
+        metricsToUse.consciousnessLevel !== null
+          ? metricsToUse.consciousnessLevel
+          : undefined;
+      const qgcActivation =
+        metricsToUse.qgcActivation !== undefined &&
+        metricsToUse.qgcActivation !== null
+          ? metricsToUse.qgcActivation
+          : undefined;
 
-      // Build user prompt for discovery chat
-      const userPromptForWelcome = buildDiscoveryChatPrompt({
-        transcript: [], // Empty transcript for first message
-        retrieved: [],
-        factsContext: null,
-        userName: name,
-        priorReport: priorReportSnippetForWelcome,
-        discoveryType: null,
-        metrics: metricsForResponse,
-        reportDate: reportDate,
-        userSession: latestUserSession,
-        allUserSessions: allUserSessions,
-        discoveryChatPromptFromDb: discoveryChatPrompt,
-      });
+      const anyMetricPresent = [
+        gravity,
+        signalCoherence,
+        signalOutput,
+        consciousnessLevel,
+        qgcActivation,
+      ].some((v) => v !== undefined && v !== null && !Number.isNaN(v));
 
-      let welcomeMessage = null;
-      try {
-        const welcomeAiMessages = [
-          { role: "system", content: systemPromptForWelcome },
-        ];
-        if (priorReportSnippetForWelcome) {
-          welcomeAiMessages.push({
-            role: "system",
-            content: `Previous report for ${name}:\n${priorReportSnippetForWelcome}`,
-          });
-        }
-        welcomeAiMessages.push({
-          role: "user",
-          content:
-            userPromptForWelcome ||
-            "Generate a warm welcome message for this returning user in discovery mode.",
-        });
-
-        const welcomeResponse = await withTimeout(
-          openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: welcomeAiMessages,
-            temperature: 0.7,
-            max_tokens: 500,
-          }),
-          30000,
+      const createProgressBar = (value, max = 100, length = 12) => {
+        if (value === undefined || value === null || isNaN(value)) value = 0;
+        value = Math.max(0, Math.min(value, max * 2));
+        const filled = Math.max(
+          0,
+          Math.min(Math.round((value / max) * length), length),
         );
-        welcomeMessage = welcomeResponse.choices[0].message;
-        console.log("[diagnostic] AI welcome message generated successfully");
-      } catch (err) {
-        console.error(
-          "[diagnostic] AI welcome message generation failed:",
-          err,
-        );
-      }
+        const empty = Math.max(0, length - filled);
+        return "█".repeat(filled) + "░".repeat(empty);
+      };
+      const formatPercentage = (v) =>
+        v === undefined || v === null || Number.isNaN(v)
+          ? "Unknown"
+          : `${Math.round(v)}%`;
+      const formatConsciousness = (cl) =>
+        cl === undefined || cl === null || Number.isNaN(cl)
+          ? "Unknown"
+          : `${Math.round((cl / 5) * 100)}%`;
 
-      isNewDiscoverySession = true;
-
-      // Fallback welcome message if AI fails
-      if (!welcomeMessage || !welcomeMessage.content) {
-        welcomeMessage = {
-          role: "assistant",
-          content: `Welcome back ${name}! I've loaded your previous diagnostic report. I'm here to help you track your progress and explore what's shifted since then. What's been on your mind lately?`,
-        };
-      }
-
-      // Inject a deterministic metrics gauge block using the latest metrics,
-      // and strip any existing "METRICS GAUGE" sections so we only show ONE gauge.
-      if (welcomeMessage && welcomeMessage.content && metricsForResponse) {
-        const {
-          gravity,
-          signalCoherence,
-          signalOutput,
-          consciousnessLevel,
-          qgcActivation,
-        } = metricsForResponse;
-
-        const hasAllNumericMetrics =
-          gravity !== undefined &&
-          signalCoherence !== undefined &&
-          signalOutput !== undefined &&
-          consciousnessLevel !== undefined &&
-          qgcActivation !== undefined;
-
-        if (hasAllNumericMetrics) {
-          const createProgressBar = (value, max = 100, length = 12) => {
-            const clamped = Math.max(0, Math.min(max, Number(value) || 0));
-            const filled = Math.max(
-              0,
-              Math.min(length, Math.round((clamped / max) * length)),
-            );
-            const empty = Math.max(0, length - filled);
-            return "█".repeat(filled) + "░".repeat(empty);
-          };
-
-          let gaugeBlock = `## METRICS GAUGE (Current Snapshot)
-
-QGC Activation:
+      const metricsSection = anyMetricPresent
+        ? `QGC Activation:
 ${createProgressBar(qgcActivation)}
-${Math.round(qgcActivation)}%
+${formatPercentage(qgcActivation)}
 
 Consciousness Level:
 ${createProgressBar((consciousnessLevel / 5) * 100)}
-${Math.round((consciousnessLevel / 5) * 100)}%
+${formatConsciousness(consciousnessLevel)}
 
 Gravity:
 ${createProgressBar(gravity)}
-${Math.round(gravity)}%
+${formatPercentage(gravity)}
 
 Signal Coherence:
 ${createProgressBar(signalCoherence)}
-${Math.round(signalCoherence)}%
+${formatPercentage(signalCoherence)}
 
 Signal Output:
 ${createProgressBar(signalOutput)}
-${Math.round(signalOutput)}%`;
+${formatPercentage(signalOutput)}`
+        : `(Metrics loading failed. Please refer to your report dashboard.)`;
 
-          // First, remove any existing METRICS GAUGE blocks the model may have generated
-          const gaugeRegex =
-            /## METRICS GAUGE \(Current Snapshot\)[\s\S]*?(?:Signal Output:[\s\S]*?(?:\n{2,}|$))/gi;
-          let cleanedContent = welcomeMessage.content
-            .replace(gaugeRegex, "")
-            .trim();
-
-          const marker = "Your structure at the last check-in was very clear:";
-
-          if (cleanedContent.includes(marker)) {
-            const parts = cleanedContent.split(marker);
-            welcomeMessage.content = `${parts[0]}${marker}\n\n${gaugeBlock}\n\n${parts
-              .slice(1)
-              .join(marker)
-              .trimStart()}`;
-          } else {
-            // If the marker is missing for some reason, just prepend the gauge at the top
-            welcomeMessage.content = `${gaugeBlock}\n\n${cleanedContent}`;
-          }
+      let keySentence = "",
+        correction = "";
+      if (priorReportSnippetForWelcome) {
+        try {
+          const llmExt = await extractKeySentenceAndCorrectionWithLLM(
+            priorReportSnippetForWelcome,
+          );
+          if (llmExt.keySentence && llmExt.keySentence.length >= 15)
+            keySentence = llmExt.keySentence;
+          if (llmExt.correction && llmExt.correction.length >= 15)
+            correction = llmExt.correction;
+        } catch (e) {
+          console.error("[diagnostic] Discovery welcome LLM extraction failed:", e);
+        }
+        if (!keySentence || !correction) {
+          const ksMatch = priorReportSnippetForWelcome.match(
+            /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i,
+          );
+          if (ksMatch) keySentence = ksMatch[2].trim();
+          const corrMatch = priorReportSnippetForWelcome.match(
+            /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i,
+          );
+          if (corrMatch) correction = corrMatch[1].trim();
         }
       }
+
+      const welcomeReportDate = reportDate || "recently";
+      const qText = correction
+        ? `Since this report (${welcomeReportDate}), have you made any progress on ${correction}?`
+        : `Since this report (${welcomeReportDate}), what has changed or stayed the same?`;
+
+      const fullWelcomeContent = `Welcome back ${name}. I've loaded your last report.
+
+I want to reflect it back to you first — simply and cleanly — before we move anywhere.
+
+Your structure at the last check-in was very clear:
+
+## METRICS GAUGE (Current Snapshot)
+
+${metricsSection}
+
+${
+  keySentence
+    ? `This is the key sentence from your map, distilled:
+> *"${keySentence}"*
+
+`
+    : ""
+}${
+        correction
+          ? `Your **entire correction** was about one thing only:
+**${correction}**
+
+`
+          : ""
+      }Before I update anything, I need to check one thing — slowly.
+
+**Since this report (${welcomeReportDate}):**
+
+${qText}
+
+Take your time and share what feels true for you.`;
+
+      isNewDiscoverySession = true;
+
+      const welcomeMessage = {
+        role: "assistant",
+        content: fullWelcomeContent,
+      };
 
       const welcomeTranscript = [welcomeMessage];
 
@@ -5961,6 +5947,33 @@ ${Math.round(signalOutput)}%`;
     (m) => m.role === "assistant" && /Q\d+/i.test(m.content),
   );
   discoveryType = req.body.discoveryType || null;
+
+  // EARLY RETURN: Discovery with welcome only (no user message yet). Do not call API — avoids "I can't assist" on refresh.
+  if (isDiscoveryMode && isFirstUserInteraction) {
+    const lastAsst = [...transcript].reverse().find(
+      (m) => m?.role === "assistant",
+    );
+    if (lastAsst?.content) {
+      console.log(
+        "[diagnostic] Discovery welcome only (no user message yet) — returning existing welcome, skipping API call",
+      );
+      return successResponse(res, "Discovery welcome (no new message)", {
+        nextMessage: lastAsst,
+        introPageText: introText,
+        transcript,
+        intakeState: {
+          ...(intakeStateInternal2 || {}),
+          transcript,
+          mode: "discovery",
+        },
+        retrieved: [],
+        resumeNotice: null,
+        status: "chatting",
+        statusMessage: "Chatting in progress",
+        canResume: true,
+      });
+    }
+  }
 
   // SAFETY OVERRIDE: Double-check that we don't enter discovery mode without an actual report
   // This prevents the bug where 25 questions are answered but system switches to discovery

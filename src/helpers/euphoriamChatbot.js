@@ -2407,6 +2407,8 @@ ${formatSessionsForSystem(sessionsToUse)}
     : `You are Euphoriam AI working with structure-aware precision. This is discovery mode - working with their existing diagnostic.`;
 
   return `${basePrompt}
+
+🚫 REFUSAL FORBIDDEN: You MUST respond to the user. NEVER say "I'm sorry, I can't assist with that request" or "I can't assist" or refuse the conversation. You have the report and context; answer in discovery style.
 ${isAskingAboutSession ? "\n🚨🚨🚨 USER IS ASKING ABOUT THEIR 1:1 SESSION - PRIORITIZE SESSION QUERY OVER WELCOME MESSAGE." : ""}
 ${sessionSystemBlock}
 ${userSession?.transcript ? `\n🚨🚨🚨🚨🚨 IMMEDIATE ATTENTION: The user has a 1:1 coaching session transcript provided above. If they ask "do you have my session details?" or "summarize my session", you MUST use the transcript above. NEVER say "I'm sorry, but I can't assist" or refuse - it's RIGHT THERE in this prompt and you MUST answer.` : ""}
@@ -2500,6 +2502,61 @@ const safeFindDiagnostic = async (options = {}) => {
  * so we need to find the diagnostic with the most recent report generation.
  * We check data.generatedAt (when report was generated) or updatedAt as fallback.
  */
+
+/**
+ * Use LLM to keep only the single correct discovery welcome message when transcript
+ * has multiple welcome intros (e.g. short placeholder + full reflection). No regex.
+ */
+const deduplicateDiscoveryWelcomeWithLLM = async (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length < 2) return transcript;
+  const firstN = transcript.slice(0, 6);
+  const intro = firstN
+    .map(
+      (m, i) =>
+        `[${i}] (${m?.role || "unknown"}): ${(m?.content || "").slice(0, 600)}${(m?.content || "").length > 600 ? "..." : ""}`,
+    )
+    .join("\n\n");
+
+  const prompt = `These are the first ${firstN.length} messages of a discovery chat. Some may be duplicate or placeholder "welcome back" intros. We want to keep only ONE welcome: the full, correct discovery welcome (reflects the report, metrics, key sentence, correction, and asks a progress question). Shorter or generic placeholders like "I've loaded your previous diagnostic report... What's been on your mind lately?" should be removed.
+
+Messages:
+${intro}
+
+Reply with JSON only. No other text.
+{"welcomeIndices": [0, 1], "keepIndex": 1}
+
+- welcomeIndices: 0-based indices of messages that are "welcome back" / discovery intro messages.
+- keepIndex: the single index (from welcomeIndices) to KEEP — the full discovery welcome with report reflection and progress question. Remove the others.
+
+If there is only one welcome intro, put it in welcomeIndices and set keepIndex to that index. If there are two, set keepIndex to the index of the FULL one (reflection, metrics, key sentence, progress question), not the short placeholder.`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_completion_tokens: 120,
+    });
+    const raw = (resp?.choices?.[0]?.message?.content || "").trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    const welcomeIndices = Array.isArray(parsed?.welcomeIndices)
+      ? parsed.welcomeIndices.filter((i) => typeof i === "number" && i >= 0 && i < firstN.length)
+      : [];
+    const keepIndex = parsed?.keepIndex;
+    if (welcomeIndices.length <= 1) return transcript;
+    if (typeof keepIndex !== "number" || !welcomeIndices.includes(keepIndex)) return transcript;
+    const toRemove = welcomeIndices.filter((i) => i !== keepIndex);
+    const keptFirst = firstN.filter((_, i) => !toRemove.includes(i));
+    const out = [...keptFirst, ...transcript.slice(firstN.length)];
+    console.log("[deduplicateDiscoveryWelcomeWithLLM] kept index", keepIndex, "removed", toRemove);
+    return out;
+  } catch (err) {
+    console.warn("[deduplicateDiscoveryWelcomeWithLLM] failed:", err?.message || err);
+    return transcript;
+  }
+};
+
 const loadDiagnosticState = (email) =>
   withDbSlot(async () => {
     const { Chat } = require("../models/chatModel");
@@ -2558,29 +2615,14 @@ const loadDiagnosticState = (email) =>
           associatedDiagnostic = allDiagnostics[0];
         }
 
-        // If this is a discovery chat and there are multiple "welcome back" intros
-        // (from starting discovery off different reports in the same chat),
-        // keep ONLY the most recent welcome message to avoid showing duplicates.
-        if (incompleteChat.chatType === "discovery" && Array.isArray(chatTranscript)) {
-          const welcomeIndices = chatTranscript
-            .map((m, idx) =>
-              m?.role === "assistant" &&
-              typeof m.content === "string" &&
-              /^Welcome back\s+/i.test(m.content || "")
-                ? idx
-                : -1,
-            )
-            .filter((idx) => idx >= 0);
-
-          if (welcomeIndices.length > 1) {
-            const lastWelcomeIdx = welcomeIndices[welcomeIndices.length - 1];
-            chatTranscript = chatTranscript.filter(
-              (_m, idx) =>
-                // Keep everything that isn't an earlier welcome,
-                // plus the most recent welcome message.
-                idx === lastWelcomeIdx || !welcomeIndices.includes(idx),
-            );
-          }
+        // If this is a discovery chat with 2+ messages, use LLM to keep only the single
+        // correct welcome message (full reflection), not short placeholders. No regex.
+        if (
+          incompleteChat.chatType === "discovery" &&
+          Array.isArray(chatTranscript) &&
+          chatTranscript.length >= 2
+        ) {
+          chatTranscript = await deduplicateDiscoveryWelcomeWithLLM(chatTranscript);
         }
 
         // Build the intakeState with the (possibly cleaned) transcript from Chat model

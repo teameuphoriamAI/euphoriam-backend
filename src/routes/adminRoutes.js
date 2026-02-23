@@ -29,7 +29,7 @@ const handleMulterError = (err, req, res, next) => {
       return errorResponse(
         res,
         "File too large. Maximum file size is 50MB.",
-        413
+        413,
       );
     }
     return errorResponse(res, `Upload error: ${err.message}`, 400);
@@ -49,7 +49,10 @@ router.get("/verify", adminController.adminLogin);
 
 // User management
 router.get("/users", asyncHandler(adminController.getAllUsers));
-router.get("/users/:userId/reports", asyncHandler(adminController.getUserReports));
+router.get(
+  "/users/:userId/reports",
+  asyncHandler(adminController.getUserReports),
+);
 
 // Prompt management
 router.get("/prompts", asyncHandler(adminController.getAllPrompts));
@@ -57,7 +60,10 @@ router.get("/prompts/:id", asyncHandler(adminController.getPromptById));
 router.post("/prompts", asyncHandler(adminController.createPrompt));
 router.put("/prompts/:id", asyncHandler(adminController.updatePrompt));
 router.delete("/prompts/:id", asyncHandler(adminController.deletePrompt));
-router.get("/prompts/:id/history", asyncHandler(adminController.getPromptHistory));
+router.get(
+  "/prompts/:id/history",
+  asyncHandler(adminController.getPromptHistory),
+);
 
 // Stats
 router.get("/stats", asyncHandler(adminController.getStats));
@@ -67,22 +73,36 @@ router.post(
   "/user-sessions",
   upload.single("pdf"),
   handleMulterError,
-  asyncHandler(adminController.uploadUserSession)
+  asyncHandler(adminController.uploadUserSession),
 );
-router.post("/user-sessions/attach", asyncHandler(adminController.attachUserSessionToUser));
+router.post(
+  "/user-sessions/attach",
+  asyncHandler(adminController.attachUserSessionToUser),
+);
 router.get("/user-sessions", asyncHandler(adminController.getAllUserSessions));
-router.get("/user-sessions/user", asyncHandler(adminController.getUserSessions));
-router.get("/user-sessions/latest", asyncHandler(adminController.getUserLatestSession));
+router.get(
+  "/user-sessions/user",
+  asyncHandler(adminController.getUserSessions),
+);
+router.get(
+  "/user-sessions/latest",
+  asyncHandler(adminController.getUserLatestSession),
+);
+router.patch(
+  "/changeUserStatus/:id",
+  asyncHandler(adminController.changeUserStatus),
+);
+router.delete("/deleteUser/:id", asyncHandler(adminController.deleteUser));
 
 // Semantic search for user sessions (vector DB)
-router.post("/user-sessions/search", asyncHandler(adminController.searchUserSessionsSemantic));
+router.post(
+  "/user-sessions/search",
+  asyncHandler(adminController.searchUserSessionsSemantic),
+);
 
-router.get("/user-sessions/:id", asyncHandler(adminController.singleUserSessionToUser));
+router.get(
+  "/user-sessions/:id",
+  asyncHandler(adminController.singleUserSessionToUser),
+);
 
 module.exports = router;
-
-
-
-
-
-

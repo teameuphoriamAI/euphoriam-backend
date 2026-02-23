@@ -13,7 +13,7 @@ const { extractTextFromPdf } = require("../utils/pdfParser");
 const { createEmbeddings } = require("../config/Embedding");
 const { generateSessionSummary } = require("../config/sessionSummary");
 const { cleanTranscriptText } = require("../helpers/euphoriamChatbot");
-const { PromptType } = require("../utils/types");
+const { PromptType, UserStatus, UserRole } = require("../utils/types");
 
 // Vector store service for semantic search
 const {
@@ -67,11 +67,73 @@ const getAllUsers = async (req, res) => {
     return errorResponse(res, "Failed to fetch users", 500);
   }
 };
+//delete user
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    const user = await User.findByPk(id);
+    if (!user) {
+      return errorResponse(res, "User not found", 404);
+    }
+
+    // Prevent deleting admin accounts
+    if (user.role === UserRole.ADMIN) {
+      return errorResponse(res, "Admin users cannot be deleted", 403);
+    }
+
+    // Optional: delete related data
+    await Diagnostic.destroy({
+      where: {
+        [Op.or]: [{ email: user.email }, { userId: user.id }],
+      },
+    });
+
+    await Discovery.destroy({
+      where: { userId: user.id },
+    });
+
+    await user.destroy();
+
+    return successResponse(res, "User deleted successfully");
+  } catch (error) {
+    console.error("[admin] delete user error:", error);
+    return errorResponse(res, "Failed to delete user", 500);
+  }
+};
+
+//change status
+const changeUserStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    console.log("id", req.params, req.query, status);
+    if (!Object.values(UserStatus).includes(status)) {
+      return errorResponse(res, "Invalid status value", 400);
+    }
+
+    const user = await User.findOne({ where: { id: id } });
+    if (!user) {
+      return errorResponse(res, "User not found", 404);
+    }
+
+    user.status = status;
+    await user.save();
+
+    return successResponse(res, "User status updated", user);
+  } catch (error) {
+    console.error("[admin] change status error:", error);
+    return errorResponse(res, "Failed to update status", 500);
+  }
+};
 // Get user reports
 const getUserReports = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = parseInt(req.params.userId, 10);
+    if (Number.isNaN(userId)) {
+      return errorResponse(res, "Invalid user ID", 400);
+    }
+
     const user = await User.findByPk(userId, {
       attributes: { exclude: ["password"] },
     });
@@ -80,23 +142,29 @@ const getUserReports = async (req, res) => {
       return errorResponse(res, "User not found", 404);
     }
 
-    // Get diagnostics by email or userId
+    const userEmail = user.email;
+    const userIdNum = user.id;
+
+    // Get diagnostics by email or userId (diagnostics may be stored with either)
     const diagnostics = await Diagnostic.findAll({
       where: {
-        [Op.or]: [{ email: user.email }, { userId: user.id }],
+        userId: userIdNum,
       },
       order: [["createdAt", "DESC"]],
     });
+    console.log("diagnostic report", diagnostics);
 
+    // Get discoveries by userId or email (discoveries may be stored with either)
     const discoveries = await Discovery.findAll({
-      where: { userId: user.id },
+      where: { userId: userIdNum },
       order: [["createdAt", "DESC"]],
     });
+    console.log("discoveries report", discoveries);
 
     return successResponse(res, "User reports fetched", {
       user: user.toJSON(),
-      diagnostics,
-      discoveries,
+      diagnostics: diagnostics,
+      discoveries: discoveries,
       totalReports: diagnostics.length + discoveries.length,
     });
   } catch (error) {
@@ -720,7 +788,9 @@ const uploadUserSession = async (req, res) => {
         sessionDate: parsedDate,
         createdAt: userSession.createdAt,
       },
-    }).catch((err) => console.error("[uploadUserSession] Vector DB error:", err));
+    }).catch((err) =>
+      console.error("[uploadUserSession] Vector DB error:", err),
+    );
 
     return successResponse(res, "User session uploaded successfully", {
       session: userSession,
@@ -929,7 +999,9 @@ const searchUserSessionsSemantic = async (req, res) => {
     });
 
     // Fetch full session data for the results
-    const sessionIds = results.map((r) => parseInt(r.sessionId)).filter(Boolean);
+    const sessionIds = results
+      .map((r) => parseInt(r.sessionId))
+      .filter(Boolean);
     const fullSessions = await UserSession.findAll({
       where: { id: sessionIds },
       include: [
@@ -943,7 +1015,9 @@ const searchUserSessionsSemantic = async (req, res) => {
 
     // Merge full session data with similarity scores
     const enrichedResults = results.map((result) => {
-      const fullSession = fullSessions.find((s) => s.id === parseInt(result.sessionId));
+      const fullSession = fullSessions.find(
+        (s) => s.id === parseInt(result.sessionId),
+      );
       return {
         ...result,
         transcript: fullSession?.transcript || [],
@@ -967,6 +1041,8 @@ const searchUserSessionsSemantic = async (req, res) => {
 module.exports = {
   adminLogin,
   getAllUsers,
+  deleteUser,
+  changeUserStatus,
   getUserReports,
   getAllPrompts,
   getPromptById,

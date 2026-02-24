@@ -377,6 +377,27 @@ const removeDuplicateDiscoveryWelcomeBlock = (transcript) => {
   return [...transcript.slice(0, secondIdx), ...transcript.slice(removeEnd)];
 };
 
+/**
+ * Remove consecutive duplicate messages (same role + content).
+ * Prevents duplicate user/assistant pairs from refresh or retries ending up in transcript.
+ */
+const removeConsecutiveDuplicateMessages = (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length <= 1) return transcript;
+  const out = [];
+  for (const m of transcript) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.role === m?.role &&
+      String(prev.content || "").trim() === String(m?.content || "").trim()
+    ) {
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+};
+
 /** LLM-based: Returns true if content is gibberish or truly invalid for diagnostic intake.
  *  Delegates to the shared isLikelyGibberishMessage which uses GPT for classification.
  */
@@ -1209,12 +1230,14 @@ const handleDiscoveryMode = async ({
       existingState.exchangesAtLastDeclinedEndChat = substantialExchanges;
     }
 
-    // If no nextMessage (skipped AI call), provide a friendly continuation
+    // If no nextMessage (skipped AI call), provide a structured continuation:
+    // acknowledge their choice to continue and bring them back to the LAST question
     if (!nextMessage) {
+      const lastQContent =
+        lastAssistant?.content || "Let's continue from where we left off.";
       nextMessage = {
         role: "assistant",
-        content:
-          "Understood. We'll let it land. What else would you like to explore or update regarding your patterns?",
+        content: `Got it, we'll keep going.\n\n${lastQContent}`,
       };
       // Keep transcript and nextMessage in sync: append this message to transcript
       updatedTranscript = [...(updatedTranscript || []), nextMessage];
@@ -2599,13 +2622,39 @@ NEVER use generic phrases like "I'm here" or "How can I help you today?". Answer
   // Note: Chat saving is handled in chatbotDiagnosticFreeform to avoid duplicate saves
   // Don't save here to prevent creating multiple chat entries
 
+  // In discovery mode, if multiple "Welcome back" intros are present in the transcript
+  // (from starting discovery off different reports), keep only the most recent one
+  const dedupeDiscoveryWelcome = (transcriptArr) => {
+    if (!Array.isArray(transcriptArr)) return transcriptArr;
+    const welcomeIndices = transcriptArr
+      .map((m, idx) =>
+        m?.role === "assistant" &&
+        typeof m.content === "string" &&
+        /^Welcome back\s+/i.test(m.content || "")
+          ? idx
+          : -1,
+      )
+      .filter((idx) => idx >= 0);
+    if (welcomeIndices.length <= 1) return transcriptArr;
+    const lastWelcomeIdx = welcomeIndices[welcomeIndices.length - 1];
+    return transcriptArr.filter(
+      (_m, idx) => idx === lastWelcomeIdx || !welcomeIndices.includes(idx),
+    );
+  };
+
+  const cleanedTranscript = dedupeDiscoveryWelcome(updatedTranscript);
+  const cleanedIntakeState = {
+    ...(updatedState || {}),
+    transcript: dedupeDiscoveryWelcome(updatedState?.transcript),
+  };
+
   // Return regular discovery chat response
   // Don't include answeredCount or pendingQuestion - those are for diagnostic mode only (12-question progress)
   return successResponse(res, "Next chatbot message", {
     nextMessage,
     introPageText: introText,
-    transcript: updatedTranscript,
-    intakeState: updatedState,
+    transcript: cleanedTranscript,
+    intakeState: cleanedIntakeState,
     retrieved: [],
     resumeNotice: null,
     // answeredCount and pendingQuestion removed - not applicable to discovery mode
@@ -5178,8 +5227,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
           return successResponse(res, "Resuming discovery mode", {
             hasExistingReport: true,
             mode: "discovery",
-            nextMessage:
-              lastMessage?.role === "assistant" ? lastMessage : null,
+            nextMessage: lastMessage?.role === "assistant" ? lastMessage : null,
             transcript: transcriptInternal,
             intakeState: {
               transcript: transcriptInternal,
@@ -5201,7 +5249,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
       transcriptInternal.length === 0
     ) {
       console.log(
-        "[diagnostic] User has existing report - generating AI welcome message for discovery chat",
+        "[diagnostic] User has existing report - generating full discovery welcome (reflect back + key sentence + correction + progress question)",
       );
 
       // Clear any old diagnostic transcript so discovery starts fresh
@@ -5220,170 +5268,156 @@ const chatbotDiagnosticFreeform = async (req, res) => {
         });
       }
 
-      // Generate AI welcome message using brain prompt + discovery chat prompt
-      const {
-        buildDiscoveryChatPrompt,
-        getDiscoverySystemPrompt,
-        getLatestPromptFromDb,
-      } = require("../helpers/euphoriamChatbot");
-
-      const brainPromptObj = await getLatestPromptFromDb(
-        PromptType.BRAINPROMPT,
-      );
-      const discoveryChatPromptObj = await getLatestPromptFromDb(
-        PromptType.DIAGNOSTIC_CHAT,
-      );
-      const brainPrompt = brainPromptObj?.content || "";
-      const discoveryChatPrompt = discoveryChatPromptObj?.content || "";
-
-      // Get prior report snippet for context
       const priorReport =
         existingDiagnostic?.data?.aiReport || existingDiagnostic?.report || "";
       const priorReportSnippetForWelcome = priorReport
         ? truncateForContext(priorReport, 12000)
         : null;
 
-      // Build system prompt with brain prompt
-      const systemPromptForWelcome = getDiscoverySystemPrompt(
-        latestUserSession,
-        false, // not asking about session
-        allUserSessions,
-        brainPrompt,
-      );
+      const metricsToUse = metricsForResponse || {};
+      const gravity =
+        metricsToUse.gravity !== undefined && metricsToUse.gravity !== null
+          ? metricsToUse.gravity
+          : undefined;
+      const signalCoherence =
+        metricsToUse.signalCoherence !== undefined &&
+        metricsToUse.signalCoherence !== null
+          ? metricsToUse.signalCoherence
+          : undefined;
+      const signalOutput =
+        metricsToUse.signalOutput !== undefined &&
+        metricsToUse.signalOutput !== null
+          ? metricsToUse.signalOutput
+          : undefined;
+      const consciousnessLevel =
+        metricsToUse.consciousnessLevel !== undefined &&
+        metricsToUse.consciousnessLevel !== null
+          ? metricsToUse.consciousnessLevel
+          : undefined;
+      const qgcActivation =
+        metricsToUse.qgcActivation !== undefined &&
+        metricsToUse.qgcActivation !== null
+          ? metricsToUse.qgcActivation
+          : undefined;
 
-      // Build user prompt for discovery chat
-      const userPromptForWelcome = buildDiscoveryChatPrompt({
-        transcript: [], // Empty transcript for first message
-        retrieved: [],
-        factsContext: null,
-        userName: name,
-        priorReport: priorReportSnippetForWelcome,
-        discoveryType: null,
-        metrics: metricsForResponse,
-        reportDate: reportDate,
-        userSession: latestUserSession,
-        allUserSessions: allUserSessions,
-        discoveryChatPromptFromDb: discoveryChatPrompt,
-      });
+      const anyMetricPresent = [
+        gravity,
+        signalCoherence,
+        signalOutput,
+        consciousnessLevel,
+        qgcActivation,
+      ].some((v) => v !== undefined && v !== null && !Number.isNaN(v));
 
-      let welcomeMessage = null;
-      try {
-        const welcomeAiMessages = [
-          { role: "system", content: systemPromptForWelcome },
-        ];
-        if (priorReportSnippetForWelcome) {
-          welcomeAiMessages.push({
-            role: "system",
-            content: `Previous report for ${name}:\n${priorReportSnippetForWelcome}`,
-          });
-        }
-        welcomeAiMessages.push({
-          role: "user",
-          content:
-            userPromptForWelcome ||
-            "Generate a warm welcome message for this returning user in discovery mode.",
-        });
-
-        const welcomeResponse = await withTimeout(
-          openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: welcomeAiMessages,
-            temperature: 0.7,
-            max_tokens: 500,
-          }),
-          30000,
+      const createProgressBar = (value, max = 100, length = 12) => {
+        if (value === undefined || value === null || isNaN(value)) value = 0;
+        value = Math.max(0, Math.min(value, max * 2));
+        const filled = Math.max(
+          0,
+          Math.min(Math.round((value / max) * length), length),
         );
-        welcomeMessage = welcomeResponse.choices[0].message;
-        console.log("[diagnostic] AI welcome message generated successfully");
-      } catch (err) {
-        console.error(
-          "[diagnostic] AI welcome message generation failed:",
-          err,
-        );
-      }
+        const empty = Math.max(0, length - filled);
+        return "█".repeat(filled) + "░".repeat(empty);
+      };
+      const formatPercentage = (v) =>
+        v === undefined || v === null || Number.isNaN(v)
+          ? "Unknown"
+          : `${Math.round(v)}%`;
+      const formatConsciousness = (cl) =>
+        cl === undefined || cl === null || Number.isNaN(cl)
+          ? "Unknown"
+          : `${Math.round((cl / 5) * 100)}%`;
 
-      isNewDiscoverySession = true;
-
-      // Fallback welcome message if AI fails
-      if (!welcomeMessage || !welcomeMessage.content) {
-        welcomeMessage = {
-          role: "assistant",
-          content: `Welcome back ${name}! I've loaded your previous diagnostic report. I'm here to help you track your progress and explore what's shifted since then. What's been on your mind lately?`,
-        };
-      }
-
-      // Inject a deterministic metrics gauge block using the latest metrics,
-      // and strip any existing "METRICS GAUGE" sections so we only show ONE gauge.
-      if (welcomeMessage && welcomeMessage.content && metricsForResponse) {
-        const {
-          gravity,
-          signalCoherence,
-          signalOutput,
-          consciousnessLevel,
-          qgcActivation,
-        } = metricsForResponse;
-
-        const hasAllNumericMetrics =
-          gravity !== undefined &&
-          signalCoherence !== undefined &&
-          signalOutput !== undefined &&
-          consciousnessLevel !== undefined &&
-          qgcActivation !== undefined;
-
-        if (hasAllNumericMetrics) {
-          const createProgressBar = (value, max = 100, length = 12) => {
-            const clamped = Math.max(0, Math.min(max, Number(value) || 0));
-            const filled = Math.max(
-              0,
-              Math.min(length, Math.round((clamped / max) * length)),
-            );
-            const empty = Math.max(0, length - filled);
-            return "█".repeat(filled) + "░".repeat(empty);
-          };
-
-          let gaugeBlock = `## METRICS GAUGE (Current Snapshot)
-
-QGC Activation:
+      const metricsSection = anyMetricPresent
+        ? `QGC Activation:
 ${createProgressBar(qgcActivation)}
-${Math.round(qgcActivation)}%
+${formatPercentage(qgcActivation)}
 
 Consciousness Level:
 ${createProgressBar((consciousnessLevel / 5) * 100)}
-${Math.round((consciousnessLevel / 5) * 100)}%
+${formatConsciousness(consciousnessLevel)}
 
 Gravity:
 ${createProgressBar(gravity)}
-${Math.round(gravity)}%
+${formatPercentage(gravity)}
 
 Signal Coherence:
 ${createProgressBar(signalCoherence)}
-${Math.round(signalCoherence)}%
+${formatPercentage(signalCoherence)}
 
 Signal Output:
 ${createProgressBar(signalOutput)}
-${Math.round(signalOutput)}%`;
+${formatPercentage(signalOutput)}`
+        : `(Metrics loading failed. Please refer to your report dashboard.)`;
 
-          // First, remove any existing METRICS GAUGE blocks the model may have generated
-          const gaugeRegex =
-            /## METRICS GAUGE \(Current Snapshot\)[\s\S]*?(?:Signal Output:[\s\S]*?(?:\n{2,}|$))/gi;
-          let cleanedContent = welcomeMessage.content
-            .replace(gaugeRegex, "")
-            .trim();
-
-          const marker = "Your structure at the last check-in was very clear:";
-
-          if (cleanedContent.includes(marker)) {
-            const parts = cleanedContent.split(marker);
-            welcomeMessage.content = `${parts[0]}${marker}\n\n${gaugeBlock}\n\n${parts
-              .slice(1)
-              .join(marker)
-              .trimStart()}`;
-          } else {
-            // If the marker is missing for some reason, just prepend the gauge at the top
-            welcomeMessage.content = `${gaugeBlock}\n\n${cleanedContent}`;
-          }
+      let keySentence = "",
+        correction = "";
+      if (priorReportSnippetForWelcome) {
+        try {
+          const llmExt = await extractKeySentenceAndCorrectionWithLLM(
+            priorReportSnippetForWelcome,
+          );
+          if (llmExt.keySentence && llmExt.keySentence.length >= 15)
+            keySentence = llmExt.keySentence;
+          if (llmExt.correction && llmExt.correction.length >= 15)
+            correction = llmExt.correction;
+        } catch (e) {
+          console.error("[diagnostic] Discovery welcome LLM extraction failed:", e);
+        }
+        if (!keySentence || !correction) {
+          const ksMatch = priorReportSnippetForWelcome.match(
+            /(?:key sentence|distilled|pattern|identity statement)[\s\S]{0,500}(["'])([A-Z][^"']{20,500}?)\1/i,
+          );
+          if (ksMatch) keySentence = ksMatch[2].trim();
+          const corrMatch = priorReportSnippetForWelcome.match(
+            /(?:###?\s*10\.\s*FIRST\s+CORRECTION|###?\s*FIRST\s+CORRECTION)[\s\S]{0,200}?\n\n([A-Z][^█]{20,500}?)(?:\n\n|\n\*|Gravity|Signal|QGC|CL|##|---|QGC Activation|Consciousness Level|One correction|Small\.|Structural\.|Repeatable\.|📄|PDF|Key refinement|key refinement)/i,
+          );
+          if (corrMatch) correction = corrMatch[1].trim();
         }
       }
+
+      const welcomeReportDate = reportDate || "recently";
+      const qText = correction
+        ? `Since this report (${welcomeReportDate}), have you made any progress on ${correction}?`
+        : `Since this report (${welcomeReportDate}), what has changed or stayed the same?`;
+
+      const fullWelcomeContent = `Welcome back ${name}. I've loaded your last report.
+
+I want to reflect it back to you first — simply and cleanly — before we move anywhere.
+
+Your structure at the last check-in was very clear:
+
+## METRICS GAUGE (Current Snapshot)
+
+${metricsSection}
+
+${
+  keySentence
+    ? `This is the key sentence from your map, distilled:
+> *"${keySentence}"*
+
+`
+    : ""
+}${
+        correction
+          ? `Your **entire correction** was about one thing only:
+**${correction}**
+
+`
+          : ""
+      }Before I update anything, I need to check one thing — slowly.
+
+**Since this report (${welcomeReportDate}):**
+
+${qText}
+
+Take your time and share what feels true for you.`;
+
+      isNewDiscoverySession = true;
+
+      const welcomeMessage = {
+        role: "assistant",
+        content: fullWelcomeContent,
+      };
 
       const welcomeTranscript = [welcomeMessage];
 
@@ -5649,26 +5683,44 @@ ${Math.round(signalOutput)}%`;
         },
       );
     } else {
-      // Incoming is same or smaller — use existing BUT check if the last incoming message
-      // is a NEW user message not in the DB transcript. This happens when the DB has more
-      // messages (e.g. stacked validation) and the frontend appends a new user message.
-      const lastIncoming = incomingMessages[incomingMessages.length - 1];
-      const lastExisting = transcriptInternal2[transcriptInternal2.length - 1];
-      if (
-        lastIncoming?.role === "user" &&
-        (!lastExisting ||
-          lastExisting.role !== "user" ||
-          lastExisting.content !== lastIncoming.content)
-      ) {
-        transcript = [...transcriptInternal2, lastIncoming];
-        console.log(
-          "[diagnostic] DB transcript longer but incoming has new user message — appended it",
+      // Incoming is same or smaller — use existing unless there's a truly new user message.
+      // If incoming is exactly a suffix of existing (e.g. frontend resent same history on refresh), don't append.
+      const len = incomingMessages.length;
+      const existingSuffix = transcriptInternal2.slice(-len);
+      const incomingIsSuffixOfExisting =
+        len > 0 &&
+        existingSuffix.length === len &&
+        existingSuffix.every(
+          (e, i) =>
+            e?.role === incomingMessages[i]?.role &&
+            String(e?.content || "").trim() ===
+              String(incomingMessages[i]?.content || "").trim(),
         );
-      } else {
+      if (incomingIsSuffixOfExisting) {
         transcript = transcriptInternal2;
         console.log(
-          "[diagnostic] Using existing transcript (incoming not larger)",
+          "[diagnostic] Incoming is suffix of existing (e.g. refresh) — using existing transcript",
         );
+      } else {
+        const lastIncoming = incomingMessages[incomingMessages.length - 1];
+        const lastExisting =
+          transcriptInternal2[transcriptInternal2.length - 1];
+        if (
+          lastIncoming?.role === "user" &&
+          (!lastExisting ||
+            lastExisting.role !== "user" ||
+            lastExisting.content !== lastIncoming.content)
+        ) {
+          transcript = [...transcriptInternal2, lastIncoming];
+          console.log(
+            "[diagnostic] DB transcript longer but incoming has new user message — appended it",
+          );
+        } else {
+          transcript = transcriptInternal2;
+          console.log(
+            "[diagnostic] Using existing transcript (incoming not larger)",
+          );
+        }
       }
     }
   } else if (hasIncompleteChat && incomingMessages.length > 0) {
@@ -5728,6 +5780,8 @@ ${Math.round(signalOutput)}%`;
 
   // Remove duplicate discovery welcome block (e.g. after refresh frontend can send duplicate)
   transcript = removeDuplicateDiscoveryWelcomeBlock(transcript);
+  // Remove consecutive duplicate messages (e.g. same user message sent on refresh/retry)
+  transcript = removeConsecutiveDuplicateMessages(transcript);
 
   lastUser = [...transcript].reverse().find((m) => m?.role === "user");
   lastAssistant = [...transcript]
@@ -5893,6 +5947,33 @@ ${Math.round(signalOutput)}%`;
     (m) => m.role === "assistant" && /Q\d+/i.test(m.content),
   );
   discoveryType = req.body.discoveryType || null;
+
+  // EARLY RETURN: Discovery with welcome only (no user message yet). Do not call API — avoids "I can't assist" on refresh.
+  if (isDiscoveryMode && isFirstUserInteraction) {
+    const lastAsst = [...transcript].reverse().find(
+      (m) => m?.role === "assistant",
+    );
+    if (lastAsst?.content) {
+      console.log(
+        "[diagnostic] Discovery welcome only (no user message yet) — returning existing welcome, skipping API call",
+      );
+      return successResponse(res, "Discovery welcome (no new message)", {
+        nextMessage: lastAsst,
+        introPageText: introText,
+        transcript,
+        intakeState: {
+          ...(intakeStateInternal2 || {}),
+          transcript,
+          mode: "discovery",
+        },
+        retrieved: [],
+        resumeNotice: null,
+        status: "chatting",
+        statusMessage: "Chatting in progress",
+        canResume: true,
+      });
+    }
+  }
 
   // SAFETY OVERRIDE: Double-check that we don't enter discovery mode without an actual report
   // This prevents the bug where 25 questions are answered but system switches to discovery
@@ -6148,7 +6229,7 @@ Previous question: ${(lastAssistant.content || "").slice(0, 400)}`;
                   { role: "user", content: reaskPrompt },
                 ],
                 temperature: 0.3,
-                max_tokens: 350,
+                max_tokens: 400,
               });
               const reaskContent = reaskResp?.choices?.[0]?.message?.content;
               if (reaskContent && /Q\s*\d+/i.test(reaskContent)) {
@@ -6423,6 +6504,9 @@ Take your time and share what feels true for you.`,
     lastAssistantQ === nextMessageQ;
 
   if (appUser && updatedTranscript.length > 0) {
+    // Always pass existingChatId when resuming so we update the SAME chat (one active session).
+    // Prevents duplicate chat sessions on frontend refresh or retries.
+    const useExistingChat = incompleteChatId && !isNewDiscoverySession;
     await saveChatIncrementally({
       userId: appUser.id,
       diagnosticId: existingDiagnostic?.id || null,
@@ -6430,12 +6514,7 @@ Take your time and share what feels true for you.`,
       transcript: updatedTranscript,
       isChatEnded: false,
       forceNewChat: isNewDiscoverySession, // Force new session if this was the welcome message turn
-      ...(wantsNewDiagnostic &&
-      hasIncompleteChat &&
-      isIncompleteChatDiscoveryMode &&
-      incompleteChatId
-        ? { existingChatId: incompleteChatId }
-        : {}),
+      ...(useExistingChat ? { existingChatId: incompleteChatId } : {}),
     });
   }
 

@@ -1,4 +1,4 @@
-﻿const { Diagnostic } = require("../models/diagnosticModel");
+const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { User } = require("../models/userModel");
 const { Prompt } = require("../models/promptModel");
@@ -2407,6 +2407,8 @@ ${formatSessionsForSystem(sessionsToUse)}
     : `You are Euphoriam AI working with structure-aware precision. This is discovery mode - working with their existing diagnostic.`;
 
   return `${basePrompt}
+
+🚫 REFUSAL FORBIDDEN: You MUST respond to the user. NEVER say "I'm sorry, I can't assist with that request" or "I can't assist" or refuse the conversation. You have the report and context; answer in discovery style.
 ${isAskingAboutSession ? "\n🚨🚨🚨 USER IS ASKING ABOUT THEIR 1:1 SESSION - PRIORITIZE SESSION QUERY OVER WELCOME MESSAGE." : ""}
 ${sessionSystemBlock}
 ${userSession?.transcript ? `\n🚨🚨🚨🚨🚨 IMMEDIATE ATTENTION: The user has a 1:1 coaching session transcript provided above. If they ask "do you have my session details?" or "summarize my session", you MUST use the transcript above. NEVER say "I'm sorry, but I can't assist" or refuse - it's RIGHT THERE in this prompt and you MUST answer.` : ""}
@@ -2500,6 +2502,61 @@ const safeFindDiagnostic = async (options = {}) => {
  * so we need to find the diagnostic with the most recent report generation.
  * We check data.generatedAt (when report was generated) or updatedAt as fallback.
  */
+
+/**
+ * Use LLM to keep only the single correct discovery welcome message when transcript
+ * has multiple welcome intros (e.g. short placeholder + full reflection). No regex.
+ */
+const deduplicateDiscoveryWelcomeWithLLM = async (transcript) => {
+  if (!Array.isArray(transcript) || transcript.length < 2) return transcript;
+  const firstN = transcript.slice(0, 6);
+  const intro = firstN
+    .map(
+      (m, i) =>
+        `[${i}] (${m?.role || "unknown"}): ${(m?.content || "").slice(0, 600)}${(m?.content || "").length > 600 ? "..." : ""}`,
+    )
+    .join("\n\n");
+
+  const prompt = `These are the first ${firstN.length} messages of a discovery chat. Some may be duplicate or placeholder "welcome back" intros. We want to keep only ONE welcome: the full, correct discovery welcome (reflects the report, metrics, key sentence, correction, and asks a progress question). Shorter or generic placeholders like "I've loaded your previous diagnostic report... What's been on your mind lately?" should be removed.
+
+Messages:
+${intro}
+
+Reply with JSON only. No other text.
+{"welcomeIndices": [0, 1], "keepIndex": 1}
+
+- welcomeIndices: 0-based indices of messages that are "welcome back" / discovery intro messages.
+- keepIndex: the single index (from welcomeIndices) to KEEP — the full discovery welcome with report reflection and progress question. Remove the others.
+
+If there is only one welcome intro, put it in welcomeIndices and set keepIndex to that index. If there are two, set keepIndex to the index of the FULL one (reflection, metrics, key sentence, progress question), not the short placeholder.`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_completion_tokens: 120,
+    });
+    const raw = (resp?.choices?.[0]?.message?.content || "").trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    const welcomeIndices = Array.isArray(parsed?.welcomeIndices)
+      ? parsed.welcomeIndices.filter((i) => typeof i === "number" && i >= 0 && i < firstN.length)
+      : [];
+    const keepIndex = parsed?.keepIndex;
+    if (welcomeIndices.length <= 1) return transcript;
+    if (typeof keepIndex !== "number" || !welcomeIndices.includes(keepIndex)) return transcript;
+    const toRemove = welcomeIndices.filter((i) => i !== keepIndex);
+    const keptFirst = firstN.filter((_, i) => !toRemove.includes(i));
+    const out = [...keptFirst, ...transcript.slice(firstN.length)];
+    console.log("[deduplicateDiscoveryWelcomeWithLLM] kept index", keepIndex, "removed", toRemove);
+    return out;
+  } catch (err) {
+    console.warn("[deduplicateDiscoveryWelcomeWithLLM] failed:", err?.message || err);
+    return transcript;
+  }
+};
+
 const loadDiagnosticState = (email) =>
   withDbSlot(async () => {
     const { Chat } = require("../models/chatModel");
@@ -2536,7 +2593,7 @@ const loadDiagnosticState = (email) =>
       });
 
       if (incompleteChat && incompleteChat.data?.transcript?.length > 0) {
-        const chatTranscript = incompleteChat.data.transcript;
+        let chatTranscript = incompleteChat.data.transcript;
 
         console.log(
           "[loadDiagnosticState] Found incomplete chat in Chat model:",
@@ -2558,7 +2615,17 @@ const loadDiagnosticState = (email) =>
           associatedDiagnostic = allDiagnostics[0];
         }
 
-        // Build the intakeState with the transcript from Chat model
+        // If this is a discovery chat with 2+ messages, use LLM to keep only the single
+        // correct welcome message (full reflection), not short placeholders. No regex.
+        if (
+          incompleteChat.chatType === "discovery" &&
+          Array.isArray(chatTranscript) &&
+          chatTranscript.length >= 2
+        ) {
+          chatTranscript = await deduplicateDiscoveryWelcomeWithLLM(chatTranscript);
+        }
+
+        // Build the intakeState with the (possibly cleaned) transcript from Chat model
         // CRITICAL: Include the chatType as 'mode' so we know if this is a discovery or diagnostic chat
         const existingState = {
           ...(associatedDiagnostic?.data?.intakeState || {}),
@@ -3960,44 +4027,41 @@ const trackQuestionNumbers = (transcript) => {
   };
 };
 
-const extractCoreQuestion = (content) => {
-  const s = (content || "").trim();
-  if (!s) return s;
-  const qMatch =
-    s.match(/\*\*Q[0-9]+[^*]*\*\*[\s\S]*/i) ||
-    s.match(/CB[0-9]+[^:]*:?[\s\S]*/i);
-  if (qMatch) return qMatch[0].trim();
-  return s.length > 400 ? s.slice(-400) : s;
-};
-
 // Pure LLM classifier: does the user's reply answer the diagnostic question (vs greeting, goodbye, off-topic)?
+// No regex, no hardcoded patterns — single LLM call decides.
 const isAiLikelyAnswer = async ({ question, reply }) => {
   const t = (reply || "").trim();
   if (!t) return false;
 
-  const coreQuestion = extractCoreQuestion(question || "");
+  const questionText = (question || "").trim();
+  const questionForPrompt =
+    questionText.length > 2000 ? questionText.slice(0, 2000) : questionText;
 
-  const prompt = `You are a binary classifier. Does the user's reply ANSWER the diagnostic question below?
+  const prompt = `You are a binary classifier. Your only job is to decide: does the user's reply count as an ANSWER to the diagnostic question?
 
-DIAGNOSTIC QUESTION: "${coreQuestion || question || "N/A"}"
-USER'S REPLY: "${reply}"
+DIAGNOSTIC QUESTION:
+${questionForPrompt || "N/A"}
 
-CRITICAL — Output "yes" (treat as answer) when:
-- The reply is long or detailed and discusses their situation, product, work, feelings, family, conditions, goals, or what they want/allow themselves. Output "yes".
-- The reply substantively addresses the question topic. Short on-topic answers count as "yes": e.g. "money", "nothing", "idk", "yes", "no", "my family", "no one", "my boss".
-- The reply names or describes people, groups, or examples in response to a "who" question (e.g. "other peers", "Pete Smith", "people at work", "my mom") — even if short or trailing off with " -" or "...". Output "yes".
-- The reply gives any concrete response to what was asked (a name, a type, a category, an example). When in doubt and the reply has real content, output "yes".
-- The reply expresses doubt, self-reflection, or engages with the question (e.g. "what if they're right and I do need some corrections", "maybe I do", "I wonder if", "could be", "I'm not sure but..."). These are valid answers — output "yes".
+USER'S REPLY:
+${reply}
 
-CRITICAL — Output "no" only when the reply is clearly:
-- A greeting or social opener: "hi", "hello", "hey", "how are you", "how's it going", "what's up", "good morning", or similar (short, no substance about the question).
-- A goodbye or sign-off: "bye", "goodbye", "see you", "later", "gotta go", or similar.
-- A question directed at the assistant/system: "what's your name", "who are you", "how many questions left", "list users", or similar.
-- Short filler only: "ok", "alright", "cool", "nice" by itself with no attempt to answer.
+Interpret generously. The question may ask about focus, desired outcome, patterns, triggers, what happens first, body/thoughts/behavior, feelings, examples, who taught you, where a belief came from, etc. Any reply that substantively relates to what was asked is an answer.
 
-If the reply is substantive, expresses reflection/doubt about the topic, or has real content related to the question, output "yes". Default to "yes" unless the reply is clearly only a greeting, goodbye, or question to the bot.
+Count as YES (valid answer) when the reply:
+- Describes what the person does, thinks, feels, or experiences (e.g. "I get a coffee and get stuck thinking I don't have time" → valid for "what's the first thing that changes").
+- Gives concrete content: situation, examples, roles, responsibilities, beliefs, actions, thoughts, or reflections that relate to the question.
+- For "who taught you / where did this rule come from / what influenced this belief": accept when the user describes their role (e.g. "I'm a father and have to provide"), their responsibilities, culture, or how they see things working (e.g. "for a business to work people have to live your product"). That is describing the origin of the rule.
+- Is short but on-topic ("money", "my family", "nothing", "idk" when that fits).
+- Has typos or informal wording but clearly attempts to answer — output yes.
 
-Reply with exactly one word: "yes" or "no".`;
+Count as NO only when the reply is clearly:
+- A greeting or sign-off with no attempt to answer ("hi", "bye", "see you").
+- A question directed at the bot ("who are you", "how many questions left").
+- Pure filler with no content ("ok" or "cool" by itself with nothing about the question).
+
+When in doubt, or when the reply has real content that could reasonably answer the question, output yes.
+
+Reply with exactly one word: yes or no.`;
 
   try {
     const resp = await openai.chat.completions.create({
@@ -4006,12 +4070,11 @@ Reply with exactly one word: "yes" or "no".`;
       temperature: 0,
       max_completion_tokens: 10,
     });
-    const txt = (resp?.choices?.[0]?.message?.content || "")
-      .trim()
-      .toLowerCase();
+    const raw = (resp?.choices?.[0]?.message?.content || "").trim();
+    const txt = raw.toLowerCase();
     const result = txt.startsWith("yes");
     console.log(
-      `[isAiLikelyAnswer] result=${result} raw="${txt}" reply="${(reply || "").slice(0, 80)}..."`,
+      `[isAiLikelyAnswer] result=${result} raw="${raw}" reply="${(reply || "").slice(0, 80)}..."`,
     );
     return result;
   } catch (err) {

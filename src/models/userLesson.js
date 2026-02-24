@@ -16,7 +16,7 @@ const UserLesson = sequelize.define(
     userId: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      unique: false,
     },
     course: {
       type: DataTypes.STRING,

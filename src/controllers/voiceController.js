@@ -362,37 +362,64 @@ const createVoiceNote = async (req, res) => {
 
 const getLessonRecording = async (req, res) => {
   try {
-    // 1. Destructure all fields from the body
     const { email, course, module, lesson } = req.body;
 
-    // 2. Find the user first
-    const findUser = await User.findOne({ where: { email: String(email) } });
-    if (!findUser) {
-      return res.status(404).json({ status: false, message: "User not found" });
+    if (!email) {
+      return res.status(400).json({
+        status: false,
+        message: "Email is required",
+      });
     }
 
-    // 3. Query UserLesson – userId is VARCHAR in DB, use string
+    // 1️⃣ Find user
+    const findUser = await User.findOne({
+      where: { email: String(email).trim() },
+    });
+
+    if (!findUser) {
+      return res.status(404).json({
+        status: false,
+        message: "User not found",
+      });
+    }
+
+    // 2️⃣ Build WHERE clause
+    const whereClause = {
+      userId: String(findUser.id),
+      voiceId: { [Op.ne]: null },
+    };
+
+    // Use case-insensitive matching for safety
+    if (course) {
+      whereClause.course = { [Op.iLike]: String(course).trim() };
+    }
+
+    if (module) {
+      whereClause.module = { [Op.iLike]: String(module).trim() };
+    }
+
+    if (lesson) {
+      whereClause.lesson = { [Op.iLike]: String(lesson).trim() };
+    }
+
+    console.log("Search WHERE:", whereClause);
+
+    // 3️⃣ Query
     const findLessonAdded = await UserLesson.findOne({
-      where: {
-        userId: String(findUser.id),
-        ...(course !== undefined && { course: String(course) }),
-        ...(lesson !== undefined && { lesson: String(lesson) }),
-        ...(module !== undefined && { module: String(module) }),
-        voiceId: { [Op.ne]: null },
-      },
+      where: whereClause,
       include: [
         {
           model: VoiceNote,
           attributes: ["id", "content", "sourceType", "audioUrl"],
         },
-        // Omit User include: userlesson.userId is VARCHAR, users.id is INTEGER – join would error
       ],
     });
 
     if (!findLessonAdded) {
-      return res
-        .status(404)
-        .json({ status: false, message: "No recordings found" });
+      return res.status(404).json({
+        status: false,
+        message: "No recordings found",
+      });
     }
 
     return res.status(200).json({
@@ -402,8 +429,11 @@ const getLessonRecording = async (req, res) => {
     });
   } catch (error) {
     console.error("Database Error:", error);
-    // Explicitly check for the operator error to provide better feedback
-    return res.status(500).json({ status: false, error: error.message });
+    return res.status(500).json({
+      status: false,
+      message: "Internal server error",
+      error: error.message,
+    });
   }
 };
 const deleteLessonRecording = async (req, res) => {

@@ -2,6 +2,7 @@ const { Op } = require("sequelize");
 const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
+const { DiscoveryChat } = require("../models/discoveryChat");
 const { Prompt, PromptHistory } = require("../models/promptModel");
 const { UserSession } = require("../models/userSessionModel");
 const { successResponse, errorResponse } = require("../utils/response");
@@ -508,30 +509,10 @@ const getStats = async (req, res) => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    const allDiagnostics = await Diagnostic.findAll({
-      where: {
-        createdAt: {
-          [Op.gte]: sixMonthsAgo,
-        },
-      },
-      attributes: ["createdAt"],
-      raw: true,
-    }).catch((err) => {
-      console.error("[admin] Error fetching diagnostics for trends:", err);
-      return [];
-    });
-
-    const diagnosticsByMonth = {};
-    allDiagnostics.forEach((diag) => {
-      const month = new Date(diag.createdAt).toISOString().slice(0, 7); // YYYY-MM
-      diagnosticsByMonth[month] = (diagnosticsByMonth[month] || 0) + 1;
-    });
-
     // Get users with most reports
     const usersWithReports = await User.findAll({
       attributes: ["id", "name", "email"],
       where: { role: "user" },
-      limit: 10,
     }).catch((err) => {
       console.error("[admin] Error fetching users with reports:", err);
       return [];
@@ -541,29 +522,30 @@ const getStats = async (req, res) => {
     const topUsers = [];
     for (const user of usersWithReports) {
       try {
-        const diagCount = await Diagnostic.count({
-          where: { email: user.email },
-        }).catch(() => 0);
-
-        const discCount = await Discovery.count({
-          where: { userId: user.id },
-        }).catch(() => 0);
+        // Run counts in parallel
+        const [diagnosticCount, discoveryCount, discoveryChatCount] =
+          await Promise.all([
+            Diagnostic.count({ where: { email: user.email } }).catch(() => 0),
+            Discovery.count({ where: { userId: user.id } }).catch(() => 0),
+            DiscoveryChat.count({ where: { userId: user.id } }).catch(() => 0),
+          ]);
 
         topUsers.push({
           id: user.id,
           name: user.name,
           email: user.email,
-          totalReports: diagCount + discCount,
-          diagnostics: diagCount,
-          discoveries: discCount,
+          totalReports: diagnosticCount + discoveryCount + discoveryChatCount,
+          diagnostics: diagnosticCount,
+          diagnosticChat: discoveryCount,
+          discoveries: discoveryChatCount,
         });
       } catch (err) {
         console.error(`[admin] Error processing user ${user.id}:`, err);
-        // Continue with next user
       }
     }
 
     topUsers.sort((a, b) => b.totalReports - a.totalReports);
+    const topNUsers = topUsers.slice(0, 10);
 
     const stats = {
       overview: {
@@ -578,9 +560,7 @@ const getStats = async (req, res) => {
         diagnosticsLast30Days: recentDiagnostics,
         usersLast30Days: recentUsers,
       },
-      trends: {
-        diagnosticsByMonth,
-      },
+
       topUsers: topUsers.slice(0, 10),
     };
 
@@ -588,6 +568,125 @@ const getStats = async (req, res) => {
   } catch (error) {
     console.error("[admin] Error fetching stats:", error);
     return errorResponse(res, "Failed to fetch stats", 500);
+  }
+};
+
+const getMonthlystats = async (req, res) => {
+  try {
+    const { filterBy = "last6" } = req.query;
+
+    const now = new Date();
+    let startDate = new Date();
+
+    switch (filterBy) {
+      case "weekly":
+        startDate = new Date();
+        startDate.setHours(0, 0, 0, 0);
+        startDate.setDate(startDate.getDate() - 6); // last 7 days
+        break;
+
+      case "monthly":
+        startDate.setMonth(now.getMonth() - 1);
+        break;
+
+      case "yearly":
+        startDate.setFullYear(now.getFullYear() - 1);
+        break;
+
+      case "last6":
+      default:
+        startDate.setMonth(now.getMonth() - 6);
+        break;
+    }
+
+    const [allDiagnostics, allDiscovery, allDiscoveryChat] = await Promise.all([
+      Diagnostic.findAll({
+        where: { createdAt: { [Op.gte]: startDate } },
+        attributes: ["createdAt"],
+        raw: true,
+      }).catch(() => []),
+
+      Discovery.findAll({
+        where: { createdAt: { [Op.gte]: startDate } },
+        attributes: ["createdAt"],
+        raw: true,
+      }).catch(() => []),
+
+      DiscoveryChat.findAll({
+        where: { createdAt: { [Op.gte]: startDate } },
+        attributes: ["createdAt"],
+        raw: true,
+      }).catch(() => []),
+    ]);
+
+    const getKey = (date) => {
+      const d = new Date(date);
+
+      if (filterBy === "weekly") {
+        return d.toISOString().split("T")[0]; // YYYY-MM-DD
+      }
+
+      if (filterBy === "yearly") {
+        return `${d.getFullYear()}`;
+      }
+
+      return d.toISOString().slice(0, 7); // YYYY-MM
+    };
+
+    const countByGroup = (rows) => {
+      const map = {};
+
+      // Weekly → initialize 7 days
+      if (filterBy === "weekly") {
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date();
+          d.setHours(0, 0, 0, 0);
+          d.setDate(d.getDate() - i);
+
+          const key = d.toISOString().split("T")[0];
+          map[key] = 0;
+        }
+      }
+
+      rows.forEach((r) => {
+        const key = getKey(r.createdAt);
+        map[key] = (map[key] || 0) + 1;
+      });
+
+      return Object.keys(map)
+        .sort()
+        .map((key) => {
+          if (filterBy === "weekly") {
+            const d = new Date(key);
+            const dayName = d.toLocaleDateString("en-US", {
+              weekday: "long",
+            });
+
+            return {
+              date: key,
+              day: dayName,
+              count: map[key],
+            };
+          }
+
+          return {
+            label: key,
+            count: map[key],
+          };
+        });
+    };
+
+    const stats = {
+      trends: {
+        diagnostics: countByGroup(allDiagnostics),
+        discovery: countByGroup(allDiscoveryChat),
+        discoveryChat: countByGroup(allDiscovery),
+      },
+    };
+
+    return successResponse(res, "Stats fetched", stats);
+  } catch (error) {
+    return errorResponse(res, error.message || error, 500);
   }
 };
 
@@ -1051,6 +1150,7 @@ module.exports = {
   deletePrompt,
   getPromptHistory,
   getStats,
+  getMonthlystats,
   uploadUserSession,
   attachUserSessionToUser,
   getAllUserSessions,

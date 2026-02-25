@@ -67,7 +67,7 @@ router.get(
 
 // Stats
 router.get("/stats", asyncHandler(adminController.getStats));
-
+router.get("/getMonthlystats", asyncHandler(adminController.getMonthlystats));
 // User Session management
 router.post(
   "/user-sessions",

@@ -46,6 +46,10 @@ router.post(
   "/getLessonRecording",
   asyncHandler(voiceController.getLessonRecording),
 );
+router.post(
+  "/updateCompletion",
+  asyncHandler(voiceController.updateCompletion),
+);
 router.delete(
   "/deleteLessonRecording",
   asyncHandler(voiceController.deleteLessonRecording),

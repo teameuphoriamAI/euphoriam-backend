@@ -359,6 +359,47 @@ const createVoiceNote = async (req, res) => {
     return errorResponse(res, error.message || "Server error", 500);
   }
 };
+const updateCompletion = async (req, res) => {
+  try {
+    const { email, course, module, lesson, completed } = req.body;
+    console.log("body is", req.body);
+    let saveLesson;
+    const user = await User.findOne({ where: { email } });
+    if (!user) return errorResponse(res, "User not found", 404);
+
+    const lessonRecord = await UserLesson.findOne({
+      where: {
+        userId: String(user.id),
+        course,
+        module,
+        lesson,
+      },
+    });
+
+    if (!lessonRecord) {
+      saveLesson = await UserLesson.create({
+        userId: String(user.id),
+        course,
+        module,
+        lesson,
+        isCompleted: completed,
+      });
+      return successResponse(res, "Completion created", {
+        saveLesson,
+      });
+    }
+
+    await lessonRecord.update({
+      isCompleted: completed,
+    });
+
+    return successResponse(res, "Completion updated", {
+      completed,
+    });
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
 
 const getLessonRecording = async (req, res) => {
   try {
@@ -669,4 +710,5 @@ module.exports = {
   transcribeRecording,
   getLessonRecording,
   deleteLessonRecording,
+  updateCompletion,
 };

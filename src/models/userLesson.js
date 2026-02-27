@@ -31,8 +31,8 @@ const UserLesson = sequelize.define(
       defaultValue: null,
     },
     isCompleted: {
-      type: DataTypes.STRING,
-      allowNull: true,
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
     },
     voiceId: {
       type: DataTypes.INTEGER,

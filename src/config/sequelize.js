@@ -538,6 +538,60 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
     console.log("Chat table columns migration:", err.message);
   }
 
+  // Add 'Discovery' to chat.chatType enum if missing (app uses ChatType.DISCOVERY = "Discovery")
+  try {
+    const [rows] = await sequelize.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_enum e
+        JOIN pg_type t ON e.enumtypid = t.oid
+        WHERE t.typname = 'enum_chat_chatType'
+        AND e.enumlabel = 'Discovery'
+      ) AS "exists";
+    `);
+    const exists = rows?.[0]?.exists === true;
+    if (!exists) {
+      await sequelize.query(`ALTER TYPE "enum_chat_chatType" ADD VALUE 'Discovery';`);
+      console.log("Chat chatType enum: added 'Discovery'");
+    }
+  } catch (err) {
+    console.log("Chat chatType enum migration:", err.message);
+  }
+
+  // Create discoveryChat table if it doesn't exist (DiscoveryChat model)
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.tables 
+          WHERE table_schema = 'public' AND table_name = 'discoveryChat'
+        ) THEN
+          CREATE TABLE "discoveryChat" (
+            "id" SERIAL PRIMARY KEY,
+            "userId" INTEGER NOT NULL,
+            "title" VARCHAR(255),
+            "discoveryType" VARCHAR(255),
+            "email" VARCHAR(255),
+            "transcript" JSONB,
+            "report" JSONB,
+            "previousReportSnippet" TEXT,
+            "newReportSnippet" TEXT,
+            "pdfUrl" VARCHAR(255),
+            "data" JSONB NOT NULL DEFAULT '{}',
+            "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+          );
+          CREATE INDEX IF NOT EXISTS "discoveryChat_email_idx" ON "discoveryChat"("email");
+          CREATE INDEX IF NOT EXISTS "discoveryChat_userId_idx" ON "discoveryChat"("userId");
+          CREATE INDEX IF NOT EXISTS "discoveryChat_updatedAt_idx" ON "discoveryChat"("updatedAt" DESC);
+        END IF;
+      END $$;
+    `);
+    console.log("DiscoveryChat table migration completed");
+  } catch (err) {
+    console.log("DiscoveryChat table migration:", err.message);
+  }
+
   // Create userlesson table if it doesn't exist
   try {
     await sequelize.query(`
@@ -565,6 +619,36 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
     console.log("Userlesson table migration completed");
   } catch (err) {
     console.log("Userlesson table migration:", err.message);
+  }
+
+  // Create Barcode table if it doesn't exist
+  try {
+    await sequelize.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 
+          FROM information_schema.tables 
+          WHERE table_schema = 'public' 
+            AND table_name = 'Barcode'
+        ) THEN
+          CREATE TABLE "Barcode" (
+            "id" SERIAL PRIMARY KEY,
+            "websiteLink" VARCHAR(255) NOT NULL,
+            "productName" VARCHAR(255) NOT NULL,
+            "barcodeImage" VARCHAR(255) NOT NULL,
+            "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+          );
+
+          CREATE UNIQUE INDEX IF NOT EXISTS "Barcode_website_product_idx" 
+            ON "Barcode"("websiteLink", "productName");
+        END IF;
+      END $$;
+    `);
+    console.log("Barcode table migration completed");
+  } catch (err) {
+    console.log("Barcode table migration:", err.message);
   }
 
   // Sync all models together to respect FK dependencies (e.g., users before diagnostics)

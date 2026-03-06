@@ -6,8 +6,10 @@ const kajabiRoutes = require("./kajabi");
 const voiceRoutes = require("./voiceRoutes");
 const ragRoutes = require("./ragRoutes");
 const discoveryRoutes = require("./discoveryRoutes");
+// const discoveryChatRoutes = require("./discoveryChatRoutes");
 const adminRoutes = require("./adminRoutes");
 const chatRoutes = require("./chatRoutes");
+const barcodeRoutes = require("./barcodeRoutes");
 
 const router = express.Router();
 
@@ -18,11 +20,13 @@ router.get("/health", (_req, res) => {
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
 router.use("/diagnostics", diagnosticRoutes);
-router.use("/diagnostic", diagnosticRoutes); // Alias for backward compatibility
+router.use("/barcode", barcodeRoutes);
 router.use("/kajabi", kajabiRoutes);
+router.use("/voice-notes", voiceRoutes);
 router.use("/voice-notes", voiceRoutes);
 router.use("/rag", ragRoutes);
 router.use("/discoveries", discoveryRoutes);
+// router.use("/discoveriesChat", discoveryChatRoutes);
 router.use("/admin", adminRoutes);
 router.use("/chat", chatRoutes);
 

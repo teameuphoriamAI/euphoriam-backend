@@ -62,6 +62,7 @@ const { isCreatorClubMember } = require("./userController");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
+const { signAccessToken } = require("../utils/tokens");
 
 /** Map human-readable signature parts to canonical codes (EO_Lack_Avoid) */
 const SIGNATURE_EO_MAP = {
@@ -216,46 +217,57 @@ const findOrCreateCreatorUser = async (req, res) => {
     }
 
     // OTP logic continues (unchanged)
-    const now = new Date();
+    // const now = new Date();
 
-    if (user.resendOTPExpiry && user.resendOTPExpiry < now) {
-      user.resendOTPCount = 0;
-      user.resendOTPExpiry = null;
-    }
+    // if (user.resendOTPExpiry && user.resendOTPExpiry < now) {
+    //   user.resendOTPCount = 0;
+    //   user.resendOTPExpiry = null;
+    // }
 
-    if (user.resendOTPCooldown && user.resendOTPCooldown > now) {
-      const diffMs = user.resendOTPCooldown - now;
-      const minutes = Math.floor(diffMs / 60000);
-      const seconds = Math.floor((diffMs % 60000) / 1000);
+    // if (user.resendOTPCooldown && user.resendOTPCooldown > now) {
+    //   const diffMs = user.resendOTPCooldown - now;
+    //   const minutes = Math.floor(diffMs / 60000);
+    //   const seconds = Math.floor((diffMs % 60000) / 1000);
 
-      return errorResponse(
-        res,
-        `Please wait ${minutes} min ${seconds} sec before requesting a new OTP.`,
-        429,
-      );
-    }
+    //   return errorResponse(
+    //     res,
+    //     `Please wait ${minutes} min ${seconds} sec before requesting a new OTP.`,
+    //     429,
+    //   );
+    // }
 
-    const otp = generateOTP();
-    user.otp = otp;
-    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-    user.resendOTPCount += 1;
-    user.resendOTPCooldown = new Date(Date.now() + 60 * 1000);
-    user.resendOTPExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    user.requestedOTP = true;
+    // const otp = generateOTP();
+    // user.otp = otp;
+    // user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    // user.resendOTPCount += 1;
+    // user.resendOTPCooldown = new Date(Date.now() + 60 * 1000);
+    // user.resendOTPExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // user.requestedOTP = true;
 
-    await user.save();
+    // await user.save();
 
-    await sendEmailBasic(
-      email,
-      "Your OTP Code",
-      otpEmailTemplate(user.name, otp, "login verification", "10 minutes"),
-    );
-
-    return successResponse(res, "OTP sent successfully", {
-      email,
-      expiresIn: "10 minutes",
-      remainingResends: Math.max(0, 3 - user.resendOTPCount),
+    // await sendEmailBasic(
+    //   email,
+    //   "Your OTP Code",
+    //   otpEmailTemplate(user.name, otp, "login verification", "10 minutes"),
+    // );
+    const token = signAccessToken({
+      sub: user.id,
+      userId: user.id,
+      name: user.name,
+      email: user.email,
     });
+
+    return successResponse(res, "logged-in successfully", {
+      token,
+      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
+      lightTheme: user.lightTheme,
+    });
+    // return successResponse(res, "logged-in successfully", {
+    //   email,
+    //   // expiresIn: "10 minutes",
+    //   // remainingResends: Math.max(0, 3 - user.resendOTPCount),
+    // });
   } catch (error) {
     console.error("[findOrCreateCreatorUser] Error:", error);
     return errorResponse(res, "Failed to process request", 500);
@@ -5361,7 +5373,10 @@ ${formatPercentage(signalOutput)}`
           if (llmExt.correction && llmExt.correction.length >= 15)
             correction = llmExt.correction;
         } catch (e) {
-          console.error("[diagnostic] Discovery welcome LLM extraction failed:", e);
+          console.error(
+            "[diagnostic] Discovery welcome LLM extraction failed:",
+            e,
+          );
         }
         if (!keySentence || !correction) {
           const ksMatch = priorReportSnippetForWelcome.match(
@@ -5950,9 +5965,9 @@ Take your time and share what feels true for you.`;
 
   // EARLY RETURN: Discovery with welcome only (no user message yet). Do not call API — avoids "I can't assist" on refresh.
   if (isDiscoveryMode && isFirstUserInteraction) {
-    const lastAsst = [...transcript].reverse().find(
-      (m) => m?.role === "assistant",
-    );
+    const lastAsst = [...transcript]
+      .reverse()
+      .find((m) => m?.role === "assistant");
     if (lastAsst?.content) {
       console.log(
         "[diagnostic] Discovery welcome only (no user message yet) — returning existing welcome, skipping API call",

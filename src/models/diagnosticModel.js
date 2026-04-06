@@ -31,6 +31,17 @@ const Diagnostic = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    report_type: {
+      type: DataTypes.STRING(50),
+      allowNull: false,
+      defaultValue: "full",
+      comment: '"full" = existing paid diagnostic report | "invisible_red_line" = funnel IRL report',
+    },
+    funnel_access_id: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      comment: "FK to funnel_access — set only for funnel diagnostics",
+    },
     data: {
       type: DataTypes.JSONB,
       allowNull: false,

@@ -33,6 +33,8 @@ const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
 const { detectDiscoveryEndIntents } = require("../utils/validation");
+const { verifyFunnelSessionToken } = require("../utils/funnelToken");
+const { completeDiagnostic: completeFunnelDiagnostic } = require("../controllers/funnelController");
 
 const fs = require("fs");
 
@@ -354,6 +356,10 @@ const wireChatbotFreeform = (io) => {
       idleTimer: null,
       initialized: false,
       mode: "diagnostic",
+      // Funnel-mode fields (set when payload.funnel_session_token is present)
+      isFunnelMode: false,
+      funnel_access_id: null,
+      funnel_chat_id: null,
     });
 
     socket.emit("connected", { sessionId: socket.id });
@@ -380,6 +386,28 @@ const wireChatbotFreeform = (io) => {
       session.introPageText = payload.introPageText || session.introPageText;
       session.assessmentIds = payload.assessmentIds || [];
 
+      // ── Funnel mode: activated by a funnel_session_token from startDiagnostic ──
+      if (payload.funnel_session_token) {
+        const decoded = verifyFunnelSessionToken(payload.funnel_session_token);
+        if (!decoded) {
+          socket.emit("error", { message: "Invalid or expired funnel session token. Please restart your diagnostic." });
+          return;
+        }
+        session.isFunnelMode = true;
+        session.email = decoded.email;
+        session.funnel_access_id = decoded.funnel_access_id;
+        session.funnel_chat_id = decoded.chat_id;
+        session.mode = "diagnostic"; // always diagnostic, never discovery
+        socket.emit("ready", {
+          sessionId: socket.id,
+          hasExistingReport: false,
+          mode: "diagnostic",
+          isFunnelMode: true,
+        });
+        return;
+      }
+
+      // ── Standard (paid user) mode ─────────────────────────────────────────
       let hasExistingReport = false;
 
       if (session.email) {
@@ -436,6 +464,26 @@ const wireChatbotFreeform = (io) => {
     socket.on("user_message", async ({ content }) => {
       const session = sessions.get(socket.id);
       if (!session || !content) return;
+
+      // Funnel sessions: block discovery mode entirely and guard against open-chat attempts
+      if (session.isFunnelMode) {
+        if (session.mode === "discovery") {
+          session.mode = "diagnostic"; // force back to diagnostic
+        }
+        // Block attempts to request discovery/follow-up chat
+        const lc = content.toLowerCase();
+        const wantsDiscovery = /discovery|follow.?up|ongoing|chat|coaching|advice|consult/i.test(lc);
+        if (wantsDiscovery) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content: "Your free access is for the initial diagnostic only. To continue your journey and get ongoing coaching support, the next step is Unlimited Creator.",
+            },
+            progress: { asked: 0, answered: 0, total: session.targetCount },
+          });
+          return;
+        }
+      }
 
       socket.emit("status", {
         stage: "chatting",
@@ -759,6 +807,81 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
       if (!session?.email) return;
 
       clearInactivity(session);
+
+      // ── FUNNEL FINALIZE (IRL Report flow) ──────────────────────────────────
+      if (session.isFunnelMode) {
+        socket.emit("status", {
+          stage: "generating_report",
+          message: "Generating your Invisible Red Line Report...",
+        });
+
+        try {
+          const metrics = {};
+          const [retrieved, prompt] = await Promise.all([
+            retrieveSimilarChunks({ query: session.transcript.at(-1)?.content || "", topK: 3 }),
+            getLatestPromptFromDb(),
+          ]);
+
+          const promptContent = typeof prompt === "string"
+            ? prompt
+            : prompt?.fullPrompt || prompt?.content || "";
+
+          const userPromptContent = buildFinalReportPrompt({
+            customerContext: null,
+            intakeAnswers: session.transcript,
+            introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
+            retrieved,
+            previousReport: null,
+          });
+
+          // Stage 1 report — used as input to completeFunnelDiagnostic (Phase 3/4 will run IRL on top)
+          const stage1Response = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: promptContent },
+              { role: "user", content: userPromptContent },
+            ],
+            temperature: 0.15,
+            max_completion_tokens: 4500,
+          });
+
+          const stage1ReportText = sanitizeReportText(
+            stage1Response?.choices?.[0]?.message?.content?.trim() || "",
+            metrics
+          );
+
+          socket.emit("status", {
+            stage: "compiling_report",
+            message: "Compiling your personalised report...",
+          });
+
+          const result = await completeFunnelDiagnostic({
+            funnel_access_id: session.funnel_access_id,
+            email: session.email,
+            transcript: session.transcript,
+            reportText: stage1ReportText,
+            metrics,
+            chat_id: session.funnel_chat_id,
+          });
+
+          socket.emit("done", {
+            isFunnelMode: true,
+            diagnosticId: result.diagnostic_id,
+            pdfUrl: result.pdf_url,
+            reportText: result.report_text,
+            status: "completed",
+            statusMessage: "Your Invisible Red Line Report has been generated and emailed.",
+            userMessage: `Your Invisible Red Line Report has been generated and emailed to ${session.email}. Please check your inbox.`,
+            emailed: true,
+          });
+        } catch (err) {
+          console.error("[socket funnel] Finalize failed:", err);
+          socket.emit("error", {
+            message: "Failed to generate your report. Please try again.",
+          });
+        }
+        return;
+      }
 
       // DISCOVERY FINALIZE
       if (session.mode === "discovery") {

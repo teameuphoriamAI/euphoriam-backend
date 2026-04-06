@@ -14,8 +14,10 @@ const {
   generateFunnelSessionToken,
 } = require("../utils/funnelToken");
 const { extractStructuredPacket } = require("../helpers/structuredPacketExtractor");
+const { generateInvisibleRedLineReport } = require("../helpers/irlReportGenerator");
 const { sendEmail } = require("../utils/email");
-const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
+const { irlReportEmail } = require("../utils/emailTemplate/irlReportEmail");
+const { generateIrlReportPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const fs = require("fs");
 
@@ -350,11 +352,43 @@ const completeDiagnostic = async ({
     console.error("[funnel] Stage 1 extraction failed (non-fatal):", extractErr.message);
   }
 
-  // ── Stage 2: Generate Invisible Red Line Report ───────────────────────────
-  // TODO (Phase 4): Replace stub with real call once irlReportGenerator.js is built.
-  // const { generateInvisibleRedLineReport } = require("../helpers/irlReportGenerator");
-  // const irlReport = await generateInvisibleRedLineReport({ structuredPacket, email, offer_config: defaultOfferConfig });
-  const irlReport = reportText; // Phase 4 stub — replaced when irlReportGenerator is ready
+  // ── Stage 2: Generate Invisible Red Line Report ──────────────────────────
+  // Build offer_config from env vars (overridable per-request in future)
+  const offer_config = {
+    uc_offer_name: process.env.UC_OFFER_NAME || "Unlimited Creator",
+    uc_offer_price_string: process.env.UC_OFFER_PRICE || null,
+    include_price_compare: process.env.UC_INCLUDE_PRICE_COMPARE === "true",
+    include_button_cta: true,
+    cta_text: process.env.UC_CTA_TEXT || "Start Unlimited Creator",
+  };
+
+  let irlReport = reportText; // Fallback to Stage 1 report if Stage 2 fails
+  try {
+    const userName = email?.split("@")[0] || "there";
+    const dp = structuredPacket?.diagnostic_packet || {};
+    const cp = structuredPacket?.constraint_packet || {};
+    const oi = structuredPacket?.optional_inputs || {};
+
+    const { reportText: generatedReport, wordCount } = await generateInvisibleRedLineReport({
+      user: { first_name: userName },
+      diagnostic_packet: dp,
+      constraint_packet: cp,
+      optional_inputs: oi,
+      access_flags: {
+        UC: false,
+        CreatorClub: false,
+        ChangingRealities: false,
+        LiveCalls: false,
+        Mastery: false,
+      },
+      offer_config,
+    });
+
+    irlReport = generatedReport;
+    console.log(`[funnel] Stage 2 IRL report generated: ${wordCount} words`);
+  } catch (stage2Err) {
+    console.error("[funnel] Stage 2 IRL generation failed (falling back to Stage 1 report):", stage2Err.message);
+  }
 
   const userName = email?.split("@")[0] || "User";
 
@@ -387,10 +421,11 @@ const completeDiagnostic = async ({
 
   // Generate PDF
   let pdfUrl = null;
+  let pdfLocalPath = null;
   try {
-    const pdfPath = await generateDiagnosticPdf(diagnostic);
-    if (pdfPath) {
-      const buffer = await fs.promises.readFile(pdfPath);
+    pdfLocalPath = await generateIrlReportPdf(diagnostic);
+    if (pdfLocalPath) {
+      const buffer = await fs.promises.readFile(pdfLocalPath);
       const upload = await uploadBufferToSupabase({
         buffer,
         objectPath: `funnel-reports/irl-${diagnostic.id}-${Date.now()}.pdf`,
@@ -405,13 +440,13 @@ const completeDiagnostic = async ({
     console.error("[funnel] PDF generation failed:", pdfErr.message);
   }
 
-  // Send report email
+  // Send report email (attach local PDF if available)
   try {
     await sendEmail(
       email,
       "Your Invisible Red Line Report – Euphoriam AI",
-      buildIrlReportEmail({ name: userName, reportText: irlReport }),
-      null
+      irlReportEmail(userName),
+      pdfLocalPath || null
     );
   } catch (emailErr) {
     console.error("[funnel] Report email failed:", emailErr.message);
@@ -556,7 +591,7 @@ const resendReport = async (req, res) => {
     await sendEmail(
       email,
       "Your Invisible Red Line Report – Euphoriam AI (Resent)",
-      buildIrlReportEmail({ name: userName, reportText: irlReport }),
+      irlReportEmail(userName),
       pdfPath
     );
   } catch (emailErr) {
@@ -569,33 +604,6 @@ const resendReport = async (req, res) => {
   );
 
   return successResponse(res, "Report resent successfully", { sent: true });
-};
-
-// ── Email template helper ─────────────────────────────────────────────────────
-
-const buildIrlReportEmail = ({ name, reportText }) => {
-  const formattedReport = (reportText || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br />");
-
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-</head>
-<body style="font-family: Arial, sans-serif; color: #222; line-height: 1.7; max-width: 680px; margin: 0 auto; padding: 20px;">
-  <h2 style="color: #1a1a1a;">Your Invisible Red Line Report</h2>
-  <p>Hi ${name || "there"},</p>
-  <p>Here is your personalised Invisible Red Line Report based on your Euphoriam AI Diagnostic.</p>
-  <div style="background: #f9f9f9; padding: 24px; border-radius: 8px; margin: 24px 0; border-left: 4px solid #6b46c1; white-space: pre-wrap; font-size: 15px; line-height: 1.8;">
-${formattedReport}
-  </div>
-  <p style="margin-top: 24px;">— Euphoriam AI</p>
-</body>
-</html>`;
 };
 
 module.exports = {

@@ -1661,6 +1661,18 @@ const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
 const generateDiagnosticPdf = (diagnostic) =>
   new Promise(async (resolve, reject) => {
     try {
+      // ── Route: IRL report uses its own premium template ───────────────────
+      const reportType =
+        diagnostic.report_type ||
+        diagnostic.data?.report_type ||
+        diagnostic.data?.structuredPacket?.report_type ||
+        "full";
+
+      if (reportType === "invisible_red_line") {
+        return resolve(await generateIrlReportPdf(diagnostic));
+      }
+
+      // ── Default full-report path below ────────────────────────────────────
       const outputDir = path.join(
         __dirname,
         "..",
@@ -2145,4 +2157,305 @@ const generateDiagnosticPdf = (diagnostic) =>
     }
   });
 
-module.exports = { generateDiagnosticPdf };
+// ─────────────────────────────────────────────────────────────────────────────
+// IRL REPORT PDF GENERATOR
+// Renders the Invisible Red Line Report as a clean, premium-looking PDF.
+// Completely separate from the existing full-report PDF path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse an IRL report text into an array of section objects.
+ * Detects section headings (digits 1-19 followed by ". ") and
+ * classifies each line as either a "marker" (888-prefixed) or "body" line.
+ *
+ * Returns: [{ heading: string, lines: [{ type: "marker"|"body", text: string }] }]
+ */
+const parseIrlReportSections = (reportText = "") => {
+  const rawLines = reportText.split("\n");
+  const sections = [];
+  let current = null;
+
+  for (const rawLine of rawLines) {
+    const line = rawLine.trimEnd();
+
+    // Detect section heading — matches "1. Title", "19. Title", etc.
+    const headingMatch = line.match(/^(\d{1,2})\.\s+(.+)/);
+    if (headingMatch) {
+      if (current) sections.push(current);
+      current = { heading: line.trim(), lines: [] };
+      continue;
+    }
+
+    // If no section opened yet, create a preamble bucket
+    if (!current) {
+      current = { heading: null, lines: [] };
+    }
+
+    if (!line.trim()) {
+      // Preserve paragraph spacing via empty lines
+      if (current.lines.length > 0 && current.lines.at(-1)?.text !== "") {
+        current.lines.push({ type: "spacer", text: "" });
+      }
+      continue;
+    }
+
+    if (line.trimStart().startsWith("888")) {
+      current.lines.push({ type: "marker", text: line.trim() });
+    } else if (line.startsWith("[") && line.includes("]")) {
+      // CTA button placeholder e.g. [Start Unlimited Creator]
+      current.lines.push({ type: "cta", text: line.trim().replace(/^\[|\]$/g, "") });
+    } else {
+      current.lines.push({ type: "body", text: line.trim() });
+    }
+  }
+
+  if (current) sections.push(current);
+  return sections;
+};
+
+/**
+ * Generate a PDF for an Invisible Red Line Report diagnostic.
+ */
+const generateIrlReportPdf = async (diagnostic) =>
+  new Promise(async (resolve, reject) => {
+    try {
+      const outputDir = path.join(__dirname, "..", "..", "reports", "diagnostics");
+      ensureDir(outputDir);
+      const filePath = path.join(outputDir, `irl-${diagnostic.id || Date.now()}.pdf`);
+
+      const data = diagnostic.data || {};
+      const profile = data.profile || {};
+      const irlReport = data.irlReport || data.aiReport || "";
+      const structuredPacket = data.structuredPacket || {};
+      const dp = structuredPacket.diagnostic_packet || {};
+      const userName = profile.name || profile.email?.split("@")[0] || "User";
+
+      // ── Page layout constants ─────────────────────────────────────────────
+      const MARGIN = 50;
+      const PURPLE = "#7c3aed";
+      const LIGHT_PURPLE = "#f5f0ff";
+      const DARK = "#1a1a1a";
+      const BODY = "#333333";
+      const MUTED = "#666666";
+      const MARKER_BG = "#f9f4ff";
+      const MARKER_BORDER = "#9b59b6";
+
+      const doc = new PDFDocument({ margin: MARGIN, size: "A4" });
+      const stream = fs.createWriteStream(filePath);
+      stream.on("finish", () => resolve(filePath));
+      stream.on("error", reject);
+      doc.pipe(stream);
+
+      const pageWidth = doc.page.width - MARGIN * 2;
+
+      // ── Logo ──────────────────────────────────────────────────────────────
+      try {
+        const logoEnv = process.env.LOGO_URL;
+        const localLogoPath = path.join(__dirname, "..", "assets", "logo.png");
+        let logoBuffer = null;
+        if (logoEnv?.startsWith("http")) {
+          try {
+            const r = await axios.get(logoEnv, { responseType: "arraybuffer" });
+            logoBuffer = Buffer.from(r.data, "binary");
+          } catch {}
+        } else if (logoEnv && fs.existsSync(logoEnv)) {
+          logoBuffer = logoEnv;
+        }
+        if (!logoBuffer && fs.existsSync(localLogoPath)) logoBuffer = localLogoPath;
+        if (logoBuffer) {
+          doc.image(logoBuffer, doc.page.width / 2 - 25, MARGIN, { width: 50 });
+          doc.moveDown(3.5);
+        } else {
+          doc.moveDown(2);
+        }
+      } catch {}
+
+      // ── Report title block ────────────────────────────────────────────────
+      doc
+        .fontSize(9)
+        .fillColor(PURPLE)
+        .font("Helvetica-Bold")
+        .text("EUPHORIAM AI", { align: "center", width: pageWidth });
+
+      doc.moveDown(0.3);
+      doc
+        .fontSize(22)
+        .fillColor(DARK)
+        .font("Helvetica-Bold")
+        .text("INVISIBLE RED LINE REPORT", { align: "center", width: pageWidth });
+
+      doc.moveDown(0.3);
+      doc
+        .fontSize(12)
+        .fillColor(MUTED)
+        .font("Helvetica")
+        .text("Your Hidden Energy Structure Constraint Map", { align: "center", width: pageWidth });
+
+      doc.moveDown(0.5);
+      doc
+        .fontSize(10)
+        .fillColor(MUTED)
+        .font("Helvetica")
+        .text(`Prepared for: ${userName}  ·  ${new Date().toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}`, { align: "center", width: pageWidth });
+
+      doc.moveDown(1.2);
+
+      // Purple divider line
+      doc
+        .moveTo(MARGIN, doc.y)
+        .lineTo(MARGIN + pageWidth, doc.y)
+        .strokeColor(PURPLE)
+        .lineWidth(2)
+        .stroke();
+      doc.moveDown(1.2);
+
+      // ── Structure snapshot card (Section 2 data) ──────────────────────────
+      if (dp.signature_primary_id || dp.domain_primary || dp.orbit_pattern) {
+        const cardX = MARGIN;
+        const cardY = doc.y;
+        const cardW = pageWidth;
+        const snapshotLines = [
+          dp.domain_primary ? `Primary domain: ${dp.domain_primary}` : null,
+          dp.structure_type ? `Structure type: ${dp.structure_type}` : null,
+          dp.signature_primary_id ? `Vortex signature: ${dp.signature_primary_id}` : null,
+          dp.EO ? `Egoic orientation: ${dp.EO}` : null,
+          dp.lack_channel ? `Lack channel: ${dp.lack_channel}` : null,
+          dp.protector_type ? `Protector: ${dp.protector_type}` : null,
+          dp.orbit_pattern ? `Behavioural loop: ${dp.orbit_pattern}` : null,
+          dp.gravity_depth ? `Gravity depth: ${dp.gravity_depth}` : null,
+          dp.CL_estimate ? `Coherence estimate: CL ${dp.CL_estimate}` : null,
+          dp.signature_confidence ? `Map confidence: ${dp.signature_confidence}` : null,
+        ].filter(Boolean);
+
+        // Estimate card height
+        const lineH = 16;
+        const cardH = 20 + snapshotLines.length * lineH + 20;
+
+        doc
+          .roundedRect(cardX, cardY, cardW, cardH, 6)
+          .fillAndStroke(LIGHT_PURPLE, PURPLE);
+
+        doc.y = cardY + 16;
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(9)
+          .fillColor(PURPLE)
+          .text("YOUR STRUCTURE SNAPSHOT", { indent: 14, width: cardW - 28 });
+
+        doc.moveDown(0.4);
+        snapshotLines.forEach((line) => {
+          doc
+            .font("Helvetica")
+            .fontSize(10)
+            .fillColor(DARK)
+            .text(line, { indent: 14, width: cardW - 28, lineGap: 2 });
+        });
+
+        doc.y = cardY + cardH + 16;
+      }
+
+      // ── Report body — 19 sections ─────────────────────────────────────────
+      const sections = parseIrlReportSections(irlReport);
+
+      for (const section of sections) {
+        // Check if we need a new page (leave at least 80pt for a section header + first line)
+        if (doc.y > doc.page.height - doc.page.margins.bottom - 80) {
+          doc.addPage();
+        }
+
+        // Section heading
+        if (section.heading) {
+          doc.moveDown(0.8);
+          doc
+            .font("Helvetica-Bold")
+            .fontSize(13)
+            .fillColor(PURPLE)
+            .text(section.heading, { width: pageWidth, lineGap: 3 });
+          doc.moveDown(0.3);
+        }
+
+        for (const entry of section.lines) {
+          if (entry.type === "spacer") {
+            doc.moveDown(0.4);
+            continue;
+          }
+
+          if (entry.type === "cta") {
+            // Render CTA as a bordered box at the bottom
+            doc.moveDown(0.8);
+            const ctaY = doc.y;
+            const ctaH = 36;
+            doc
+              .roundedRect(MARGIN, ctaY, pageWidth, ctaH, 6)
+              .fillAndStroke(PURPLE, PURPLE);
+            doc
+              .font("Helvetica-Bold")
+              .fontSize(13)
+              .fillColor("#ffffff")
+              .text(entry.text, MARGIN, ctaY + 10, { width: pageWidth, align: "center" });
+            doc.y = ctaY + ctaH + 12;
+            continue;
+          }
+
+          if (entry.type === "marker") {
+            // 888-prefixed lines — left accent border + tinted background
+            const text = entry.text.replace(/^888\s*/, "").trim();
+            const lineY = doc.y;
+            const approxH = Math.max(20, Math.ceil(text.length / 72) * 14 + 8);
+
+            doc
+              .rect(MARGIN, lineY, pageWidth, approxH)
+              .fillColor(MARKER_BG)
+              .fill();
+
+            doc
+              .moveTo(MARGIN, lineY)
+              .lineTo(MARGIN, lineY + approxH)
+              .strokeColor(MARKER_BORDER)
+              .lineWidth(3)
+              .stroke();
+
+            doc
+              .font("Helvetica-Bold")
+              .fontSize(10.5)
+              .fillColor(DARK)
+              .text(text, MARGIN + 10, lineY + 5, { width: pageWidth - 14, lineGap: 2 });
+
+            doc.y = lineY + approxH + 4;
+            continue;
+          }
+
+          // Regular body text
+          doc
+            .font("Helvetica")
+            .fontSize(11)
+            .fillColor(BODY)
+            .text(entry.text, { width: pageWidth, lineGap: 3 });
+        }
+      }
+
+      // ── Footer ────────────────────────────────────────────────────────────
+      doc.moveDown(1.5);
+      doc
+        .moveTo(MARGIN, doc.y)
+        .lineTo(MARGIN + pageWidth, doc.y)
+        .strokeColor("#dddddd")
+        .lineWidth(1)
+        .stroke();
+      doc.moveDown(0.6);
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor(MUTED)
+        .text(
+          "Euphoriam AI · This report is generated using AI-assisted analysis and is for informational purposes.",
+          { align: "center", width: pageWidth }
+        );
+
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+
+module.exports = { generateDiagnosticPdf, generateIrlReportPdf };

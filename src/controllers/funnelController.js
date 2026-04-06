@@ -13,6 +13,7 @@ const {
   verifyFunnelToken,
   generateFunnelSessionToken,
 } = require("../utils/funnelToken");
+const { extractStructuredPacket } = require("../helpers/structuredPacketExtractor");
 const { sendEmail } = require("../utils/email");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
@@ -336,17 +337,24 @@ const completeDiagnostic = async ({
     throw new Error(`Access denied: ${status.reason}`);
   }
 
-  // ── Stage 1: Extract structured packet from Stage 1 report ───────────────
-  // TODO (Phase 3): Replace stub with real call once structuredPacketExtractor.js is built.
-  // const { extractStructuredPacket } = require("../helpers/structuredPacketExtractor");
-  // const structuredPacket = await extractStructuredPacket({ reportText, transcript, existingMetrics: metrics });
-  const structuredPacket = null; // Phase 3 stub
+  // ── Stage 1: Extract structured packet from the Stage 1 report ──────────
+  let structuredPacket = null;
+  try {
+    structuredPacket = await extractStructuredPacket({
+      reportText,
+      transcript,
+      existingMetrics: metrics,
+    });
+    console.log("[funnel] Stage 1 structured packet extracted, structure_type:", structuredPacket?.diagnostic_packet?.structure_type);
+  } catch (extractErr) {
+    console.error("[funnel] Stage 1 extraction failed (non-fatal):", extractErr.message);
+  }
 
   // ── Stage 2: Generate Invisible Red Line Report ───────────────────────────
   // TODO (Phase 4): Replace stub with real call once irlReportGenerator.js is built.
   // const { generateInvisibleRedLineReport } = require("../helpers/irlReportGenerator");
-  // const irlReport = await generateInvisibleRedLineReport({ ... structuredPacket, offer_config: defaultOfferConfig });
-  const irlReport = reportText; // Phase 4 stub — use Stage 1 report until IRL generator is ready
+  // const irlReport = await generateInvisibleRedLineReport({ structuredPacket, email, offer_config: defaultOfferConfig });
+  const irlReport = reportText; // Phase 4 stub — replaced when irlReportGenerator is ready
 
   const userName = email?.split("@")[0] || "User";
 
@@ -369,9 +377,9 @@ const completeDiagnostic = async ({
         profile: { name: userName, email },
         metrics,
         intakeTranscript: transcript,
-        aiReport: reportText,
-        irlReport,
-        structuredPacket,
+        aiReport: reportText,       // Stage 1 full report
+        irlReport,                  // Stage 2 IRL report (Phase 4 stub = same as Stage 1 until built)
+        structuredPacket,           // Stage 1 extraction — available for market research (Phase 8)
         funnelMode: true,
       },
     })

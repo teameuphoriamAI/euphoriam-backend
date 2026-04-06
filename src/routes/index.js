@@ -10,6 +10,7 @@ const discoveryRoutes = require("./discoveryRoutes");
 const adminRoutes = require("./adminRoutes");
 const chatRoutes = require("./chatRoutes");
 const barcodeRoutes = require("./barcodeRoutes");
+const funnelRoutes = require("./funnelRoutes");
 
 const router = express.Router();
 
@@ -23,11 +24,11 @@ router.use("/diagnostics", diagnosticRoutes);
 router.use("/barcode", barcodeRoutes);
 router.use("/kajabi", kajabiRoutes);
 router.use("/voice-notes", voiceRoutes);
-router.use("/voice-notes", voiceRoutes);
 router.use("/rag", ragRoutes);
 router.use("/discoveries", discoveryRoutes);
 // router.use("/discoveriesChat", discoveryChatRoutes);
 router.use("/admin", adminRoutes);
 router.use("/chat", chatRoutes);
+router.use("/funnel", funnelRoutes);
 
 module.exports = router;

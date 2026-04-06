@@ -63,4 +63,53 @@ const verifyFunnelToken = (token) => {
   }
 };
 
-module.exports = { generateFunnelToken, verifyFunnelToken };
+// ── Funnel session tokens ─────────────────────────────────────────────────────
+// Short-lived (2 hr) tokens issued by startDiagnostic to authenticate the
+// Socket.IO connection for a single funnel diagnostic session.
+
+const FUNNEL_SESSION_EXPIRY = "2h";
+
+/**
+ * Generate a short-lived funnel session token.
+ *
+ * @param {object} payload
+ * @param {string} payload.email
+ * @param {string} payload.funnel_access_id
+ * @param {number|string} payload.chat_id
+ * @returns {string} Signed JWT string
+ */
+const generateFunnelSessionToken = ({ email, funnel_access_id, chat_id }) => {
+  return jwt.sign(
+    { email, funnel_access_id, chat_id, type: "funnel_session" },
+    getFunnelSecret(),
+    { expiresIn: FUNNEL_SESSION_EXPIRY }
+  );
+};
+
+/**
+ * Verify and decode a funnel session token.
+ *
+ * @param {string} token
+ * @returns {{ email: string, funnel_access_id: string, chat_id: number|string } | null}
+ */
+const verifyFunnelSessionToken = (token) => {
+  if (!token) return null;
+  try {
+    const decoded = jwt.verify(token, getFunnelSecret());
+    if (decoded.type !== "funnel_session") return null;
+    return {
+      email: decoded.email,
+      funnel_access_id: decoded.funnel_access_id,
+      chat_id: decoded.chat_id,
+    };
+  } catch {
+    return null;
+  }
+};
+
+module.exports = {
+  generateFunnelToken,
+  verifyFunnelToken,
+  generateFunnelSessionToken,
+  verifyFunnelSessionToken,
+};

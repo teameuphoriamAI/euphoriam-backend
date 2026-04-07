@@ -16,8 +16,9 @@ const {
 } = require("../utils/funnelToken");
 const { extractStructuredPacket } = require("../helpers/structuredPacketExtractor");
 const { generateInvisibleRedLineReport } = require("../helpers/irlReportGenerator");
-const { sendEmail } = require("../utils/email");
+const { sendEmail, sendEmailBasic } = require("../utils/email");
 const { irlReportEmail } = require("../utils/emailTemplate/irlReportEmail");
+const { funnelAccessEmail } = require("../utils/emailTemplate/funnelAccessEmail");
 const { generateIrlReportPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const fs = require("fs");
@@ -37,6 +38,9 @@ const createTokenSchema = Joi.object({
   email: Joi.string().email().required(),
   kajabi_offer_source: Joi.string().max(255).optional().allow(null, ""),
   ip: Joi.string().max(64).optional().allow(null, ""),
+  // Option B: when Kajabi cannot embed the link, pass send_email: true to trigger backend delivery
+  send_email: Joi.boolean().optional().default(false),
+  first_name: Joi.string().max(100).optional().allow(null, ""),
 });
 
 const tokenBodySchema = Joi.object({
@@ -217,7 +221,7 @@ const createToken = async (req, res) => {
     return errorResponse(res, error.details.map((d) => d.message).join(", "), 400);
   }
 
-  const { email, kajabi_offer_source = null } = value;
+  const { email, kajabi_offer_source = null, send_email = false, first_name = null } = value;
   const clientIp = getClientIp(req) || value.ip || null;
 
   // IP abuse check
@@ -245,11 +249,28 @@ const createToken = async (req, res) => {
   const frontendUrl = process.env.FRONTEND_URL || "";
   const link = `${frontendUrl}/diagnostic/funnel?token=${encodeURIComponent(token)}`;
 
+  // Option B: send funnel access link via email when Kajabi cannot embed it directly
+  if (send_email) {
+    const displayName = first_name || email.split("@")[0];
+    const emailHtml = funnelAccessEmail(displayName, link, LINK_VALIDITY_DAYS);
+    try {
+      await sendEmailBasic(
+        email,
+        "Your Free Euphoriam AI Diagnosis is ready",
+        emailHtml
+      );
+    } catch (emailErr) {
+      // Non-fatal — log but still return the token so Kajabi receives it
+      console.error("[funnelController] createToken: failed to send access email:", emailErr.message);
+    }
+  }
+
   return successResponse(res, "Funnel access token created", {
     token,
     link,
     expires_at: linkExpiry.toISOString(),
     funnel_access_id: record.id,
+    email_sent: send_email,
   });
 };
 

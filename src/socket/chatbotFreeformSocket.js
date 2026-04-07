@@ -35,6 +35,8 @@ const {
 const { detectDiscoveryEndIntents } = require("../utils/validation");
 const { verifyFunnelSessionToken } = require("../utils/funnelToken");
 const { completeDiagnostic: completeFunnelDiagnostic } = require("../controllers/funnelController");
+const { guardMessage } = require("../helpers/promptInjectionGuard");
+const { isQuestionRateLimited } = require("../middleware/funnelRateLimit");
 
 const fs = require("fs");
 
@@ -465,12 +467,37 @@ const wireChatbotFreeform = (io) => {
       const session = sessions.get(socket.id);
       if (!session || !content) return;
 
-      // Funnel sessions: block discovery mode entirely and guard against open-chat attempts
+      // Funnel sessions: security guards + mode lock
       if (session.isFunnelMode) {
-        if (session.mode === "discovery") {
-          session.mode = "diagnostic"; // force back to diagnostic
+        // 1. Question-submission rate limit (per socket IP)
+        const clientIp = socket.handshake?.headers?.["x-forwarded-for"]?.split(",")[0]?.trim()
+          || socket.handshake?.address
+          || "unknown";
+        if (isQuestionRateLimited(clientIp)) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content: "You're submitting answers too quickly. Please slow down and take your time.",
+            },
+            progress: { asked: 0, answered: 0, total: session.targetCount },
+          });
+          return;
         }
-        // Block attempts to request discovery/follow-up chat
+
+        // 2. Prompt injection detection
+        const injectionCheck = guardMessage(content);
+        if (injectionCheck.blocked) {
+          socket.emit("assistant_message", {
+            message: { role: "assistant", content: injectionCheck.response },
+            progress: { asked: 0, answered: 0, total: session.targetCount },
+          });
+          return;
+        }
+
+        // 3. Lock to diagnostic mode — no discovery or open chat
+        if (session.mode === "discovery") {
+          session.mode = "diagnostic";
+        }
         const lc = content.toLowerCase();
         const wantsDiscovery = /discovery|follow.?up|ongoing|chat|coaching|advice|consult/i.test(lc);
         if (wantsDiscovery) {

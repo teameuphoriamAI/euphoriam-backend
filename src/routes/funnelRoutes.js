@@ -1,12 +1,33 @@
 const express = require("express");
 const asyncHandler = require("../helpers/asyncHandler");
 const funnelController = require("../controllers/funnelController");
+const { funnelIpLimit, createTokenLimit } = require("../middleware/funnelRateLimit");
 
 const router = express.Router();
 
+// Apply IP rate limit to all funnel routes (skips /complete-diagnostic internally)
+router.use(funnelIpLimit);
+
+// ── Kajabi webhook secret middleware ──────────────────────────────────────────
+// Applied only to create-token. All other routes are protected by signed JWT.
+const requireKajabiSecret = (req, res, next) => {
+  const secret = process.env.KAJABI_WEBHOOK_SECRET;
+  if (!secret) return next(); // Not configured — skip in development
+  const provided = req.headers["x-kajabi-secret"];
+  if (!provided || provided !== secret) {
+    return res.status(401).json({ status: false, error: "Unauthorized" });
+  }
+  next();
+};
+
 // POST /api/funnel/create-token
 // Called by Kajabi after opt-in. Requires x-kajabi-secret header.
-router.post("/create-token", asyncHandler(funnelController.createToken));
+router.post(
+  "/create-token",
+  createTokenLimit,
+  requireKajabiSecret,
+  asyncHandler(funnelController.createToken)
+);
 
 // POST /api/funnel/validate-token
 // Called by frontend on every funnel page load to verify access.
@@ -45,5 +66,10 @@ router.get("/expired", asyncHandler(funnelController.getExpiredMessage));
 // POST /api/funnel/resend-report
 // Re-sends the stored IRL report PDF to the user's email.
 router.post("/resend-report", asyncHandler(funnelController.resendReport));
+
+// GET /api/funnel/report/:diagnosticId
+// Returns the sanitised IRL report for display on the frontend report page.
+// Never exposes prompts, structured packets, or transcript data.
+router.get("/report/:diagnosticId", asyncHandler(funnelController.getReport));
 
 module.exports = router;

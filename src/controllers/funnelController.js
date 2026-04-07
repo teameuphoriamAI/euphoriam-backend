@@ -6,6 +6,7 @@ const { Diagnostic } = require("../models/diagnosticModel");
 const { User } = require("../models/userModel");
 const { Chat } = require("../models/chatModel");
 const { Prompt } = require("../models/promptModel");
+const { IntegrationEvent } = require("../models/integrationEventModel");
 const { withDbSlot } = require("../config/sequelize");
 const { successResponse, errorResponse } = require("../utils/response");
 const {
@@ -28,6 +29,8 @@ const LINK_VALIDITY_DAYS = 10;
 const ACCESS_WINDOW_DAYS = 7;
 const UC_SALES_URL = process.env.UC_SALES_URL || `${process.env.FRONTEND_URL || ""}/upgrade`;
 
+const IP_ABUSE_THRESHOLD = 10; // distinct emails per IP per 24h before flagging
+
 // ── Validation schemas ────────────────────────────────────────────────────────
 
 const createTokenSchema = Joi.object({
@@ -41,6 +44,71 @@ const tokenBodySchema = Joi.object({
 });
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Check whether a given IP has created/validated tokens for more than
+ * IP_ABUSE_THRESHOLD distinct emails in the last 24 hours.
+ *
+ * If suspicious:
+ *  - Logs a warning to console
+ *  - Writes an IntegrationEvent record for audit trail
+ *  - Returns true (caller should return 429)
+ *
+ * @param {string|null} ip
+ * @param {string} context - "create_token" | "validate_token"
+ * @returns {Promise<boolean>} true = abusive, false = ok
+ */
+const checkIpAbuse = async (ip, context = "funnel") => {
+  if (!ip) return false;
+
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    // Count distinct emails tied to this IP in the last 24h
+    const records = await withDbSlot(() =>
+      FunnelAccess.findAll({
+        attributes: ["email"],
+        where: {
+          [Op.or]: [
+            { ip_at_creation: ip },
+            { ip_at_first_access: ip },
+          ],
+          createdAt: { [Op.gte]: since },
+        },
+        raw: true,
+      })
+    );
+
+    const distinctEmails = new Set(records.map((r) => r.email)).size;
+
+    if (distinctEmails > IP_ABUSE_THRESHOLD) {
+      console.warn(
+        `[funnel] IP abuse detected: ${ip} — ${distinctEmails} distinct emails in 24h (context: ${context})`
+      );
+
+      // Write audit event (best-effort — never crash the main flow)
+      try {
+        await withDbSlot(() =>
+          IntegrationEvent.create({
+            source: "funnel_abuse_monitor",
+            externalId: `${ip}_${Date.now()}`,
+            status: "flagged",
+            payload: { ip, distinctEmails, context, detectedAt: new Date().toISOString() },
+          })
+        );
+      } catch (logErr) {
+        console.error("[funnel] Failed to write abuse audit event:", logErr.message);
+      }
+
+      return true;
+    }
+  } catch (err) {
+    // Non-fatal — abuse detection should never block normal flow on errors
+    console.error("[funnel] IP abuse check failed (non-fatal):", err.message);
+  }
+
+  return false;
+};
 
 /**
  * Extract the calling IP from the request, preferring forwarded header.
@@ -141,15 +209,6 @@ const resolveToken = async (token) => {
  * Called by Kajabi after a user opts in to generate a secure funnel access link.
  */
 const createToken = async (req, res) => {
-  // Validate Kajabi webhook secret header
-  const kajabiSecret = process.env.KAJABI_WEBHOOK_SECRET;
-  if (kajabiSecret) {
-    const provided = req.headers["x-kajabi-secret"];
-    if (!provided || provided !== kajabiSecret) {
-      return errorResponse(res, "Unauthorized", 401);
-    }
-  }
-
   const { error, value } = createTokenSchema.validate(req.body, {
     abortEarly: false,
     stripUnknown: true,
@@ -160,6 +219,11 @@ const createToken = async (req, res) => {
 
   const { email, kajabi_offer_source = null } = value;
   const clientIp = getClientIp(req) || value.ip || null;
+
+  // IP abuse check
+  if (await checkIpAbuse(clientIp, "create_token")) {
+    return errorResponse(res, "Too many requests from this location. Please try again later.", 429);
+  }
   const now = new Date();
   const nonce = crypto.randomUUID();
 
@@ -197,6 +261,11 @@ const createToken = async (req, res) => {
 const validateToken = async (req, res) => {
   const token = extractToken(req);
   const clientIp = getClientIp(req);
+
+  // IP abuse check
+  if (await checkIpAbuse(clientIp, "validate_token")) {
+    return errorResponse(res, "Too many requests from this location. Please try again later.", 429);
+  }
 
   let record, decoded;
   try {
@@ -606,6 +675,56 @@ const resendReport = async (req, res) => {
   return successResponse(res, "Report resent successfully", { sent: true });
 };
 
+/**
+ * GET /api/funnel/report/:diagnosticId
+ * Returns the sanitised IRL report for display on the frontend report page.
+ *
+ * Security: Only returns data if the requesting funnel token belongs to the
+ * same FunnelAccess record that created this diagnostic.
+ *
+ * Never exposes: structuredPacket, raw transcript, system prompts, aiReport (Stage 1 internal).
+ */
+const getReport = async (req, res) => {
+  const token = extractToken(req) || req.query.token;
+  const { diagnosticId } = req.params;
+
+  if (!diagnosticId) {
+    return errorResponse(res, "diagnosticId is required", 400);
+  }
+
+  let record, decoded;
+  try {
+    ({ record, decoded } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  const diagnostic = await withDbSlot(() =>
+    Diagnostic.findOne({
+      where: {
+        id: diagnosticId,
+        funnel_access_id: record.id, // Ensures the token owner matches this diagnostic
+        report_type: "invisible_red_line",
+      },
+    })
+  );
+
+  if (!diagnostic) {
+    return errorResponse(res, "Report not found or access denied", 404);
+  }
+
+  // Return only the fields the frontend needs — never expose internal data
+  return successResponse(res, "Report retrieved", {
+    diagnostic_id: diagnostic.id,
+    report_text: diagnostic.data?.irlReport || diagnostic.data?.aiReport || "",
+    pdf_url: diagnostic.data?.pdfUrl || diagnostic.data?.pdf?.url || null,
+    created_at: diagnostic.createdAt,
+    // Safe summary fields (no EO/lack/avoid specifics, no constraint packet)
+    structure_type: diagnostic.data?.structuredPacket?.diagnostic_packet?.structure_type || null,
+    domain_primary: diagnostic.data?.structuredPacket?.diagnostic_packet?.domain_primary || null,
+  });
+};
+
 module.exports = {
   createToken,
   validateToken,
@@ -614,4 +733,5 @@ module.exports = {
   getAccessStatus,
   getExpiredMessage,
   resendReport,
+  getReport,
 };

@@ -13,7 +13,7 @@ const INJECTION_PATTERNS = [
   /reveal\s*(system|hidden|internal)\s*(message|prompt|instructions)/i,
   /print\s*(hidden|your|the)\s*prompt/i,
   /show\s*(me\s*)?(your\s*)?(rules|instructions|config|settings)/i,
-  /what\s*(are\s*)?(your\s*)?(instructions|rules|prompts)/i,
+  /what\s*(are\s*)?your\s*(instructions|rules|prompts)/i,
   /bypass\s*(your\s*)?(instructions|rules|filters)/i,
   /pretend\s*(you\s*(are|have)\s*no\s*(restrictions|rules))/i,
   /act\s*as\s*(if\s*)?(you\s*(are|have)\s*no\s*(restrictions|rules))/i,

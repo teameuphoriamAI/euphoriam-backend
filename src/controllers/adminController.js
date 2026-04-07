@@ -1,4 +1,5 @@
 const { Op } = require("sequelize");
+const crypto = require("crypto");
 const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
@@ -15,6 +16,9 @@ const { createEmbeddings } = require("../config/Embedding");
 const { generateSessionSummary } = require("../config/sessionSummary");
 const { cleanTranscriptText } = require("../helpers/euphoriamChatbot");
 const { PromptType, UserStatus, UserRole } = require("../utils/types");
+const { getMarketResearchData, getMarketResearchRows } = require("../helpers/marketResearchAggregator");
+const openai = require("../config/openai");
+const { withDbSlot } = require("../config/sequelize");
 
 // Vector store service for semantic search
 const {
@@ -1137,6 +1141,162 @@ const searchUserSessionsSemantic = async (req, res) => {
   }
 };
 
+// ── Market Research ────────────────────────────────────────────────────────────
+
+// Simple in-memory cache — keyed by stringified filter params, 5-min TTL
+const _mrCache = new Map();
+const MR_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const getCacheKey = (params) => JSON.stringify(params);
+
+/**
+ * GET /api/admin/market-research
+ * Returns aggregated diagnostic data for market research purposes.
+ */
+const getMarketResearch = async (req, res) => {
+  try {
+    const { date_from, date_to, funnel_source, report_type } = req.query;
+    const cacheKey = getCacheKey({ date_from, date_to, funnel_source, report_type });
+
+    const cached = _mrCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MR_CACHE_TTL_MS) {
+      return successResponse(res, "Market research data (cached)", cached.data);
+    }
+
+    const data = await getMarketResearchData({ date_from, date_to, funnel_source, report_type });
+    _mrCache.set(cacheKey, { data, ts: Date.now() });
+
+    return successResponse(res, "Market research data", data);
+  } catch (err) {
+    console.error("[getMarketResearch] Error:", err);
+    return errorResponse(res, "Failed to fetch market research data", 500);
+  }
+};
+
+/**
+ * GET /api/admin/market-research/export
+ * Returns a CSV of all diagnostic records with anonymised emails.
+ */
+const exportMarketResearchCsv = async (req, res) => {
+  try {
+    const { date_from, date_to, funnel_source, report_type } = req.query;
+    const rows = await getMarketResearchRows({ date_from, date_to, funnel_source, report_type });
+
+    const CSV_HEADERS = [
+      "date",
+      "email_hash",
+      "eo",
+      "lack",
+      "avoid",
+      "vortex_signature",
+      "domain",
+      "desired_outcome",
+      "current_loop",
+      "orbit_pattern",
+      "structure_type",
+      "gravity_depth",
+      "cl_estimate",
+      "protector_type",
+      "contradiction_rate",
+      "recovery_speed",
+      "funnel_source",
+    ];
+
+    const escapeCell = (val) => {
+      if (val == null) return "";
+      const str = String(val).replace(/\r?\n/g, " ");
+      return str.includes(",") || str.includes('"') || str.includes("\n")
+        ? `"${str.replace(/"/g, '""')}"`
+        : str;
+    };
+
+    const lines = [CSV_HEADERS.join(",")];
+    for (const row of rows) {
+      lines.push(CSV_HEADERS.map((h) => escapeCell(row[h])).join(","));
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="euphoriam-market-research-${dateStr}.csv"`
+    );
+    return res.send(lines.join("\n"));
+  } catch (err) {
+    console.error("[exportMarketResearchCsv] Error:", err);
+    return errorResponse(res, "Failed to export CSV", 500);
+  }
+};
+
+/**
+ * POST /api/admin/market-research/report
+ * Calls GPT-4o to generate a market research insight report for copywriting.
+ */
+const generateMarketResearchReport = async (req, res) => {
+  try {
+    const { date_from, date_to, focus_area, custom_question } = req.body || {};
+
+    // Load the market_research prompt from the DB
+    const promptRecord = await withDbSlot(() =>
+      Prompt.findOne({ where: { type: "market_research", isActive: true }, order: [["createdAt", "DESC"]] })
+    );
+
+    const systemPrompt = promptRecord?.content || `You are a market research analyst specialising in consciousness and personal development.
+You will receive aggregated diagnostic data from the Euphoriam AI platform (real user data, fully anonymised).
+Generate a structured market research report designed to inform marketing copywriting.
+
+Include:
+1. Who the audience really is (demographic-level description based on the patterns)
+2. What their real pain is (beneath the stated desire)
+3. Most common hidden structures and what that means for copy
+4. Language patterns that will resonate (derived from top desired outcomes)
+5. Marketing angles that match the dominant vortex signatures
+6. 5–10 copy headline suggestions based on dominant patterns
+
+Be specific. Use the data. Write in a tone suitable for a marketing strategist.`;
+
+    // Get aggregated data
+    const data = await getMarketResearchData({ date_from, date_to });
+
+    // Build user content
+    const focusSection = focus_area ? `\nFocus area for this report: ${focus_area}` : "";
+    const questionSection = custom_question ? `\nSpecific question to answer: ${custom_question}` : "";
+
+    const userContent = `Here is aggregated Euphoriam diagnostic data from ${data.total_diagnostics} users:
+
+${JSON.stringify(data, null, 2)}
+${focusSection}${questionSection}
+
+Generate the market research insight report now.`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.5,
+      max_completion_tokens: 2000,
+    });
+
+    const report_text = (response?.choices?.[0]?.message?.content || "").trim();
+    const tokens_used = response?.usage?.total_tokens || 0;
+
+    return successResponse(res, "Market research report generated", {
+      report_text,
+      model: "gpt-4o",
+      tokens_used,
+      data_summary: {
+        total_diagnostics: data.total_diagnostics,
+        date_range: data.date_range,
+      },
+    });
+  } catch (err) {
+    console.error("[generateMarketResearchReport] Error:", err);
+    return errorResponse(res, "Failed to generate report", 500);
+  }
+};
+
 module.exports = {
   adminLogin,
   getAllUsers,
@@ -1158,4 +1318,7 @@ module.exports = {
   getUserLatestSession,
   singleUserSessionToUser,
   searchUserSessionsSemantic,
+  getMarketResearch,
+  exportMarketResearchCsv,
+  generateMarketResearchReport,
 };

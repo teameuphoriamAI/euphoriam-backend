@@ -1,12 +1,14 @@
 const { rateLimit } = require("express-rate-limit");
 
 /**
- * Per-IP rate limiter applied to all /api/funnel/* routes.
- * Max 10 requests per minute per IP address.
+ * Per-IP rate limiter applied to write/state-changing /api/funnel/* routes.
+ * Read-only polling endpoints (access-status, expired) are excluded via `skip`.
+ * Max 60 requests per minute per IP — generous enough for a normal session that
+ * visits several funnel pages in quick succession.
  */
 const funnelIpLimit = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) =>
@@ -19,7 +21,12 @@ const funnelIpLimit = rateLimit({
   },
   skip: (req) => {
     // Never rate-limit internal complete-diagnostic calls (fired by socket, not browser)
-    return req.path === "/complete-diagnostic";
+    // Also skip read-only polling endpoints that are called on every page mount
+    return (
+      req.path === "/complete-diagnostic" ||
+      req.path === "/access-status" ||
+      req.path === "/expired"
+    );
   },
 });
 

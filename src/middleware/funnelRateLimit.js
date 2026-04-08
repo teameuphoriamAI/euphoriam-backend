@@ -20,12 +20,16 @@ const funnelIpLimit = rateLimit({
     error: "Too many requests. Please wait a moment and try again.",
   },
   skip: (req) => {
+    const p = req.path || "";
     // Never rate-limit internal complete-diagnostic calls (fired by socket, not browser)
-    // Also skip read-only polling endpoints that are called on every page mount
+    // Skip read-only polling / list endpoints used on hub + chat sidebar
     return (
-      req.path === "/complete-diagnostic" ||
-      req.path === "/access-status" ||
-      req.path === "/expired"
+      p === "/complete-diagnostic" ||
+      p === "/access-status" ||
+      p === "/expired" ||
+      p === "/diagnostics" ||
+      p === "/chats" ||
+      (p.startsWith("/chat/") && req.method === "GET")
     );
   },
 });

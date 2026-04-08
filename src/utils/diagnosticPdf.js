@@ -2164,6 +2164,75 @@ const generateDiagnosticPdf = (diagnostic) =>
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Strip markdown / layout noise from IRL report text before PDF parsing.
+ * Client reports often include ## headings, --- rules, **bold**, and duplicate titles.
+ */
+const normalizeIrlReportTextForPdf = (reportText = "") => {
+  const stripInlineMarkdown = (s) =>
+    s
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/_{1,2}([^_]+)_{1,2}/g, "$1")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim();
+
+  const lines = reportText.split("\n");
+  const out = [];
+  let lastWasBlank = false;
+
+  for (let rawLine of lines) {
+    let line = rawLine.replace(/\r/g, "").trimEnd();
+
+    // Horizontal rules (---, ***)
+    const t = line.trim();
+    if (/^[-*_]{3,}\s*$/.test(t)) continue;
+
+    // Fake page markers sometimes echoed in model output
+    if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(t)) continue;
+
+    // Leading markdown headings (# … ######)
+    line = line.replace(/^#{1,6}\s+/, "");
+
+    if (!line.trim()) {
+      if (!lastWasBlank) {
+        out.push("");
+        lastWasBlank = true;
+      }
+      continue;
+    }
+    lastWasBlank = false;
+
+    // Duplicate cover lines (already rendered in PDF header / snapshot card)
+    const lower = line.trim().toLowerCase();
+    if (
+      lower === "invisible red line report" ||
+      lower === "your hidden energy structure constraint map" ||
+      /^invisible red line report$/i.test(line.trim())
+    ) {
+      continue;
+    }
+
+    out.push(stripInlineMarkdown(line.trimEnd()));
+  }
+
+  // Collapse 3+ consecutive blank lines to max 1
+  const collapsed = [];
+  let blankRun = 0;
+  for (const L of out) {
+    if (L === "") {
+      blankRun++;
+      if (blankRun <= 1) collapsed.push("");
+    } else {
+      blankRun = 0;
+      collapsed.push(L);
+    }
+  }
+
+  return collapsed.join("\n").trim();
+};
+
+/**
  * Parse an IRL report text into an array of section objects.
  * Detects section headings (digits 1-19 followed by ". ") and
  * classifies each line as either a "marker" (888-prefixed) or "body" line.
@@ -2355,7 +2424,8 @@ const generateIrlReportPdf = async (diagnostic) =>
       }
 
       // ── Report body — 19 sections ─────────────────────────────────────────
-      const sections = parseIrlReportSections(irlReport);
+      const cleanedReport = normalizeIrlReportTextForPdf(irlReport);
+      const sections = parseIrlReportSections(cleanedReport);
 
       for (const section of sections) {
         // Check if we need a new page (leave at least 80pt for a section header + first line)

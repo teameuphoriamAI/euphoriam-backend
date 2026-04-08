@@ -59,6 +59,9 @@ const {
 const { updateMetricsFromDiscovery } = require("../helpers/metricsCalculator");
 const { PromptType } = require("../utils/types");
 const { isCreatorClubMember } = require("./userController");
+const { FunnelAccess } = require("../models/funnelAccessModel");
+const { generateFunnelToken } = require("../utils/funnelToken");
+const crypto = require("crypto");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
@@ -165,19 +168,50 @@ const findOrCreateCreatorUser = async (req, res) => {
       assessmentIds,
     });
 
-    if (!clubStatus.club) {
-      return errorResponse(
-        res,
-        "You do not have an active Creator Club membership.",
-        403,
+    // Non-UC members: route them into the free funnel (IRL Report) instead of blocking
+    const isUcMember = clubStatus.club || clubStatus.bronze || clubStatus.silver;
+    if (!isUcMember) {
+      const LINK_VALIDITY_DAYS = parseInt(process.env.FUNNEL_LINK_VALIDITY_DAYS || "10", 10);
+      const frontendUrl = (process.env.FRONTEND_URL || "").replace(/\/$/, "");
+      const now = new Date();
+
+      // Reuse an existing active (non-expired, non-blocked) funnel access record for this email
+      let funnelRecord = await withDbSlot(() =>
+        FunnelAccess.findOne({
+          where: { email, is_blocked: false },
+          order: [["createdAt", "DESC"]],
+        })
       );
-    }
-    if (!(clubStatus.club || clubStatus.bronze || clubStatus.silver)) {
-      return errorResponse(
-        res,
-        "You do not have any active Creator Club membership (club, bronze, or silver).",
-        403,
-      );
+
+      const isExpired = funnelRecord &&
+        new Date(funnelRecord.link_expiry) <= now;
+      const isAtLimit = funnelRecord &&
+        funnelRecord.diagnostics_completed_count >= parseInt(process.env.FUNNEL_MAX_DIAGNOSTICS || "3", 10);
+
+      if (!funnelRecord || isExpired || isAtLimit) {
+        // Create a fresh funnel access record via the direct-signup path
+        const nonce = crypto.randomUUID();
+        const token = generateFunnelToken({ email, kajabi_offer_source: "direct-signup", nonce });
+        const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
+
+        funnelRecord = await withDbSlot(() =>
+          FunnelAccess.create({
+            email,
+            link_token: token,
+            link_created_at: now,
+            link_expiry: linkExpiry,
+            kajabi_offer_source: "direct-signup",
+          })
+        );
+      }
+
+      const link = `${frontendUrl}/diagnostic/funnel?token=${encodeURIComponent(funnelRecord.link_token)}`;
+
+      return successResponse(res, "Free diagnostic access granted", {
+        funnel_redirect: true,
+        link,
+        expires_at: funnelRecord.link_expiry,
+      });
     }
     // Find user
     let user = await User.findOne({ where: { email } });

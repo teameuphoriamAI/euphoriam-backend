@@ -341,6 +341,90 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
   session.mode = "completed";
 };
 
+/* -------------------- Funnel First Question -------------------- */
+
+/**
+ * Generates and emits the very first diagnostic question for a funnel session.
+ * Called right after the "ready" event so the QA page doesn't stall waiting
+ * for a user message that never arrives.
+ */
+const sendFirstFunnelQuestion = async (socket, session) => {
+  try {
+    const name = (session.email || "").split("@")[0] || "there";
+
+    // Retrieve a small set of RAG chunks for context (best-effort, non-fatal)
+    let retrieved = [];
+    try {
+      retrieved = await retrieveSimilarChunks({
+        query: "diagnostic intake first question",
+        topK: 2,
+      });
+    } catch {
+      // RAG is optional for the first question
+    }
+
+    const { systemPrompt, userPrompt: chatPrompt } = await buildChatPrompts({
+      isDiscoveryMode: false,
+      transcript: [],
+      targetCount: session.targetCount,
+      introText: null,
+      name,
+      retrieved,
+      priorReportSnippet: null,
+      lastTurnAssistant: false,
+      resumeNotice: null,
+      wantsNewDiagnostic: false,
+      intakeHasStarted: false,
+      distinctQuestionNumbers: [],
+      discoveryType: null,
+      latestDiscoveryMetrics: {},
+      reportDate: null,
+      latestUserSession: null,
+      confidenceResult: null,
+      aiAnswered: true,
+    });
+
+    if (!systemPrompt || !chatPrompt) {
+      socket.emit("error", {
+        message: "Failed to load diagnostic prompts. Please refresh and try again.",
+      });
+      return;
+    }
+
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: chatPrompt },
+      ],
+      temperature: 0.3,
+      max_completion_tokens: 400,
+    });
+
+    const msg = aiResponse.choices[0]?.message;
+    if (!msg?.content) {
+      socket.emit("error", { message: "Failed to generate first question. Please refresh and try again." });
+      return;
+    }
+
+    session.transcript.push(msg);
+
+    socket.emit("assistant_message", {
+      message: msg,
+      progress: {
+        asked: 1,
+        answered: 0,
+        total: session.targetCount,
+      },
+    });
+  } catch (err) {
+    console.error("[funnel socket] sendFirstFunnelQuestion error:", err);
+    socket.emit("error", {
+      message: "Failed to start your diagnostic session. Please refresh and try again.",
+    });
+  }
+};
+
 /* -------------------- Socket Wiring -------------------- */
 
 const wireChatbotFreeform = (io) => {
@@ -406,6 +490,9 @@ const wireChatbotFreeform = (io) => {
           mode: "diagnostic",
           isFunnelMode: true,
         });
+        // Kick off first question generation in the background so the QA page
+        // receives an assistant_message immediately after the ready event.
+        sendFirstFunnelQuestion(socket, session);
         return;
       }
 

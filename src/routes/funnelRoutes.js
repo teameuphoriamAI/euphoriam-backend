@@ -76,4 +76,10 @@ router.get("/report/:diagnosticId", asyncHandler(funnelController.getReport));
 // Returns the list of completed IRL diagnostics for the current funnel user (hub "Your Reports").
 router.get("/diagnostics", asyncHandler(funnelController.getMyDiagnostics));
 
+// GET /api/funnel/chats — funnel Q&A sessions for sidebar history
+router.get("/chats", asyncHandler(funnelController.getMyFunnelChats));
+
+// GET /api/funnel/chat/:chatId — read-only transcript
+router.get("/chat/:chatId", asyncHandler(funnelController.getFunnelChatTranscript));
+
 module.exports = router;

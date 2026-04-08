@@ -886,14 +886,15 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
           }
 
           const chatType =
-            session.mode === "discovery" ? "discovery" : "dignostic";
+            session.mode === "discovery" ? "Discovery" : "Diagnostic";
           await saveChatIncrementally({
             userId: appUser.id,
             diagnosticId: session.existingDiagnostic?.id || null,
             discoveryId: null,
-            chatType: chatType,
+            chatType,
             transcript: session.transcript,
             isChatEnded: false,
+            existingChatId: session.isFunnelMode ? session.funnel_chat_id : null,
           });
         } catch (err) {
           console.error("[socket] Error saving chat incrementally:", err);

@@ -1,4 +1,4 @@
-const { Op } = require("sequelize");
+const { Op, Sequelize } = require("sequelize");
 const crypto = require("crypto");
 const Joi = require("joi");
 const { FunnelAccess } = require("../models/funnelAccessModel");
@@ -512,23 +512,33 @@ const completeDiagnostic = async ({
   // Generate PDF
   let pdfUrl = null;
   let pdfLocalPath = null;
+  let pdfUpload = null;
   try {
     pdfLocalPath = await generateIrlReportPdf(diagnostic);
     if (pdfLocalPath) {
       const buffer = await fs.promises.readFile(pdfLocalPath);
-      const upload = await uploadBufferToSupabase({
+      pdfUpload = await uploadBufferToSupabase({
         buffer,
         objectPath: `funnel-reports/irl-${diagnostic.id}-${Date.now()}.pdf`,
         contentType: "application/pdf",
       });
-      pdfUrl = upload?.url || null;
-      await withDbSlot(() =>
-        diagnostic.update({ data: { ...diagnostic.data, pdf: upload, pdfUrl } })
-      );
+      pdfUrl = pdfUpload?.url || null;
     }
   } catch (pdfErr) {
     console.error("[funnel] PDF generation failed:", pdfErr.message);
   }
+
+  // Persist PDF URLs on both JSON `data` and top-level `pdfUrl` (hub + paid-style queries)
+  await withDbSlot(() =>
+    diagnostic.update({
+      chatId: chat_id || diagnostic.chatId,
+      pdfUrl: pdfUrl || diagnostic.pdfUrl,
+      data: {
+        ...diagnostic.data,
+        ...(pdfUpload ? { pdf: pdfUpload, pdfUrl } : {}),
+      },
+    })
+  );
 
   // Send report email (attach local PDF if available)
   try {
@@ -552,16 +562,28 @@ const completeDiagnostic = async ({
     })
   );
 
-  // Mark chat as ended
+  // Mark chat as ended — merge `data` so transcript / funnel_access_id are preserved
   if (chat_id) {
     try {
-      await withDbSlot(() =>
-        Chat.update(
-          { isChatEnded: true, data: { funnelMode: true, endedAt: new Date().toISOString() } },
-          { where: { id: chat_id } }
-        )
-      );
-    } catch {}
+      await withDbSlot(async () => {
+        const ch = await Chat.findByPk(chat_id);
+        if (!ch) return;
+        await ch.update({
+          isChatEnded: true,
+          dignosticId: diagnostic.id,
+          data: {
+            ...(ch.data || {}),
+            funnelMode: true,
+            funnel_access_id: ch.data?.funnel_access_id || funnel_access_id,
+            endedAt: new Date().toISOString(),
+            diagnostic_id: String(diagnostic.id),
+            pdfUrl: pdfUrl || ch.data?.pdfUrl || null,
+          },
+        });
+      });
+    } catch (e) {
+      console.error("[funnel] Chat end update failed:", e.message);
+    }
   }
 
   return {
@@ -768,19 +790,107 @@ const getMyDiagnostics = async (req, res) => {
         report_type: "invisible_red_line",
       },
       order: [["createdAt", "DESC"]],
-      attributes: ["id", "createdAt", "data"],
+      attributes: ["id", "createdAt", "data", "pdfUrl", "chatId"],
     })
   );
 
   const list = diagnostics.map((d) => ({
     id: d.id,
     created_at: d.createdAt,
-    pdf_url: d.data?.pdfUrl || d.data?.pdf?.url || null,
+    pdf_url: d.pdfUrl || d.data?.pdfUrl || d.data?.pdf?.url || null,
     structure_type: d.data?.structuredPacket?.diagnostic_packet?.structure_type || null,
     domain_primary: d.data?.structuredPacket?.diagnostic_packet?.domain_primary || null,
   }));
 
   return successResponse(res, "Diagnostics retrieved", { diagnostics: list });
+};
+
+/**
+ * GET /api/funnel/chats
+ * Funnel Q&A sessions for this access token (sidebar history).
+ */
+const getMyFunnelChats = async (req, res) => {
+  const token = extractToken(req) || req.query.token;
+
+  let record;
+  try {
+    ({ record } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  const accessId = String(record.id);
+  const chats = await withDbSlot(() =>
+    Chat.findAll({
+      where: Sequelize.where(
+        Sequelize.fn("jsonb_extract_path_text", Sequelize.col("data"), "funnel_access_id"),
+        accessId
+      ),
+      order: [["createdAt", "DESC"]],
+      limit: 25,
+      attributes: ["id", "createdAt", "updatedAt", "isChatEnded", "dignosticId", "data"],
+    })
+  );
+
+  const list = chats.map((c) => ({
+    id: c.id,
+    created_at: c.createdAt,
+    updated_at: c.updatedAt,
+    ended: Boolean(c.isChatEnded),
+    diagnostic_id: c.dignosticId || (c.data?.diagnostic_id ? Number(c.data.diagnostic_id) : null),
+    message_count: Array.isArray(c.data?.transcript) ? c.data.transcript.length : 0,
+  }));
+
+  return successResponse(res, "Chats retrieved", { chats: list });
+};
+
+/**
+ * GET /api/funnel/chat/:chatId
+ * Read-only transcript for one funnel chat (token must own the session).
+ */
+const getFunnelChatTranscript = async (req, res) => {
+  const token = extractToken(req) || req.query.token;
+  const chatId = req.params.chatId;
+
+  let record;
+  try {
+    ({ record } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  if (!chatId) {
+    return errorResponse(res, "chatId is required", 400);
+  }
+
+  const chat = await withDbSlot(() => Chat.findByPk(chatId));
+  if (!chat) {
+    return errorResponse(res, "Chat not found", 404);
+  }
+
+  const chatAccessId = chat.data?.funnel_access_id;
+  if (String(chatAccessId) !== String(record.id)) {
+    return errorResponse(res, "Access denied", 403);
+  }
+
+  const transcript = Array.isArray(chat.data?.transcript) ? chat.data.transcript : [];
+
+  return successResponse(res, "Chat transcript", {
+    id: chat.id,
+    created_at: chat.createdAt,
+    ended: Boolean(chat.isChatEnded),
+    diagnostic_id: chat.dignosticId || null,
+    transcript: transcript.map((m) => {
+      const c = m?.content;
+      const text =
+        typeof c === "string"
+          ? c
+          : c && typeof c === "object" && typeof c.content === "string"
+            ? c.content
+            : "";
+      return { role: m.role, content: text };
+    }),
+  });
 };
 
 module.exports = {
@@ -793,4 +903,6 @@ module.exports = {
   resendReport,
   getReport,
   getMyDiagnostics,
+  getMyFunnelChats,
+  getFunnelChatTranscript,
 };

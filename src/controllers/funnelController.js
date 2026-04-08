@@ -746,6 +746,43 @@ const getReport = async (req, res) => {
   });
 };
 
+/**
+ * GET /api/funnel/diagnostics
+ * Returns the list of completed IRL diagnostics for the current funnel user.
+ * Used by the funnel hub page to show "Your Reports".
+ */
+const getMyDiagnostics = async (req, res) => {
+  const token = extractToken(req) || req.query.token;
+
+  let record, decoded;
+  try {
+    ({ record, decoded } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  const diagnostics = await withDbSlot(() =>
+    Diagnostic.findAll({
+      where: {
+        funnel_access_id: record.id,
+        report_type: "invisible_red_line",
+      },
+      order: [["createdAt", "DESC"]],
+      attributes: ["id", "createdAt", "data"],
+    })
+  );
+
+  const list = diagnostics.map((d) => ({
+    id: d.id,
+    created_at: d.createdAt,
+    pdf_url: d.data?.pdfUrl || d.data?.pdf?.url || null,
+    structure_type: d.data?.structuredPacket?.diagnostic_packet?.structure_type || null,
+    domain_primary: d.data?.structuredPacket?.diagnostic_packet?.domain_primary || null,
+  }));
+
+  return successResponse(res, "Diagnostics retrieved", { diagnostics: list });
+};
+
 module.exports = {
   createToken,
   validateToken,
@@ -755,4 +792,5 @@ module.exports = {
   getExpiredMessage,
   resendReport,
   getReport,
+  getMyDiagnostics,
 };

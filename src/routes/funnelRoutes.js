@@ -72,4 +72,8 @@ router.post("/resend-report", asyncHandler(funnelController.resendReport));
 // Never exposes prompts, structured packets, or transcript data.
 router.get("/report/:diagnosticId", asyncHandler(funnelController.getReport));
 
+// GET /api/funnel/diagnostics
+// Returns the list of completed IRL diagnostics for the current funnel user (hub "Your Reports").
+router.get("/diagnostics", asyncHandler(funnelController.getMyDiagnostics));
+
 module.exports = router;

@@ -21,6 +21,7 @@ const { irlReportEmail } = require("../utils/emailTemplate/irlReportEmail");
 const { funnelAccessEmail } = require("../utils/emailTemplate/funnelAccessEmail");
 const { generateIrlReportPdf } = require("../utils/irlPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
+const { normalizeFunnelTranscriptRowsFromChatData } = require("../utils/funnelTranscriptNormalize");
 const fs = require("fs");
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -369,20 +370,40 @@ const startDiagnostic = async (req, res) => {
     );
   }
 
-  // Create a Chat record for this funnel session
-  const chat = await withDbSlot(() =>
-    Chat.create({
-      userId: user.id,
-      chatType: "Diagnostic",
-      data: {
-        funnelMode: true,
-        funnel_access_id: record.id,
-        report_type: "invisible_red_line",
-        startedAt: new Date().toISOString(),
-      },
-      isChatEnded: false,
-    })
+  const accessIdStr = String(record.id);
+
+  const funnelChatLiteral = sequelize.literal(
+    `("Chat"."data"->>'funnel_access_id') = ${sequelize.escape(accessIdStr)} AND (("Chat"."data"->>'funnelMode') = 'true' OR ("Chat"."data"->>'report_type') = ${sequelize.escape("invisible_red_line")})`,
   );
+
+  // Reuse an in-progress funnel Q&A for this access + user so refresh / re-entry via
+  // /start does not abandon the current session or spawn duplicate chats.
+  const existingIncomplete = await withDbSlot(() =>
+    Chat.findOne({
+      where: {
+        userId: user.id,
+        isChatEnded: false,
+        [Op.and]: funnelChatLiteral,
+      },
+      order: [["updatedAt", "DESC"]],
+    }),
+  );
+
+  const chat =
+    existingIncomplete ||
+    (await withDbSlot(() =>
+      Chat.create({
+        userId: user.id,
+        chatType: "Diagnostic",
+        data: {
+          funnelMode: true,
+          funnel_access_id: record.id,
+          report_type: "invisible_red_line",
+          startedAt: new Date().toISOString(),
+        },
+        isChatEnded: false,
+      }),
+    ));
 
   // Issue a short-lived session token for the Socket.IO connection
   const sessionToken = generateFunnelSessionToken({
@@ -863,41 +884,138 @@ const getMyDiagnostics = async (req, res) => {
 
 /**
  * GET /api/funnel/chats
- * Funnel Q&A sessions for this access token (sidebar history).
+ * Sidebar history: load chats by userId (same idea as paid getChatHistory), keep funnel IRL rows for
+ * this access only, and omit open sessions with no persisted transcript (avoids startDiagnostic stubs).
  */
 const getMyFunnelChats = async (req, res) => {
   const token = extractToken(req) || req.query.token;
 
   let record;
+  let decoded;
   try {
-    ({ record } = await resolveToken(token));
+    ({ record, decoded } = await resolveToken(token));
   } catch (err) {
     return errorResponse(res, err.message, err.status || 401);
   }
 
+  const user = await withDbSlot(() => User.findOne({ where: { email: decoded.email } }));
+  if (!user) {
+    return successResponse(res, "Chats retrieved", { chats: [] });
+  }
+
   const accessId = String(record.id);
-  // Raw JSONB match — Sequelize.fn(jsonb_extract_path_text, …) is unreliable across PG/aliases
-  const chats = await withDbSlot(() =>
+
+  const allChats = await withDbSlot(() =>
     Chat.findAll({
-      where: sequelize.literal(
-        `("chat"."data"->>'funnel_access_id') = ${sequelize.escape(accessId)}`
-      ),
+      where: { userId: user.id },
       order: [["createdAt", "DESC"]],
-      limit: 25,
-      attributes: ["id", "createdAt", "updatedAt", "isChatEnded", "dignosticId", "data"],
-    })
+      limit: 100,
+      attributes: [
+        "id",
+        "userId",
+        "dignosticId",
+        "discoveryId",
+        "chatType",
+        "isChatEnded",
+        "data",
+        "createdAt",
+        "updatedAt",
+      ],
+    }),
   );
 
-  const list = chats.map((c) => ({
+  const funnelForAccess = allChats.filter((c) => {
+    const d = c.data || {};
+    const funnelModeOn = d.funnelMode === true || d.funnelMode === "true";
+    const irl = d.report_type === "invisible_red_line";
+    if (!(funnelModeOn || irl)) return false;
+    return String(d.funnel_access_id ?? "") === accessId;
+  });
+
+  const withSidebarTranscript = funnelForAccess.filter((c) => {
+    const msgCount = normalizeFunnelTranscriptRowsFromChatData(c.data || {}).length;
+    if (msgCount > 0) return true;
+    if (c.isChatEnded) return true;
+    return false;
+  });
+
+  const incomplete = withSidebarTranscript.filter((c) => !c.isChatEnded);
+  const complete = withSidebarTranscript.filter((c) => c.isChatEnded);
+  incomplete.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  complete.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  // At most one open thread per access (legacy duplicates collapse to the latest).
+  const deduped = [...(incomplete.length ? [incomplete[0]] : []), ...complete].slice(0, 25);
+
+  const list = deduped.map((c) => ({
     id: c.id,
     created_at: c.createdAt,
     updated_at: c.updatedAt,
     ended: Boolean(c.isChatEnded),
     diagnostic_id: c.dignosticId || (c.data?.diagnostic_id ? Number(c.data.diagnostic_id) : null),
-    message_count: Array.isArray(c.data?.transcript) ? c.data.transcript.length : 0,
+    message_count: normalizeFunnelTranscriptRowsFromChatData(c.data || {}).length,
   }));
 
   return successResponse(res, "Chats retrieved", { chats: list });
+};
+
+/**
+ * POST /api/funnel/socket-session
+ * Issue a short-lived funnel_session JWT for an existing in-progress chat so the
+ * client can reconnect Socket.IO and continue Q&A (same chat_id as paid flow pattern).
+ */
+const issueFunnelSocketSession = async (req, res) => {
+  const token = extractToken(req);
+  const rawId = req.body?.chat_id ?? req.body?.chatId;
+  const chatId = rawId != null ? parseInt(String(rawId), 10) : NaN;
+
+  if (!token) {
+    return errorResponse(res, "Token is required", 401);
+  }
+  if (!Number.isFinite(chatId)) {
+    return errorResponse(res, "chat_id is required", 400);
+  }
+
+  let record;
+  let decoded;
+  try {
+    ({ record, decoded } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  const user = await withDbSlot(() => User.findOne({ where: { email: decoded.email } }));
+  if (!user) {
+    return errorResponse(res, "User not found", 404);
+  }
+
+  const chat = await withDbSlot(() => Chat.findByPk(chatId));
+  if (!chat) {
+    return errorResponse(res, "Chat not found", 404);
+  }
+  if (chat.userId !== user.id) {
+    return errorResponse(res, "Access denied", 403);
+  }
+  const d = chat.data || {};
+  if (String(d.funnel_access_id) !== String(record.id)) {
+    return errorResponse(res, "Access denied", 403);
+  }
+  if (d.funnelMode !== true && d.report_type !== "invisible_red_line") {
+    return errorResponse(res, "Not a funnel diagnostic chat", 403);
+  }
+  if (chat.isChatEnded) {
+    return errorResponse(res, "This Q&A session is already complete. Open the report from Past Reports.", 400);
+  }
+
+  const sessionToken = generateFunnelSessionToken({
+    email: decoded.email,
+    funnel_access_id: record.id,
+    chat_id: chat.id,
+  });
+
+  return successResponse(res, "Socket session issued", {
+    session_token: sessionToken,
+    chat_id: chat.id,
+  });
 };
 
 /**
@@ -909,8 +1027,9 @@ const getFunnelChatTranscript = async (req, res) => {
   const chatId = req.params.chatId;
 
   let record;
+  let decoded;
   try {
-    ({ record } = await resolveToken(token));
+    ({ record, decoded } = await resolveToken(token));
   } catch (err) {
     return errorResponse(res, err.message, err.status || 401);
   }
@@ -919,9 +1038,18 @@ const getFunnelChatTranscript = async (req, res) => {
     return errorResponse(res, "chatId is required", 400);
   }
 
+  const user = await withDbSlot(() => User.findOne({ where: { email: decoded.email } }));
+  if (!user) {
+    return errorResponse(res, "User not found", 404);
+  }
+
   const chat = await withDbSlot(() => Chat.findByPk(chatId));
   if (!chat) {
     return errorResponse(res, "Chat not found", 404);
+  }
+
+  if (chat.userId !== user.id) {
+    return errorResponse(res, "Access denied", 403);
   }
 
   const chatAccessId = chat.data?.funnel_access_id;
@@ -929,23 +1057,14 @@ const getFunnelChatTranscript = async (req, res) => {
     return errorResponse(res, "Access denied", 403);
   }
 
-  const transcript = Array.isArray(chat.data?.transcript) ? chat.data.transcript : [];
+  const transcript = normalizeFunnelTranscriptRowsFromChatData(chat.data || {});
 
   return successResponse(res, "Chat transcript", {
     id: chat.id,
     created_at: chat.createdAt,
     ended: Boolean(chat.isChatEnded),
     diagnostic_id: chat.dignosticId || null,
-    transcript: transcript.map((m) => {
-      const c = m?.content;
-      const text =
-        typeof c === "string"
-          ? c
-          : c && typeof c === "object" && typeof c.content === "string"
-            ? c.content
-            : "";
-      return { role: m.role, content: text };
-    }),
+    transcript,
   });
 };
 
@@ -962,4 +1081,5 @@ module.exports = {
   getMyDiagnostics,
   getMyFunnelChats,
   getFunnelChatTranscript,
+  issueFunnelSocketSession,
 };

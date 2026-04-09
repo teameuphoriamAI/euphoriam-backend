@@ -10,6 +10,7 @@ const {
   getLatestPromptFromDb,
   buildChatPrompts,
   isAiLikelyAnswer,
+  isLikelyGibberishMessage,
 } = require("../helpers/euphoriamChatbot");
 const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
 const { PromptType } = require("../utils/types");
@@ -18,8 +19,8 @@ const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
   persistDiscoveryRecord,
   truncateForContext,
-  saveChatIncrementally,
 } = require("../controllers/diagnosticController");
+const { saveChatIncrementally } = require("../controllers/chatController");
 const openai = require("../config/openai");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
@@ -34,6 +35,13 @@ const {
 } = require("../utils/emailTemplate/initialDiscoveryReport");
 const { detectDiscoveryEndIntents } = require("../utils/validation");
 const { verifyFunnelSessionToken } = require("../utils/funnelToken");
+const {
+  stripFunnelCompleteTag,
+  normalizeFunnelTranscriptRowsFromChatData,
+  flattenTranscriptMessagesForPersist,
+  normalizeFunnelStoredContent,
+  normalizeFunnelStoredRole,
+} = require("../utils/funnelTranscriptNormalize");
 const { completeDiagnostic: completeFunnelDiagnostic } = require("../controllers/funnelController");
 const { guardMessage } = require("../helpers/promptInjectionGuard");
 const { isQuestionRateLimited } = require("../middleware/funnelRateLimit");
@@ -66,6 +74,141 @@ const isAnswerLike = (text = "") => {
 const extractQuestionNumber = (text = "") => {
   const match = (text || "").match(/Q\s*(\d{1,2})/i);
   return match ? Number(match[1]) : null;
+};
+
+const FUNNEL_INTAKE_COMPLETE_RE = /\[FUNNEL_INTAKE_COMPLETE\]/i;
+
+const maxQuestionNumberInText = (text = "") => {
+  let max = 0;
+  const re = /Q\s*(\d{1,2})/gi;
+  const s = String(text || "");
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 99) max = Math.max(max, n);
+  }
+  return max;
+};
+
+const maxCoreQuestionFromTranscript = (transcript, cap = 25) => {
+  let max = 0;
+  for (const m of transcript || []) {
+    if (m?.role !== "assistant" || !m.content) continue;
+    const n = maxQuestionNumberInText(m.content);
+    max = Math.max(max, Math.min(n, cap));
+  }
+  return max;
+};
+
+const funnelReadyToFinalizeHeuristic = (assistantContent = "") => {
+  const c = String(assistantContent || "");
+  if (FUNNEL_INTAKE_COMPLETE_RE.test(c)) return true;
+  return /\b(that'?s all|all\s+25\s+questions|we('?ve| have)\s+covered\s+all\s+25|completed\s+all\s+25|ready\s+for\s+your\s+(personalised\s+)?report)\b/i.test(
+    c,
+  );
+};
+
+const buildFunnelSystemPromptAppend = (targetCount) => `
+=== FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===
+- Work through Q1 to Q${targetCount} in order. Do not skip or merge numbered questions.
+- If a reply is unclear, gibberish, or off-topic, re-ask the SAME Q number with fresh wording — never advance until you have a real answer.
+- When and only when the user has given a substantive answer to Q${targetCount} and no further clarification is needed to finish the intake, end your reply with a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
+- Do NOT output [FUNNEL_INTAKE_COMPLETE] before Q${targetCount} is fully answered, during re-asks, or while clarifying — only when the full intake is truly finished.`;
+
+const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => {
+  const t = session.transcript;
+  const cap = session.targetCount || 25;
+  let maxQ = maxCoreQuestionFromTranscript(t, cap);
+  const hasAssistant = t.some((m) => m.role === "assistant");
+  if (maxQ === 0 && hasAssistant) maxQ = 1;
+  const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  const readyToFinalize = maxQ >= cap && funnelReadyToFinalizeHeuristic(latestAssistantContentRaw);
+  return {
+    asked: maxQ,
+    answered,
+    total: cap,
+    readyToFinalize,
+  };
+};
+
+/**
+ * Force OpenAI-shaped messages into { role, content } strings so JSONB + flatten persist reliably.
+ */
+const coerceFunnelMessageForSession = (msg, defaultRole = "assistant") => {
+  if (!msg || typeof msg !== "object") return null;
+  let role = normalizeFunnelStoredRole(msg);
+  if (!role) {
+    const dr = String(defaultRole || "").toLowerCase();
+    if (dr === "user") role = "user";
+    else if (dr === "assistant") role = "assistant";
+  }
+  if (role !== "assistant" && role !== "user") return null;
+  let content = normalizeFunnelStoredContent(msg);
+  if (!content && typeof msg.refusal === "string") content = msg.refusal.trim();
+  if (!content) return null;
+  content = stripFunnelCompleteTag(content);
+  if (!content) return null;
+  return { role, content };
+};
+
+/** Persist funnel thread to Chat row (existingChatId = funnel chat id). Best-effort; does not throw. */
+const persistFunnelChatTranscript = async (session) => {
+  if (!session?.isFunnelMode || !session?.funnel_chat_id || !session?.email) return;
+  if (!Array.isArray(session.transcript) || session.transcript.length === 0) return;
+  const toSave = flattenTranscriptMessagesForPersist(session.transcript);
+  if (toSave.length === 0) {
+    console.warn(
+      "[funnel socket] persist skipped: flatten produced 0 rows (in-memory transcript length=%s)",
+      session.transcript.length,
+    );
+    return;
+  }
+  try {
+    const userName = session.email.split("@")[0] || "User";
+    let appUser = await User.findOne({ where: { email: session.email } });
+    if (!appUser) {
+      appUser = await User.create({ email: session.email, name: userName });
+    }
+    const chatType = session.mode === "discovery" ? "Discovery" : "Diagnostic";
+    await saveChatIncrementally({
+      userId: appUser.id,
+      diagnosticId: session.existingDiagnostic?.id || null,
+      discoveryId: null,
+      chatType,
+      transcript: toSave,
+      isChatEnded: false,
+      existingChatId: session.funnel_chat_id,
+    });
+  } catch (err) {
+    console.error("[funnel socket] persist transcript failed:", err);
+  }
+};
+
+/**
+ * Reload funnel Chat transcript into the socket session after refresh (same funnel_chat_id).
+ */
+const tryRestoreFunnelTranscript = async (socket, session) => {
+  if (!session.funnel_chat_id) return false;
+  try {
+    const chat = await Chat.findByPk(session.funnel_chat_id, { attributes: ["id", "data"] });
+    const rows = normalizeFunnelTranscriptRowsFromChatData(chat?.data || {});
+    if (rows.length === 0) return false;
+    session.transcript = rows.map((r) => ({ role: r.role, content: r.content }));
+    const lastAssistant = [...rows].reverse().find((m) => m.role === "assistant");
+    const progress = buildFunnelProgressPayload(session, lastAssistant?.content || "");
+    socket.emit("session_restored", {
+      messages: rows.map((m, i) => ({
+        id: `r-${session.funnel_chat_id}-${i}`,
+        role: m.role,
+        content: m.content,
+      })),
+      progress,
+    });
+    return true;
+  } catch (err) {
+    console.error("[funnel socket] restore transcript failed:", err);
+    return false;
+  }
 };
 
 /* -------------------- Session Store -------------------- */
@@ -391,32 +534,43 @@ const sendFirstFunnelQuestion = async (socket, session) => {
       return;
     }
 
+    const systemWithFunnel = `${systemPrompt}\n\n${buildFunnelSystemPromptAppend(session.targetCount)}`;
+
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: systemWithFunnel },
         { role: "user", content: chatPrompt },
       ],
       temperature: 0.3,
       max_completion_tokens: 400,
     });
 
-    const msg = aiResponse.choices[0]?.message;
-    if (!msg?.content) {
+    const raw = aiResponse.choices[0]?.message;
+    const rawText =
+      typeof raw?.content === "string"
+        ? raw.content
+        : raw
+          ? normalizeFunnelStoredContent(raw) || ""
+          : "";
+    if (!rawText?.trim()) {
       socket.emit("error", { message: "Failed to generate first question. Please refresh and try again." });
       return;
     }
 
-    session.transcript.push(msg);
+    const coerced = coerceFunnelMessageForSession({ ...raw, content: rawText }, "assistant");
+    if (!coerced) {
+      socket.emit("error", { message: "Failed to generate first question. Please refresh and try again." });
+      return;
+    }
+    session.transcript.push(coerced);
 
     socket.emit("assistant_message", {
-      message: msg,
-      progress: {
-        asked: 1,
-        answered: 0,
-        total: session.targetCount,
-      },
+      message: coerced,
+      progress: buildFunnelProgressPayload(session, rawText),
     });
+
+    await persistFunnelChatTranscript(session);
   } catch (err) {
     console.error("[funnel socket] sendFirstFunnelQuestion error:", err);
     socket.emit("error", {
@@ -482,17 +636,27 @@ const wireChatbotFreeform = (io) => {
         session.isFunnelMode = true;
         session.email = decoded.email;
         session.funnel_access_id = decoded.funnel_access_id;
-        session.funnel_chat_id = decoded.chat_id;
+        const parsedChatId =
+          decoded.chat_id != null ? parseInt(String(decoded.chat_id), 10) : NaN;
+        if (!Number.isFinite(parsedChatId)) {
+          socket.emit("error", {
+            message: "Invalid funnel session (missing chat). Please go back and open your session again.",
+          });
+          return;
+        }
+        session.funnel_chat_id = parsedChatId;
         session.mode = "diagnostic"; // always diagnostic, never discovery
+        const restored = await tryRestoreFunnelTranscript(socket, session);
         socket.emit("ready", {
           sessionId: socket.id,
           hasExistingReport: false,
           mode: "diagnostic",
           isFunnelMode: true,
+          restored,
         });
-        // Kick off first question generation in the background so the QA page
-        // receives an assistant_message immediately after the ready event.
-        sendFirstFunnelQuestion(socket, session);
+        if (!restored) {
+          await sendFirstFunnelQuestion(socket, session);
+        }
         return;
       }
 
@@ -566,7 +730,7 @@ const wireChatbotFreeform = (io) => {
               role: "assistant",
               content: "You're submitting answers too quickly. Please slow down and take your time.",
             },
-            progress: { asked: 0, answered: 0, total: session.targetCount },
+            progress: buildFunnelProgressPayload(session, ""),
           });
           return;
         }
@@ -576,7 +740,7 @@ const wireChatbotFreeform = (io) => {
         if (injectionCheck.blocked) {
           socket.emit("assistant_message", {
             message: { role: "assistant", content: injectionCheck.response },
-            progress: { asked: 0, answered: 0, total: session.targetCount },
+            progress: buildFunnelProgressPayload(session, ""),
           });
           return;
         }
@@ -593,7 +757,7 @@ const wireChatbotFreeform = (io) => {
               role: "assistant",
               content: "Your free access is for the initial diagnostic only. To continue your journey and get ongoing coaching support, the next step is Unlimited Creator.",
             },
-            progress: { asked: 0, answered: 0, total: session.targetCount },
+            progress: buildFunnelProgressPayload(session, ""),
           });
           return;
         }
@@ -700,10 +864,22 @@ const wireChatbotFreeform = (io) => {
           .reverse()
           .find((m) => m?.role === "assistant");
         if (lastAssistant?.content) {
-          aiAnswered = await isAiLikelyAnswer({
-            question: lastAssistant.content,
-            reply: content,
-          });
+          let funnelGibberish = false;
+          if (session.isFunnelMode) {
+            try {
+              funnelGibberish = await isLikelyGibberishMessage(content);
+            } catch (_) {
+              funnelGibberish = false;
+            }
+          }
+          if (funnelGibberish) {
+            aiAnswered = false;
+          } else {
+            aiAnswered = await isAiLikelyAnswer({
+              question: lastAssistant.content,
+              reply: content,
+            });
+          }
           if (!aiAnswered) lastQuestionNumForEnforcement = extractQuestionNumber(lastAssistant.content);
         }
       }
@@ -802,10 +978,14 @@ const wireChatbotFreeform = (io) => {
         return;
       }
 
+      const finalSystemPrompt = session.isFunnelMode
+        ? `${safeSystemPrompt}\n\n${buildFunnelSystemPromptAppend(session.targetCount)}`
+        : safeSystemPrompt;
+
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: safeSystemPrompt },
+          { role: "system", content: finalSystemPrompt },
           ...validTranscriptMessages,
           {
             role: "user",
@@ -870,12 +1050,31 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
           .trim();
       }
 
+      let rawAssistantContent = "";
+      if (session.isFunnelMode) {
+        rawAssistantContent =
+          typeof msg?.content === "string"
+            ? msg.content
+            : normalizeFunnelStoredContent(msg) || String(msg?.content ?? "");
+        const coerced = coerceFunnelMessageForSession(msg, "assistant");
+        if (!coerced) {
+          console.error("[funnel socket] Could not coerce assistant message", {
+            contentType: msg?.content != null ? typeof msg.content : null,
+          });
+          socket.emit("error", {
+            message: "Failed to process assistant reply. Please try again.",
+          });
+          return;
+        }
+        msg = coerced;
+      }
+
       session.transcript.push(msg);
 
-      // Save chat incrementally to database (for chat history)
-      if (session.email && session.transcript.length > 0) {
+      if (session.isFunnelMode) {
+        await persistFunnelChatTranscript(session);
+      } else if (session.email && session.transcript.length > 0) {
         try {
-          // Find or create user
           const userName = session.email?.split("@")[0] || "User";
           let appUser = await User.findOne({ where: { email: session.email } });
           if (!appUser) {
@@ -894,24 +1093,26 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
             chatType,
             transcript: session.transcript,
             isChatEnded: false,
-            existingChatId: session.isFunnelMode ? session.funnel_chat_id : null,
+            existingChatId: null,
           });
         } catch (err) {
           console.error("[socket] Error saving chat incrementally:", err);
-          // Don't break the flow if saving fails
         }
       }
 
+      const progressPayload = session.isFunnelMode
+        ? buildFunnelProgressPayload(session, rawAssistantContent)
+        : {
+            asked: session.transcript.filter((m) => m.role === "assistant").length,
+            answered: session.transcript.filter(
+              (m) => m.role === "user" && isAnswerLike(m.content),
+            ).length,
+            total: session.targetCount,
+          };
+
       socket.emit("assistant_message", {
         message: msg,
-        progress: {
-          asked: session.transcript.filter((m) => m.role === "assistant")
-            .length,
-          answered: session.transcript.filter(
-            (m) => m.role === "user" && isAnswerLike(m.content),
-          ).length,
-          total: session.targetCount,
-        },
+        progress: progressPayload,
       });
     });
 
@@ -925,6 +1126,14 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
 
       // ── FUNNEL FINALIZE (IRL Report flow) ──────────────────────────────────
       if (session.isFunnelMode) {
+        const maxQ = maxCoreQuestionFromTranscript(session.transcript, session.targetCount);
+        if (maxQ < session.targetCount) {
+          socket.emit("error", {
+            message: `Please complete all ${session.targetCount} diagnostic questions before generating your report. (You are on Q${maxQ} of ${session.targetCount}.)`,
+          });
+          return;
+        }
+
         socket.emit("status", {
           stage: "generating_report",
           message: "Generating your Invisible Red Line Report...",

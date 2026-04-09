@@ -37,6 +37,10 @@ router.post("/validate-token", asyncHandler(funnelController.validateToken));
 // Called when user clicks "Start Diagnostic". Returns session token for Socket.IO.
 router.post("/start-diagnostic", asyncHandler(funnelController.startDiagnostic));
 
+// POST /api/funnel/socket-session
+// Issue a socket JWT for an existing in-progress funnel chat (sidebar "open thread").
+router.post("/socket-session", asyncHandler(funnelController.issueFunnelSocketSession));
+
 // POST /api/funnel/complete-diagnostic
 // Internal route called by socket finalize flow. Not exposed to the public frontend directly.
 router.post("/complete-diagnostic", asyncHandler(async (req, res) => {

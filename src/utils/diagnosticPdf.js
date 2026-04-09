@@ -2163,36 +2163,166 @@ const generateDiagnosticPdf = (diagnostic) =>
 // Completely separate from the existing full-report PDF path.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Fancy * / dashes from models (incl. fullwidth) — normalize before **…** parsing
+const IRL_UNICODE_ASTERISK = /[\u2217\u204E\u066D\u273B\u29EB\uFE61\uFF0A]/g;
+// 3+ dash-like / rule / underscore chars (prompt mimics "----…----", box-drawing HRs, ---)
+const IRL_MD_DASH_OR_RULE_RUN = /[-–—―‾﹘﹣－━─═┄┅_\u2500-\u257F]{3,}/g;
+
+const preNormalizeIrlReportSource = (raw) =>
+  String(raw || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, "")
+    .replace(IRL_UNICODE_ASTERISK, "*");
+
+/** True when the whole trimmed line is only “divider” punctuation (no real words). */
+const isIrlDecorativeDividerLine = (trimmed) => {
+  const t = trimmed.trim();
+  if (t.length < 3) return false;
+  const noSpace = t.replace(/\s/g, "");
+  if (noSpace.length < 3) return false;
+  return /^[.\-–—―═_*‧·•⁃‧┄┅\u2500-\u257F]+$/u.test(noSpace);
+};
+
 /**
- * Strip markdown / layout noise from IRL report text before PDF parsing.
- * Client reports often include ## headings, --- rules, **bold**, and duplicate titles.
+ * Remove markdown noise from plain-text fragments (after **bold** is extracted).
+ */
+const cleanIrlPlainFragment = (s) => {
+  if (!s) return "";
+  return s
+    .replace(/#{1,6}\s*/g, "")
+    .replace(/`+/g, "")
+    .replace(IRL_MD_DASH_OR_RULE_RUN, " ")
+    .replace(/\*{3,}/g, " ")
+    .replace(/\*{1,2}/g, "")
+    .replace(/_{3,}/g, " ")
+    .replace(/_{2,}/g, "")
+    .replace(/_{1,2}([^_\s][^_]*)_{1,2}/g, "$1")
+    .replace(/^\s*[-–—]{2,}\s*$/gm, "")
+    .replace(/\s[-–—]{3,}\s/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+};
+
+/** Last pass on text that will be drawn — guarantees no visible ** or --- leaks. */
+const stripResidualIrlMdForPdf = (text) => {
+  if (!text) return "";
+  return text
+    .replace(IRL_MD_DASH_OR_RULE_RUN, " ")
+    .replace(/\*{2,}/g, "")
+    .replace(/_{2,}/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+};
+
+/**
+ * Split a line into { bold, text } segments using **…** (and __…__).
+ * Plain segments are scrubbed of stray markdown characters.
+ */
+const extractIrlBoldSegments = (line) => {
+  if (!line || typeof line !== "string") return [{ bold: false, text: "" }];
+  let s = line
+    .replace(/\r/g, "")
+    .replace(IRL_UNICODE_ASTERISK, "*")
+    .replace(/__([^_]+)__/g, "**$1**");
+  const segments = [];
+  const re = /\*\*([\s\S]*?)\*\*/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) {
+      const plain = cleanIrlPlainFragment(s.slice(last, m.index));
+      if (plain.length) segments.push({ bold: false, text: plain });
+    }
+    const inner = cleanIrlPlainFragment(m[1]);
+    if (inner.length) segments.push({ bold: true, text: inner });
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) {
+    const plain = cleanIrlPlainFragment(s.slice(last));
+    if (plain.length) segments.push({ bold: false, text: plain });
+  }
+  if (segments.length === 0) {
+    const fallback = cleanIrlPlainFragment(s);
+    return [{ bold: false, text: fallback || "" }];
+  }
+  return segments;
+};
+
+/**
+ * Write one paragraph to the PDF with real bold where **…** appeared in source.
+ */
+const writeIrlMixedParagraph = (doc, line, { pageWidth, fontSize, color }) => {
+  const segments = extractIrlBoldSegments(line);
+  const nonEmpty = segments
+    .map((seg) => ({ ...seg, text: stripResidualIrlMdForPdf(seg.text) }))
+    .filter((s) => s.text && s.text.length > 0);
+  if (nonEmpty.length === 0) return;
+  if (nonEmpty.length === 1) {
+    doc
+      .font(nonEmpty[0].bold ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(fontSize)
+      .fillColor(color)
+      .text(nonEmpty[0].text, { width: pageWidth, lineGap: 3 });
+    return;
+  }
+  for (let i = 0; i < nonEmpty.length; i++) {
+    doc
+      .font(nonEmpty[i].bold ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(fontSize)
+      .fillColor(color);
+    doc.text(nonEmpty[i].text, {
+      width: pageWidth,
+      continued: i < nonEmpty.length - 1,
+      lineGap: 3,
+    });
+  }
+};
+
+/** Section title line: show as one bold line, strip markdown chars only */
+const cleanIrlSectionHeadingForPdf = (heading) => {
+  if (!heading) return "";
+  const base = heading.replace(/^#{1,6}\s+/, "").trim();
+  const cleaned = cleanIrlPlainFragment(base);
+  return cleaned || stripResidualIrlMdForPdf(base);
+};
+
+/**
+ * Strip structural markdown from IRL report text before PDF parsing.
+ * Keeps **…** in body lines so writeIrlMixedParagraph can render real bold.
  */
 const normalizeIrlReportTextForPdf = (reportText = "") => {
-  const stripInlineMarkdown = (s) =>
-    s
-      .replace(/\*\*([^*]+)\*\*/g, "$1")
-      .replace(/\*([^*]+)\*/g, "$1")
-      .replace(/`([^`]+)`/g, "$1")
-      .replace(/_{1,2}([^_]+)_{1,2}/g, "$1")
-      .replace(/[ \t]{2,}/g, " ")
-      .trim();
-
-  const lines = reportText.split("\n");
+  const lines = preNormalizeIrlReportSource(reportText).split("\n");
   const out = [];
   let lastWasBlank = false;
 
   for (let rawLine of lines) {
-    let line = rawLine.replace(/\r/g, "").trimEnd();
+    let line = rawLine.trimEnd();
 
-    // Horizontal rules (---, ***)
     const t = line.trim();
-    if (/^[-*_]{3,}\s*$/.test(t)) continue;
+    if (isIrlDecorativeDividerLine(t)) continue;
+
+    // Horizontal rules: ---, *** , - - - , spaced dashes
+    if (/^[-*_][-_*\s]*$/.test(t) && t.replace(/\s/g, "").length >= 3 && /^[-_*]+$/.test(t.replace(/\s/g, ""))) {
+      continue;
+    }
+    if (/^[-–—\s]{3,}$/.test(t)) continue;
 
     // Fake page markers sometimes echoed in model output
     if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(t)) continue;
 
     // Leading markdown headings (# … ######)
     line = line.replace(/^#{1,6}\s+/, "");
+
+    // "1. Title" lines sometimes arrive as "**1. Title**"
+    const trimmedEarly = line.trim();
+    if (/^\d{1,2}\.\s/.test(trimmedEarly)) {
+      line = trimmedEarly
+        .replace(/^\*{1,3}\s+/, "")
+        .replace(/\s\*{1,3}$/, "")
+        .trimEnd();
+    }
 
     if (!line.trim()) {
       if (!lastWasBlank) {
@@ -2213,7 +2343,23 @@ const normalizeIrlReportTextForPdf = (reportText = "") => {
       continue;
     }
 
-    out.push(stripInlineMarkdown(line.trimEnd()));
+    // Collapse inline --- / mimic dividers; keep intentional **…** pairs for mixed bold
+    line = line
+      .replace(IRL_MD_DASH_OR_RULE_RUN, " ")
+      .replace(/_{3,}/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trimEnd();
+
+    if (!line.trim()) {
+      if (!lastWasBlank) {
+        out.push("");
+        lastWasBlank = true;
+      }
+      continue;
+    }
+    lastWasBlank = false;
+
+    out.push(line.trimEnd());
   }
 
   // Collapse 3+ consecutive blank lines to max 1
@@ -2245,7 +2391,7 @@ const parseIrlReportSections = (reportText = "") => {
   let current = null;
 
   for (const rawLine of rawLines) {
-    const line = rawLine.trimEnd();
+    const line = rawLine.replace(/\r/g, "").trimEnd();
 
     // Detect section heading — matches "1. Title", "19. Title", etc.
     const headingMatch = line.match(/^(\d{1,2})\.\s+(.+)/);
@@ -2433,14 +2579,14 @@ const generateIrlReportPdf = async (diagnostic) =>
           doc.addPage();
         }
 
-        // Section heading
+        // Section heading (numbered sections — real PDF bold, no markdown chars)
         if (section.heading) {
           doc.moveDown(0.8);
           doc
             .font("Helvetica-Bold")
             .fontSize(13)
             .fillColor(PURPLE)
-            .text(section.heading, { width: pageWidth, lineGap: 3 });
+            .text(cleanIrlSectionHeadingForPdf(section.heading), { width: pageWidth, lineGap: 3 });
           doc.moveDown(0.3);
         }
 
@@ -2462,45 +2608,59 @@ const generateIrlReportPdf = async (diagnostic) =>
               .font("Helvetica-Bold")
               .fontSize(13)
               .fillColor("#ffffff")
-              .text(entry.text, MARGIN, ctaY + 10, { width: pageWidth, align: "center" });
+              .text(stripResidualIrlMdForPdf(cleanIrlPlainFragment(entry.text)), MARGIN, ctaY + 10, {
+                width: pageWidth,
+                align: "center",
+              });
             doc.y = ctaY + ctaH + 12;
             continue;
           }
 
           if (entry.type === "marker") {
             // 888-prefixed lines — left accent border + tinted background
-            const text = entry.text.replace(/^888\s*/, "").trim();
+            const raw = entry.text.replace(/^888\s*/, "").trim();
             const lineY = doc.y;
-            const approxH = Math.max(20, Math.ceil(text.length / 72) * 14 + 8);
+            const innerW = pageWidth - 14;
+            // Height estimate: bold is wider than regular — use Bold so the box is not clipped
+            const measureText = raw.replace(/\*\*/g, "");
+            doc.font("Helvetica-Bold").fontSize(10.5);
+            const textBlockH = doc.heightOfString(measureText, {
+              width: innerW,
+              lineGap: 2,
+            });
+            const boxH = Math.max(28, textBlockH + 14);
 
             doc
-              .rect(MARGIN, lineY, pageWidth, approxH)
+              .rect(MARGIN, lineY, pageWidth, boxH)
               .fillColor(MARKER_BG)
               .fill();
 
             doc
               .moveTo(MARGIN, lineY)
-              .lineTo(MARGIN, lineY + approxH)
+              .lineTo(MARGIN, lineY + boxH)
               .strokeColor(MARKER_BORDER)
               .lineWidth(3)
               .stroke();
 
-            doc
-              .font("Helvetica-Bold")
-              .fontSize(10.5)
-              .fillColor(DARK)
-              .text(text, MARGIN + 10, lineY + 5, { width: pageWidth - 14, lineGap: 2 });
-
-            doc.y = lineY + approxH + 4;
+            doc.x = MARGIN + 10;
+            doc.y = lineY + 7;
+            writeIrlMixedParagraph(doc, raw, {
+              pageWidth: innerW,
+              fontSize: 10.5,
+              color: DARK,
+            });
+            doc.x = MARGIN;
+            doc.y = lineY + boxH + 6;
             continue;
           }
 
-          // Regular body text
-          doc
-            .font("Helvetica")
-            .fontSize(11)
-            .fillColor(BODY)
-            .text(entry.text, { width: pageWidth, lineGap: 3 });
+          // Regular body: **subheadings** render as Helvetica-Bold; stray markdown removed
+          writeIrlMixedParagraph(doc, entry.text, {
+            pageWidth,
+            fontSize: 11,
+            color: BODY,
+          });
+          doc.x = MARGIN;
         }
       }
 

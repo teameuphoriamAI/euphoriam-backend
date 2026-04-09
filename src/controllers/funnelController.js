@@ -1,4 +1,4 @@
-const { Op, Sequelize } = require("sequelize");
+const { Op } = require("sequelize");
 const crypto = require("crypto");
 const Joi = require("joi");
 const { FunnelAccess } = require("../models/funnelAccessModel");
@@ -7,7 +7,7 @@ const { User } = require("../models/userModel");
 const { Chat } = require("../models/chatModel");
 const { Prompt } = require("../models/promptModel");
 const { IntegrationEvent } = require("../models/integrationEventModel");
-const { withDbSlot } = require("../config/sequelize");
+const { sequelize, withDbSlot } = require("../config/sequelize");
 const { successResponse, errorResponse } = require("../utils/response");
 const {
   generateFunnelToken,
@@ -769,6 +769,62 @@ const getReport = async (req, res) => {
 };
 
 /**
+ * GET /api/funnel/report/:diagnosticId/pdf
+ * Streams a freshly generated IRL PDF to ensure formatting fixes are applied,
+ * even if an older PDF was previously uploaded and cached.
+ */
+const downloadReportPdf = async (req, res) => {
+  const token = extractToken(req) || req.query.token;
+  const { diagnosticId } = req.params;
+
+  if (!diagnosticId) {
+    return errorResponse(res, "diagnosticId is required", 400);
+  }
+
+  let record;
+  try {
+    ({ record } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  const diagnostic = await withDbSlot(() =>
+    Diagnostic.findOne({
+      where: {
+        id: diagnosticId,
+        funnel_access_id: record.id,
+        report_type: "invisible_red_line",
+      },
+    })
+  );
+
+  if (!diagnostic) {
+    return errorResponse(res, "Report not found or access denied", 404);
+  }
+
+  let localPath;
+  try {
+    localPath = await generateIrlReportPdf(diagnostic);
+  } catch (err) {
+    return errorResponse(res, `Failed to generate PDF: ${err.message}`, 500);
+  }
+
+  try {
+    const filenameSafe = `irl-${diagnostic.id}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filenameSafe}"`);
+
+    const stat = fs.statSync(localPath);
+    res.setHeader("Content-Length", String(stat.size));
+
+    // Stream the generated PDF file
+    fs.createReadStream(localPath).pipe(res);
+  } catch (err) {
+    return errorResponse(res, `Failed to stream PDF: ${err.message}`, 500);
+  }
+};
+
+/**
  * GET /api/funnel/diagnostics
  * Returns the list of completed IRL diagnostics for the current funnel user.
  * Used by the funnel hub page to show "Your Reports".
@@ -820,11 +876,11 @@ const getMyFunnelChats = async (req, res) => {
   }
 
   const accessId = String(record.id);
+  // Raw JSONB match — Sequelize.fn(jsonb_extract_path_text, …) is unreliable across PG/aliases
   const chats = await withDbSlot(() =>
     Chat.findAll({
-      where: Sequelize.where(
-        Sequelize.fn("jsonb_extract_path_text", Sequelize.col("data"), "funnel_access_id"),
-        accessId
+      where: sequelize.literal(
+        `("chat"."data"->>'funnel_access_id') = ${sequelize.escape(accessId)}`
       ),
       order: [["createdAt", "DESC"]],
       limit: 25,
@@ -902,6 +958,7 @@ module.exports = {
   getExpiredMessage,
   resendReport,
   getReport,
+  downloadReportPdf,
   getMyDiagnostics,
   getMyFunnelChats,
   getFunnelChatTranscript,

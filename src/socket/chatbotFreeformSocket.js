@@ -108,6 +108,44 @@ const funnelReadyToFinalizeHeuristic = (assistantContent = "") => {
   );
 };
 
+/** True if this assistant bubble references the numbered question `cap` (e.g. 25), any common formatting. */
+const assistantMessageMentionsQuestionCap = (content, cap) => {
+  const re = /Q\s*(\d{1,2})/gi;
+  const s = String(content || "");
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (parseInt(m[1], 10) === cap) return true;
+  }
+  return false;
+};
+
+const lastAssistantIndexMentioningQuestionCap = (transcript, cap) => {
+  const t = transcript || [];
+  for (let i = t.length - 1; i >= 0; i--) {
+    const row = t[i];
+    if (row?.role !== "assistant" || !row.content) continue;
+    if (assistantMessageMentionsQuestionCap(row.content, cap)) return i;
+  }
+  return -1;
+};
+
+/**
+ * Intake is complete only after a substantive user reply following the last assistant turn that mentions Q(cap).
+ * Prevents `answered >= cap` from passing early when an extra user message exists (intro, duplicate, etc.)
+ * while Q25 has just been asked and not yet answered.
+ */
+const funnelIntakeTranscriptComplete = (transcript, cap = 25) => {
+  const t = transcript || [];
+  let maxQ = maxCoreQuestionFromTranscript(t, cap);
+  const hasAssistant = t.some((m) => m.role === "assistant");
+  if (maxQ === 0 && hasAssistant) maxQ = 1;
+  const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  if (answered < cap || maxQ < cap) return false;
+  const capIdx = lastAssistantIndexMentioningQuestionCap(t, cap);
+  if (capIdx < 0) return answered >= cap && maxQ >= cap;
+  return t.slice(capIdx + 1).some((m) => m.role === "user" && isAnswerLike(m.content));
+};
+
 const buildFunnelSystemPromptAppend = (targetCount) => `
 === FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===
 - Work through Q1 to Q${targetCount} in order. Do not skip or merge numbered questions.
@@ -122,12 +160,17 @@ const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => 
   const hasAssistant = t.some((m) => m.role === "assistant");
   if (maxQ === 0 && hasAssistant) maxQ = 1;
   const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
-  const readyToFinalize = maxQ >= cap && funnelReadyToFinalizeHeuristic(latestAssistantContentRaw);
+  // `asked` tracks the highest Q label seen in assistant text — it hits `cap` as soon as Q25 is *asked*,
+  // not when it is *answered*. Gate on substantive answers AND a reply after the last Q(cap) ask.
+  const intakeComplete = funnelIntakeTranscriptComplete(t, cap);
+  const readyToFinalize =
+    intakeComplete && funnelReadyToFinalizeHeuristic(latestAssistantContentRaw);
   return {
     asked: maxQ,
     answered,
     total: cap,
     readyToFinalize,
+    canGenerateReport: intakeComplete,
   };
 };
 
@@ -1126,10 +1169,14 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
 
       // ── FUNNEL FINALIZE (IRL Report flow) ──────────────────────────────────
       if (session.isFunnelMode) {
-        const maxQ = maxCoreQuestionFromTranscript(session.transcript, session.targetCount);
-        if (maxQ < session.targetCount) {
+        const cap = session.targetCount || 25;
+        const maxQ = maxCoreQuestionFromTranscript(session.transcript, cap);
+        const answered = session.transcript.filter(
+          (m) => m.role === "user" && isAnswerLike(m.content),
+        ).length;
+        if (!funnelIntakeTranscriptComplete(session.transcript, cap)) {
           socket.emit("error", {
-            message: `Please complete all ${session.targetCount} diagnostic questions before generating your report. (You are on Q${maxQ} of ${session.targetCount}.)`,
+            message: `Please complete all ${cap} diagnostic questions before generating your report. (Progress: ${answered} answers, through Q${maxQ} of ${cap}.)`,
           });
           return;
         }

@@ -1,4 +1,4 @@
-const { rateLimit } = require("express-rate-limit");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 
 /**
  * Per-IP rate limiter applied to write/state-changing /api/funnel/* routes.
@@ -11,10 +11,9 @@ const funnelIpLimit = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) =>
-    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-    req.ip ||
-    "unknown",
+  // Use library helper to prevent IPv6 bypass issues.
+  // (Relies on Express `req.ip`, so ensure `trust proxy` is configured correctly in production.)
+  keyGenerator: (req) => ipKeyGenerator(req),
   message: {
     status: false,
     error: "Too many requests. Please wait a moment and try again.",
@@ -44,10 +43,8 @@ const createTokenLimit = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) =>
-    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-    req.ip ||
-    "unknown",
+  // Use library helper to prevent IPv6 bypass issues.
+  keyGenerator: (req) => ipKeyGenerator(req),
   message: {
     status: false,
     error: "Too many token creation requests. Please try again shortly.",

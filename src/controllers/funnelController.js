@@ -19,7 +19,7 @@ const { generateInvisibleRedLineReport } = require("../helpers/irlReportGenerato
 const { sendEmail, sendEmailBasic } = require("../utils/email");
 const { irlReportEmail } = require("../utils/emailTemplate/irlReportEmail");
 const { funnelAccessEmail } = require("../utils/emailTemplate/funnelAccessEmail");
-const { generateIrlReportPdf } = require("../utils/diagnosticPdf");
+const { generateIrlReportPdf } = require("../utils/irlPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const fs = require("fs");
 

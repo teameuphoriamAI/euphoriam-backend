@@ -81,12 +81,20 @@ const saveChatIncrementally = async ({
     let chat = null;
     if (existingChatId) {
       chat = await Chat.findByPk(existingChatId);
-      if (chat && chat.userId !== userId) {
+      // Compare numerically — PG/Sequelize may return userId as string in some drivers.
+      if (chat && Number(chat.userId) !== Number(userId)) {
         console.warn("[saveChatIncrementally] existingChatId does not belong to userId, ignoring");
         chat = null;
       }
       if (chat) {
         console.log(`[saveChatIncrementally] Updating existing chat ${chat.id} (switch to ${chatType}), transcript length=${transcript.length}`);
+      }
+      // Funnel (and explicit id updates): never fall through to "another recent chat" — avoids saving to the wrong row.
+      if (!chat) {
+        console.error(
+          `[saveChatIncrementally] existingChatId ${existingChatId} not found or not owned; refusing save (transcriptLength=${transcript.length})`,
+        );
+        return null;
       }
     }
 

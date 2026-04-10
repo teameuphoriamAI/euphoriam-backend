@@ -599,6 +599,41 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
 /* -------------------- Funnel First Question -------------------- */
 
 /**
+ * Static welcome prepended to the first assistant bubble (free funnel only).
+ * Explains the 25-question flow and the Invisible Red Line report outcome.
+ */
+const buildFunnelWelcomeMarkdown = (session) => {
+  const count = session.targetCount || 25;
+  const firstName = (session.email || "").split("@")[0]?.trim() || "there";
+  return `Hi ${firstName},
+
+Welcome to your **Invisible Red Line** diagnostic. I'll ask **${count} focused questions**—one at a time—about how you move toward what you want, where you feel friction, and what tends to repeat when pressure shows up. Your answers stay in this thread only.
+
+When we finish, you'll get an **Invisible Red Line report**: a clear readout of the patterns we surfaced and what they imply for you—so you can see the "line" between where you are now and how you actually want to operate.
+
+There are no trick questions. Short answers are fine; honest detail helps. Whenever you're ready, we'll start with the first question below.`;
+};
+
+/** Keep in sync with FUNNEL_QA_WELCOME_END_MARKER in euphoriamAi-website/lib/format-text.ts */
+const FUNNEL_QA_WELCOME_END_MARKER =
+  "Whenever you're ready, we'll start with the first question below.";
+
+/** Same trimming as frontend sanitizeFunnelQuestion for first bubble (welcome + junk + Q1). */
+const stripPreambleBetweenFunnelWelcomeAndQ1 = (text = "") => {
+  const t = String(text || "").trim();
+  const anchor = FUNNEL_QA_WELCOME_END_MARKER;
+  const anchorIdx = t.indexOf(anchor);
+  if (anchorIdx === -1) return t;
+  const head = t.slice(0, anchorIdx + anchor.length);
+  const after = t.slice(anchorIdx + anchor.length).trimStart();
+  const q1Pattern = /(\*{0,2}Q\s*1\s*[—–\-.:])/i;
+  const match = after.match(q1Pattern);
+  if (!match || match.index === undefined || match.index === 0) return t;
+  const fromQ1 = after.slice(match.index).trimStart();
+  return `${head}\n\n${fromQ1}`.replace(/\n{3,}/g, "\n\n").trim();
+};
+
+/**
  * Generates and emits the very first diagnostic question for a funnel session.
  * Called right after the "ready" event so the QA page doesn't stall waiting
  * for a user message that never arrives.
@@ -647,11 +682,13 @@ const sendFirstFunnelQuestion = async (socket, session) => {
     }
 
     const systemWithFunnel = `${systemPrompt}\n\n${buildFunnelSystemPromptAppend(session.targetCount)}`;
+    const firstBubbleNote =
+      "\n\nFIRST ASSISTANT REPLY ONLY: Go directly to **Q1 — [title]** and the question. Do not add another long welcome or session overview—a fixed welcome is prepended to this reply for the user.";
 
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: systemWithFunnel },
+        { role: "system", content: `${systemWithFunnel}${firstBubbleNote}` },
         { role: "user", content: chatPrompt },
       ],
       temperature: 0.3,
@@ -670,7 +707,12 @@ const sendFirstFunnelQuestion = async (socket, session) => {
       return;
     }
 
-    const coerced = coerceFunnelMessageForSession({ ...raw, content: rawText }, "assistant");
+    const welcome = buildFunnelWelcomeMarkdown(session);
+    const combined = stripPreambleBetweenFunnelWelcomeAndQ1(
+      `${welcome}\n\n${rawText.trim()}`,
+    );
+
+    const coerced = coerceFunnelMessageForSession({ ...raw, content: combined }, "assistant");
     if (!coerced) {
       socket.emit("error", { message: "Failed to generate first question. Please refresh and try again." });
       return;
@@ -679,7 +721,7 @@ const sendFirstFunnelQuestion = async (socket, session) => {
 
     socket.emit("assistant_message", {
       message: coerced,
-      progress: buildFunnelProgressPayload(session, rawText),
+      progress: buildFunnelProgressPayload(session, combined),
     });
 
     await persistFunnelChatTranscript(session);

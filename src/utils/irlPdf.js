@@ -411,8 +411,12 @@ const generateIrlReportPdf = async (diagnostic) =>
 
           if (entry.type === "cta") {
             doc.moveDown(0.8);
-            const ctaY = doc.y;
             const ctaH = 36;
+            const pageBottom = doc.page.height - doc.page.margins.bottom;
+            if (doc.y + ctaH + 12 > pageBottom) {
+              doc.addPage();
+            }
+            const ctaY = doc.y;
             doc
               .roundedRect(MARGIN, ctaY, pageWidth, ctaH, 6)
               .fillAndStroke(PURPLE, PURPLE);
@@ -430,7 +434,6 @@ const generateIrlReportPdf = async (diagnostic) =>
 
           if (entry.type === "marker") {
             const raw = entry.text.replace(/^888\s*/, "").trim();
-            const lineY = doc.y;
             const innerW = pageWidth - 14;
             const measureText = raw.replace(/\*\*/g, "");
             doc.font("Helvetica-Bold").fontSize(10.5);
@@ -439,6 +442,13 @@ const generateIrlReportPdf = async (diagnostic) =>
               lineGap: 2,
             });
             const boxH = Math.max(28, textBlockH + 14);
+
+            const pageBottom = doc.page.height - doc.page.margins.bottom;
+            if (doc.y + boxH + 6 > pageBottom) {
+              doc.addPage();
+            }
+
+            const lineY = doc.y;
 
             doc
               .rect(MARGIN, lineY, pageWidth, boxH)

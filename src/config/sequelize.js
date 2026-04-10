@@ -748,7 +748,21 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
 
   // Sync all models — creates tables that don't exist yet (safe for both fresh and existing DBs).
   // Using no options (force: false by default) — never drops or destructively alters existing tables.
-  await sequelize.sync();
+  try {
+    await Promise.race([
+      sequelize.sync(),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("sequelize.sync() timed out after 30s")),
+          30000,
+        ),
+      ),
+    ]);
+    console.log("[initDb] sequelize.sync() complete");
+  } catch (err) {
+    // Non-fatal: keep the API server available even if sync stalls.
+    console.warn("[initDb] sequelize.sync() skipped:", err.message);
+  }
 
   // ── Seed IRL Report prompt (one-time) ────────────────────────────────
   // Runs after sync() so the prompts table is guaranteed to exist.

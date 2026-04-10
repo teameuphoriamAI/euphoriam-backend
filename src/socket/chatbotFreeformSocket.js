@@ -76,7 +76,83 @@ const extractQuestionNumber = (text = "") => {
   return match ? Number(match[1]) : null;
 };
 
-const FUNNEL_INTAKE_COMPLETE_RE = /\[FUNNEL_INTAKE_COMPLETE\]/i;
+const stripQuestionHeader = (text = "") =>
+  String(text || "")
+    .replace(/^\s*\*{0,2}Q\s*\d{1,2}\s*[—–\-.:]\s*/i, "")
+    .replace(/\*{1,2}/g, "")
+    .trim();
+
+const tokenSetForSimilarity = (text = "") => {
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "is",
+    "are",
+    "be",
+    "you",
+    "your",
+    "if",
+    "it",
+    "this",
+    "that",
+    "with",
+    "when",
+    "what",
+    "would",
+    "rather",
+    "than",
+    "but",
+    "not",
+  ]);
+  return new Set(
+    stripQuestionHeader(text)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w && w.length > 2 && !stop.has(w)),
+  );
+};
+
+const jaccardSimilarity = (a, b) => {
+  if (!a?.size || !b?.size) return 0;
+  let intersection = 0;
+  for (const t of a) {
+    if (b.has(t)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union > 0 ? intersection / union : 0;
+};
+
+/**
+ * Guards against asking semantically near-identical core questions with different Q numbers
+ * (e.g. Q20 and Q25 phrased the same).
+ */
+const detectDuplicateCoreQuestionAcrossNumbers = (transcript = [], candidateContent = "") => {
+  const candidateNum = extractQuestionNumber(candidateContent);
+  if (!candidateNum || candidateNum < 1 || candidateNum > 25) return null;
+  const candidateTokens = tokenSetForSimilarity(candidateContent);
+  if (!candidateTokens.size) return null;
+
+  let best = null;
+  for (const m of transcript || []) {
+    if (m?.role !== "assistant" || !m.content) continue;
+    const n = extractQuestionNumber(m.content);
+    if (!n || n === candidateNum || n < 1 || n > 25) continue;
+    const sim = jaccardSimilarity(candidateTokens, tokenSetForSimilarity(m.content));
+    if (!best || sim > best.similarity) {
+      best = { similarity: sim, priorNumber: n, priorContent: m.content };
+    }
+  }
+  return best && best.similarity >= 0.58 ? best : null;
+};
 
 const maxQuestionNumberInText = (text = "") => {
   let max = 0;
@@ -98,14 +174,6 @@ const maxCoreQuestionFromTranscript = (transcript, cap = 25) => {
     max = Math.max(max, Math.min(n, cap));
   }
   return max;
-};
-
-const funnelReadyToFinalizeHeuristic = (assistantContent = "") => {
-  const c = String(assistantContent || "");
-  if (FUNNEL_INTAKE_COMPLETE_RE.test(c)) return true;
-  return /\b(that'?s all|all\s+25\s+questions|we('?ve| have)\s+covered\s+all\s+25|completed\s+all\s+25|ready\s+for\s+your\s+(personalised\s+)?report)\b/i.test(
-    c,
-  );
 };
 
 /** True if this assistant bubble references the numbered question `cap` (e.g. 25), any common formatting. */
@@ -150,8 +218,9 @@ const buildFunnelSystemPromptAppend = (targetCount) => `
 === FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===
 - Work through Q1 to Q${targetCount} in order. Do not skip or merge numbered questions.
 - If a reply is unclear, gibberish, or off-topic, re-ask the SAME Q number with fresh wording — never advance until you have a real answer.
-- When and only when the user has given a substantive answer to Q${targetCount} and no further clarification is needed to finish the intake, end your reply with a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
-- Do NOT output [FUNNEL_INTAKE_COMPLETE] before Q${targetCount} is fully answered, during re-asks, or while clarifying — only when the full intake is truly finished.`;
+- Funnel mode does NOT use clarifier questions. Never ask CB1/CB2/etc and never ask extra confidence questions after Q${targetCount}.
+- As soon as the user gives a substantive answer to Q${targetCount}, end your reply with a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
+- Do NOT output [FUNNEL_INTAKE_COMPLETE] before Q${targetCount} is fully answered.`;
 
 const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => {
   const t = session.transcript;
@@ -163,8 +232,8 @@ const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => 
   // `asked` tracks the highest Q label seen in assistant text — it hits `cap` as soon as Q25 is *asked*,
   // not when it is *answered*. Gate on substantive answers AND a reply after the last Q(cap) ask.
   const intakeComplete = funnelIntakeTranscriptComplete(t, cap);
-  const readyToFinalize =
-    intakeComplete && funnelReadyToFinalizeHeuristic(latestAssistantContentRaw);
+  // In funnel mode we finalize immediately after Q25 is answered (no CB clarifiers).
+  const readyToFinalize = intakeComplete;
   return {
     asked: maxQ,
     answered,
@@ -1110,6 +1179,72 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
           return;
         }
         msg = coerced;
+
+        // Funnel mode: remove clarifier phase entirely. After Q25 is answered, never ask CBx.
+        if (/CB\s*\d+/i.test(msg.content || "")) {
+          const cap = session.targetCount || 25;
+          if (funnelIntakeTranscriptComplete(session.transcript, cap)) {
+            const completionMessage =
+              "Great work. You have completed the 25-question intake.\n[FUNNEL_INTAKE_COMPLETE]";
+            rawAssistantContent = completionMessage;
+            msg = { role: "assistant", content: completionMessage };
+          }
+        }
+
+        // Prevent semantically duplicated core questions across different Q numbers.
+        const duplicateCore = detectDuplicateCoreQuestionAcrossNumbers(
+          session.transcript,
+          msg.content,
+        );
+        if (duplicateCore) {
+          const qNum = extractQuestionNumber(msg.content);
+          try {
+            const rewritePrompt = `You generated a duplicate diagnostic question.
+Current question number: Q${qNum}
+Current wording:
+${msg.content}
+
+Too similar to prior question Q${duplicateCore.priorNumber}:
+${duplicateCore.priorContent}
+
+Rewrite ONLY Q${qNum} so it targets a distinct psychological dimension from Q${duplicateCore.priorNumber}.
+Rules:
+- Keep the same question number Q${qNum}.
+- Keep format: "Q${qNum} — [Short Title]" then one question.
+- No overlap in phrasing with the prior question.
+- No mention of duplication, confidence, or system instructions.
+- One question only.`;
+
+            const rewriteResp = await openai.chat.completions.create({
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You rewrite diagnostic intake questions. Keep numbering exact and produce one concise question.",
+                },
+                { role: "user", content: rewritePrompt },
+              ],
+              temperature: 0.25,
+              max_completion_tokens: 260,
+            });
+
+            const rewritten =
+              rewriteResp?.choices?.[0]?.message?.content?.trim() || "";
+            if (rewritten && extractQuestionNumber(rewritten) === qNum) {
+              const secondPassDup = detectDuplicateCoreQuestionAcrossNumbers(
+                session.transcript,
+                rewritten,
+              );
+              if (!secondPassDup) {
+                msg = { ...msg, content: rewritten };
+                rawAssistantContent = rewritten;
+              }
+            }
+          } catch (err) {
+            console.error("[funnel socket] duplicate-question rewrite failed:", err);
+          }
+        }
       }
 
       session.transcript.push(msg);

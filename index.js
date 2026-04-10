@@ -24,57 +24,56 @@ const PORT = process.env.PORT;
 const server = http.createServer(app);
 let io;
 
+// Start HTTP server immediately — don't block on DB init
+io = initSockets(server);
+
+server.on("error", (err) => {
+  console.error("[startup] Server listen error:", err.message);
+});
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// DB init + ChromaDB run in background
 initDb()
-  .then(async () => {
-    // Initialize ChromaDB for vector search
-    try {
-      await initChromaDB();
-      await getChatCollection();
-      await getSessionCollection();
-      console.log("ChromaDB initialized successfully");
-    } catch (chromaErr) {
-      console.warn(
-        "ChromaDB initialization failed (non-fatal):",
-        chromaErr.message,
-      );
-      // Continue without vector DB - the app will still work, just without semantic search
-    }
+  .then(() => {
+    console.log("[startup] Database fully initialized");
 
-    io = initSockets(server);
-
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-    });
-
-    // Graceful shutdown handlers
-    const gracefulShutdown = async (signal) => {
-      console.log(`\n${signal} received. Closing server gracefully...`);
-
-      server.close(async () => {
-        console.log("HTTP server closed.");
-
-        // Close database connections
-        try {
-          await sequelize.close();
-          console.log("Database connections closed.");
-        } catch (err) {
-          console.error("Error closing database connections:", err);
-        }
-
-        process.exit(0);
+    // ChromaDB is fire-and-forget
+    initChromaDB()
+      .then(() => getChatCollection())
+      .then(() => getSessionCollection())
+      .then(() => console.log("ChromaDB initialized successfully"))
+      .catch((chromaErr) => {
+        console.warn("ChromaDB initialization failed (non-fatal):", chromaErr.message);
       });
-
-      // Force close after 10 seconds
-      setTimeout(() => {
-        console.error("Forced shutdown after timeout");
-        process.exit(1);
-      }, 10000);
-    };
-
-    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   })
   .catch((err) => {
     console.error("Failed to initialize database:", err);
-    process.exit(1);
+    console.warn("[startup] Continuing without full DB initialization");
   });
+
+// Graceful shutdown handlers
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} received. Closing server gracefully...`);
+
+  server.close(async () => {
+    console.log("HTTP server closed.");
+    try {
+      await sequelize.close();
+      console.log("Database connections closed.");
+    } catch (err) {
+      console.error("Error closing database connections:", err);
+    }
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000);
+};
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

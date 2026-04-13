@@ -469,7 +469,7 @@ const completeDiagnostic = async ({
     uc_offer_name: process.env.UC_OFFER_NAME || "Unlimited Creator",
     uc_offer_price_string: process.env.UC_OFFER_PRICE || null,
     include_price_compare: process.env.UC_INCLUDE_PRICE_COMPARE === "true",
-    include_button_cta: true,
+    include_button_cta: process.env.UC_INCLUDE_BUTTON_CTA !== "false",
     cta_text: process.env.UC_CTA_TEXT || "Start Unlimited Creator",
   };
 
@@ -479,9 +479,12 @@ const completeDiagnostic = async ({
     const dp = structuredPacket?.diagnostic_packet || {};
     const cp = structuredPacket?.constraint_packet || {};
     const oi = structuredPacket?.optional_inputs || {};
+    const timezone =
+      (metrics && (metrics.timezone || metrics.user_timezone || metrics.tz)) || null;
 
-    const { reportText: generatedReport, wordCount } = await generateInvisibleRedLineReport({
-      user: { first_name: userName },
+    const { reportText: generatedReport, wordCount, irlRetryUsed } =
+      await generateInvisibleRedLineReport({
+      user: { first_name: userName, timezone },
       diagnostic_packet: dp,
       constraint_packet: cp,
       optional_inputs: oi,
@@ -496,8 +499,20 @@ const completeDiagnostic = async ({
     });
 
     irlReport = generatedReport;
-    console.log(`[funnel] Stage 2 IRL report generated: ${wordCount} words`);
+    console.log(
+      `[funnel] Stage 2 IRL report generated: ${wordCount} words` +
+        (irlRetryUsed ? " (after length expand retry)" : "")
+    );
   } catch (stage2Err) {
+    console.error(
+      "[IRL_QA] stage2_failed",
+      JSON.stringify({
+        event: "stage2_failed",
+        message: stage2Err?.message || String(stage2Err),
+        funnel_access_id,
+        at: new Date().toISOString(),
+      })
+    );
     console.error("[funnel] Stage 2 IRL generation failed (falling back to Stage 1 report):", stage2Err.message);
   }
 

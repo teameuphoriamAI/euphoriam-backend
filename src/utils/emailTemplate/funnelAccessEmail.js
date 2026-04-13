@@ -85,8 +85,8 @@ const funnelAccessEmail = (firstName = "there", diagnosticLink = "", daysValid =
             <td style="padding-bottom:16px;">
               <p style="margin:0;font-size:16px;color:#333;line-height:1.8;">
                 Answer <strong>25 short questions</strong> and the system will generate your
-                personal <strong>Invisible Red Line Report</strong> — a map of the hidden
-                structure most likely capping your results in money, relationships, and momentum.
+                personal <strong>Invisible Red Line Report</strong> — the hidden pattern that may be
+                pulling you off course in money, relationships, and momentum, spelled out in plain English.
               </p>
             </td>
           </tr>

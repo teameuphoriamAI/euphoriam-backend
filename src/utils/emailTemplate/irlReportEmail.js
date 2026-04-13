@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const { IRL_REPORT_SUBTITLE_V22 } = require("../../constants/irlBranding");
+
 const logoUrl = process.env.LOGO_URL;
 const ucSalesUrl = process.env.UC_SALES_URL || "";
 const ctaText = process.env.UC_CTA_TEXT || "Start Unlimited Creator";
@@ -57,6 +59,9 @@ const irlReportEmail = (firstName = "there") => {
               <h1 style="margin:0;font-size:26px;color:#1a1a1a;line-height:1.3;font-weight:700;">
                 Your Invisible Red Line Report
               </h1>
+              <p style="margin:10px 0 0;font-size:14px;color:#666;line-height:1.5;">
+                ${IRL_REPORT_SUBTITLE_V22}
+              </p>
             </td>
           </tr>
 
@@ -80,7 +85,7 @@ const irlReportEmail = (firstName = "there") => {
           <tr>
             <td style="padding-bottom:20px;">
               <p style="margin:0;font-size:16px;color:#333;line-height:1.8;">
-                This report maps the hidden structure that's most likely been capping your results.
+                This report names the hidden pattern that may be pulling you off course — in plain English — and what it is probably costing you.
                 Read it once slowly. Then read <strong>Section 4</strong> and <strong>Section 5</strong> again.
               </p>
             </td>

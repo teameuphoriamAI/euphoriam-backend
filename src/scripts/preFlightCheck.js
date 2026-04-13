@@ -1,12 +1,9 @@
 /**
  * Pre-flight environment & database check script.
  *
- * Run before starting the server (or before deploying) to verify:
- *   1. All required environment variables are set
- *   2. Database connection is reachable
- *   3. Required tables exist
- *   4. Required prompt records exist in the DB
- *   5. Enum values include new Phase 1 entries
+ * Run before starting the server (or before deploying) to verify env vars, DB
+ * connectivity, tables/columns, prompt enums, required prompt rows, and (optionally)
+ * REQUIRE_IRL_PROMPT_V22=true → active invisible_red_line_report must look like v2.2.
  *
  * Usage:
  *   node src/scripts/preFlightCheck.js
@@ -65,6 +62,7 @@ const OPTIONAL_VARS = [
   ["SUPABASE_URL",              "PDF storage"],
   ["SUPABASE_SERVICE_ROLE_KEY", "PDF storage"],
   ["SUPABASE_STORAGE_BUCKET_REPORTS", "PDF storage bucket"],
+  ["REQUIRE_IRL_PROMPT_V22", "if true, fail pre-flight unless active IRL row looks like v2.2"],
 ];
 
 for (const v of REQUIRED_VARS) {
@@ -245,6 +243,43 @@ const sequelize = new Sequelize(DATABASE_URL, {
     }
   } catch (err) {
     warn(`Could not check prompt records: ${err.message}`);
+  }
+
+  // ── 7. Optional strict IRL v2.2 (Phase E.2) ────────────────────────────────
+
+  if (process.env.REQUIRE_IRL_PROMPT_V22 === "true") {
+    console.log(c.bold("\n── 7. IRL prompt v2.2 (REQUIRE_IRL_PROMPT_V22) ─────────────"));
+
+    try {
+      const irlRows = await sequelize.query(
+        `SELECT name, version
+         FROM prompts
+         WHERE type = 'invisible_red_line_report' AND "isActive" = true
+         ORDER BY "createdAt" DESC
+         LIMIT 1`,
+        { type: QueryTypes.SELECT }
+      );
+      const irl = irlRows?.[0];
+      if (!irl) {
+        fail("REQUIRE_IRL_PROMPT_V22: no active invisible_red_line_report prompt row");
+      } else {
+        const name = String(irl.name || "").toLowerCase();
+        const nameLooksV22 = name.includes("v2.2") || name.includes("2.2");
+        const verNum = Number(irl.version);
+        const versionLooksV22 = Number.isFinite(verNum) && verNum >= 2;
+        if (nameLooksV22 || versionLooksV22) {
+          pass(
+            `Active IRL prompt passes v2.2 check (name="${irl.name}", version=${irl.version})`
+          );
+        } else {
+          fail(
+            `REQUIRE_IRL_PROMPT_V22: active IRL row does not look like v2.2 (name="${irl.name}", version=${irl.version}). Run npm run apply:irl-prompt-v22 or activate the correct DB row.`
+          );
+        }
+      }
+    } catch (err) {
+      fail(`REQUIRE_IRL_PROMPT_V22 check failed: ${err.message}`);
+    }
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

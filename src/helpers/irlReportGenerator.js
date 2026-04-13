@@ -2,6 +2,13 @@ const openai = require("../config/openai");
 const { Prompt } = require("../models/promptModel");
 const { withDbSlot } = require("../config/sequelize");
 
+// ── v2.2 length / completion (Phase B) ───────────────────────────────────────
+
+/** Minimum words before accept (or one retry expand); v2.2 target band ~1000–1600. */
+const IRL_MIN_WORD_COUNT = 1000;
+/** Room for ~1600 words of prose without mid-section truncation. */
+const IRL_MAX_COMPLETION_TOKENS = 4000;
+
 // ── Prompt cache (5-minute TTL) ───────────────────────────────────────────────
 
 const _cache = new Map();
@@ -22,6 +29,121 @@ const getPromptByType = async (type) => {
 
   _cache.set(type, { data: prompt || null, expiresAt: now + CACHE_TTL_MS });
   return prompt || null;
+};
+
+/** Clears cached prompt row(s) for `type` (Phase A.4: use after DB prompt swap without full restart). */
+const invalidatePromptCache = (type = "invisible_red_line_report") => {
+  _cache.delete(type);
+};
+
+// ── Phase B.4 — normalise Stage 2 inputs (defaults for missing Stage 1 keys) ──
+
+const DEFAULT_PROTECTOR_PROFILE = Object.freeze({
+  what_it_prevents: null,
+  typical_behaviours: [],
+});
+
+const DEFAULT_DAILY_REP = Object.freeze({
+  name: null,
+  steps: null,
+  win_condition: null,
+});
+
+const DEFAULT_DIAGNOSTIC_FLAT = Object.freeze({
+  domain_primary: null,
+  desired_outcome: null,
+  current_loop: null,
+  orbit_pattern: null,
+  EO: null,
+  lack_channel: null,
+  protector_type: null,
+  gravity_depth: null,
+  CL_estimate: null,
+  CL_confidence: null,
+  rule_engine: null,
+  behaviour_evidence: null,
+  recovery_speed: null,
+  contradiction_rate: null,
+  signature_confidence: null,
+  signature_primary_id: null,
+  signature_secondary_id: null,
+  predictions: null,
+  falsifiers: null,
+  confirmation_test: null,
+  recommended_resource: null,
+  data_needed_next: null,
+  structure_type: null,
+});
+
+const DEFAULT_CONSTRAINT_PACKET = Object.freeze({
+  name: null,
+  protector_rule: null,
+  red_barrier_sentence: null,
+  how_it_caps_output: null,
+  good_intent: null,
+  bad_cost: null,
+  confidence: null,
+  alt_hypothesis: null,
+});
+
+const DEFAULT_OPTIONAL_INPUTS = Object.freeze({
+  top_trigger_example: null,
+  recent_trigger_example: null,
+  abduction_sentence: null,
+  family_rule_summary: null,
+  main_avoidance_behaviours: null,
+  main_cost_domain: null,
+  personalised_offer_price: null,
+  personalised_offer_name: null,
+});
+
+/**
+ * Merges v2.2 envelope defaults onto Stage 1 extraction so `buildIrlInputContent` always
+ * sees a full key set (missing → null / empty array where appropriate).
+ */
+const normalizeStage2PacketInputs = ({
+  diagnostic_packet: dpIn,
+  constraint_packet: cpIn,
+  optional_inputs: oiIn,
+}) => {
+  const rawDp = dpIn && typeof dpIn === "object" ? { ...dpIn } : {};
+  const { protector_profile: ppRaw, daily_rep_assigned: drRaw, ...flatDp } = rawDp;
+
+  const dp = { ...DEFAULT_DIAGNOSTIC_FLAT, ...flatDp };
+  dp.protector_profile = {
+    ...DEFAULT_PROTECTOR_PROFILE,
+    ...(ppRaw && typeof ppRaw === "object" ? ppRaw : {}),
+  };
+  if (!Array.isArray(dp.protector_profile.typical_behaviours)) {
+    dp.protector_profile.typical_behaviours = [];
+  }
+
+  dp.daily_rep_assigned = {
+    ...DEFAULT_DAILY_REP,
+    ...(drRaw && typeof drRaw === "object" ? drRaw : {}),
+  };
+  if (dp.daily_rep_assigned.steps != null && !Array.isArray(dp.daily_rep_assigned.steps)) {
+    dp.daily_rep_assigned.steps = [];
+  }
+
+  const cp = {
+    ...DEFAULT_CONSTRAINT_PACKET,
+    ...(cpIn && typeof cpIn === "object" ? cpIn : {}),
+  };
+
+  const oi = {
+    ...DEFAULT_OPTIONAL_INPUTS,
+    ...(oiIn && typeof oiIn === "object" ? oiIn : {}),
+  };
+  if (!Array.isArray(oi.main_avoidance_behaviours)) {
+    if (oi.main_avoidance_behaviours == null || oi.main_avoidance_behaviours === "") {
+      oi.main_avoidance_behaviours = [];
+    } else {
+      oi.main_avoidance_behaviours = [String(oi.main_avoidance_behaviours)];
+    }
+  }
+
+  return { diagnostic_packet: dp, constraint_packet: cp, optional_inputs: oi };
 };
 
 // ── Task 4.2 — buildIrlInputContent() ────────────────────────────────────────
@@ -62,7 +184,7 @@ const buildIrlInputContent = ({
   lines.push(`  timezone: ${safe(user.timezone)}`);
   lines.push("");
 
-  // Diagnostic packet — individual labelled fields for maximum readability
+  // Diagnostic packet — individual labelled fields for maximum readability (v2.2 envelope)
   lines.push("DIAGNOSTIC PACKET:");
   lines.push(`  domain_primary: ${safe(diagnostic_packet.domain_primary)}`);
   lines.push(`  desired_outcome: ${safe(diagnostic_packet.desired_outcome)}`);
@@ -88,12 +210,15 @@ const buildIrlInputContent = ({
   lines.push(`  signature_primary_id: ${safe(diagnostic_packet.signature_primary_id)}`);
   lines.push(`  signature_secondary_id: ${safe(diagnostic_packet.signature_secondary_id)}`);
   lines.push(`  predictions: ${safe(diagnostic_packet.predictions)}`);
+  lines.push(`  falsifiers: ${safe(diagnostic_packet.falsifiers)}`);
+  lines.push(`  confirmation_test: ${safe(diagnostic_packet.confirmation_test)}`);
 
   const rep = diagnostic_packet.daily_rep_assigned || {};
   lines.push(`  daily_rep_assigned.name: ${safe(rep.name)}`);
   lines.push(`  daily_rep_assigned.steps: ${safe(rep.steps)}`);
   lines.push(`  daily_rep_assigned.win_condition: ${safe(rep.win_condition)}`);
   lines.push(`  recommended_resource: ${safe(diagnostic_packet.recommended_resource)}`);
+  lines.push(`  data_needed_next: ${safe(diagnostic_packet.data_needed_next)}`);
   lines.push("");
 
   // Constraint packet
@@ -145,13 +270,20 @@ const buildIrlInputContent = ({
   return lines.join("\n");
 };
 
+const countWords = (text) => String(text || "").trim().split(/\s+/).filter(Boolean).length;
+
+/** Phase F.4 — structured one-line JSON for log drains / alerts (grep `[IRL_QA]`). */
+const irlQaMetric = (code, extra = {}) => {
+  console.error("[IRL_QA]", JSON.stringify({ event: code, t: new Date().toISOString(), ...extra }));
+};
+
 // ── Task 4.1 — generateInvisibleRedLineReport() ───────────────────────────────
 
 /**
  * Stage 2 of the funnel pipeline — generates the Invisible Red Line Report.
  *
  * Takes a fully structured packet (from Stage 1 extraction) and produces a
- * 900–1500 word personalised conversion report in 19 sections with 888 markers.
+ * ~1000–1600 word personalised conversion report in 19 sections with 888 markers (v2.2).
  *
  * @param {object} params
  * @param {object} params.user               - { first_name, timezone }
@@ -160,7 +292,7 @@ const buildIrlInputContent = ({
  * @param {object} [params.optional_inputs]  - Additional context fields (may be partial)
  * @param {object} [params.access_flags]     - User membership flags
  * @param {object} [params.offer_config]     - UC offer presentation config
- * @returns {Promise<{ reportText: string, wordCount: number }>}
+ * @returns {Promise<{ reportText: string, wordCount: number, irlRetryUsed: boolean }>}
  */
 const generateInvisibleRedLineReport = async ({
   user = {},
@@ -170,50 +302,128 @@ const generateInvisibleRedLineReport = async ({
   access_flags = {},
   offer_config = {},
 }) => {
+  const normalized = normalizeStage2PacketInputs({
+    diagnostic_packet,
+    constraint_packet,
+    optional_inputs,
+  });
+
   // 1. Load IRL report prompt from DB
   const systemPrompt = await getPromptByType("invisible_red_line_report");
 
   if (!systemPrompt?.content) {
+    irlQaMetric("PROMPT_MISSING", { type: "invisible_red_line_report" });
     throw new Error("invisible_red_line_report prompt not found in DB. Run initDb() to seed it.");
   }
 
   // 2. Assemble the structured user-turn message
   const userContent = buildIrlInputContent({
     user,
-    diagnostic_packet,
-    constraint_packet,
-    optional_inputs,
+    diagnostic_packet: normalized.diagnostic_packet,
+    constraint_packet: normalized.constraint_packet,
+    optional_inputs: normalized.optional_inputs,
     access_flags,
     offer_config,
   });
 
-  // 3. Call GPT-4o — quality matters, not speed
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [
-      { role: "system", content: systemPrompt.content },
-      { role: "user", content: userContent },
-    ],
-    temperature: 0.4,
-    max_completion_tokens: 3000,
-  });
+  const systemMessage = { role: "system", content: systemPrompt.content };
+  const userMessage = { role: "user", content: userContent };
 
-  const reportText = (response?.choices?.[0]?.message?.content || "").trim();
+  // 3. Call GPT-4o — quality matters, not speed
+  let response;
+  try {
+    response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [systemMessage, userMessage],
+      temperature: 0.4,
+      max_completion_tokens: IRL_MAX_COMPLETION_TOKENS,
+    });
+  } catch (err) {
+    irlQaMetric("openai_chat_failed", {
+      phase: "primary",
+      message: err?.message || String(err),
+      status: err?.status,
+    });
+    throw err;
+  }
+
+  let reportText = (response?.choices?.[0]?.message?.content || "").trim();
 
   if (!reportText) {
+    irlQaMetric("EMPTY_OUTPUT", { phase: "primary" });
     throw new Error("IRL Report generation returned empty content");
   }
 
-  // 4. Validate minimum length (700 words enforced — soft floor, 900 target)
-  const wordCount = reportText.split(/\s+/).filter(Boolean).length;
-  if (wordCount < 700) {
-    throw new Error(`IRL Report too short: ${wordCount} words (minimum 700)`);
+  let wordCount = countWords(reportText);
+  let irlRetryUsed = false;
+
+  // Phase B.5 — one expand retry if below v2.2 floor
+  if (wordCount < IRL_MIN_WORD_COUNT) {
+    irlRetryUsed = true;
+    console.warn("[IRL] short_output_retry", {
+      firstWordCount: wordCount,
+      min: IRL_MIN_WORD_COUNT,
+    });
+
+    const retryUser =
+      "The previous draft was too short for publication.\n\n" +
+      `It was only about ${wordCount} words; the minimum is ${IRL_MIN_WORD_COUNT} words.\n\n` +
+      "Regenerate the **complete** Invisible Red Line Report from the same inputs above: keep all 19 numbered sections, all 888 personalization rules, and deepen thin sections with concrete behaviour and consequence language until the total clearly meets the minimum. " +
+      "Do not reply with meta-commentary — output only the finished report.";
+
+    let response2;
+    try {
+      response2 = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          systemMessage,
+          userMessage,
+          { role: "assistant", content: reportText },
+          { role: "user", content: retryUser },
+        ],
+        temperature: 0.4,
+        max_completion_tokens: IRL_MAX_COMPLETION_TOKENS,
+      });
+    } catch (err) {
+      irlQaMetric("openai_chat_failed", {
+        phase: "retry",
+        message: err?.message || String(err),
+        status: err?.status,
+      });
+      throw err;
+    }
+
+    reportText = (response2?.choices?.[0]?.message?.content || "").trim();
+    if (!reportText) {
+      irlQaMetric("EMPTY_OUTPUT", { phase: "retry" });
+      throw new Error("IRL Report retry generation returned empty content");
+    }
+    wordCount = countWords(reportText);
+    console.warn("[IRL] short_output_retry_result", {
+      finalWordCount: wordCount,
+      stillBelowMin: wordCount < IRL_MIN_WORD_COUNT,
+    });
   }
 
-  return { reportText, wordCount };
+  if (wordCount < IRL_MIN_WORD_COUNT) {
+    irlQaMetric("TOO_SHORT", {
+      wordCount,
+      irlRetryUsed,
+      min: IRL_MIN_WORD_COUNT,
+    });
+    throw new Error(
+      `IRL Report too short: ${wordCount} words (minimum ${IRL_MIN_WORD_COUNT} after optional expand retry)`
+    );
+  }
+
+  return { reportText, wordCount, irlRetryUsed };
 };
 
 module.exports = {
   generateInvisibleRedLineReport,
   buildIrlInputContent,
+  invalidatePromptCache,
+  normalizeStage2PacketInputs,
+  IRL_MIN_WORD_COUNT,
+  IRL_MAX_COMPLETION_TOKENS,
 };

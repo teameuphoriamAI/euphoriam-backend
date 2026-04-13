@@ -8,6 +8,10 @@ const path = require("path");
 const PDFDocument = require("pdfkit");
 require("dotenv").config();
 const axios = require("axios");
+const {
+  IRL_REPORT_SUBTITLE_V22,
+  IRL_PDF_SNAPSHOT_CARD_HEADING,
+} = require("../constants/irlBranding");
 
 const ensureDir = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
@@ -129,6 +133,30 @@ const cleanIrlSectionHeadingForPdf = (heading) => {
   return cleaned || stripResidualIrlMdForPdf(base);
 };
 
+const truncatePlainPdfLine = (value, max = 320) => {
+  const t = String(value || "").trim();
+  if (!t) return "";
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+
+/**
+ * Plain-English PDF snapshot (v2.2 §3 alignment) — no EO, CL, vortex IDs, or lack-channel codes.
+ */
+const buildPlainEnglishIrlPdfSnapshotLines = (dp = {}, cp = {}) => {
+  const lines = [];
+  const add = (label, value) => {
+    const v = truncatePlainPdfLine(value);
+    if (v) lines.push(`${label}: ${v}`);
+  };
+  add("Primary life area", dp.domain_primary);
+  add("Outcome you're chasing", dp.desired_outcome);
+  add("How this pattern tends to show up", dp.structure_type);
+  add("The loop you describe", dp.current_loop || dp.orbit_pattern);
+  if (cp.red_barrier_sentence) add("The line you keep hitting", cp.red_barrier_sentence);
+  else if (cp.name) add("Working label", cp.name);
+  return lines;
+};
+
 const normalizeIrlReportTextForPdf = (reportText = "") => {
   const lines = preNormalizeIrlReportSource(reportText).split("\n");
   const out = [];
@@ -170,6 +198,8 @@ const normalizeIrlReportTextForPdf = (reportText = "") => {
     if (
       lower === "invisible red line report" ||
       lower === "your hidden energy structure constraint map" ||
+      lower === "your hidden pattern that keeps pulling you off course" ||
+      lower.startsWith("subtitle:") ||
       /^invisible red line report$/i.test(line.trim())
     ) {
       continue;
@@ -262,6 +292,7 @@ const generateIrlReportPdf = async (diagnostic) =>
       const irlReport = data.irlReport || data.aiReport || "";
       const structuredPacket = data.structuredPacket || {};
       const dp = structuredPacket.diagnostic_packet || {};
+      const cp = structuredPacket.constraint_packet || {};
       const userName = profile.name || profile.email?.split("@")[0] || "User";
 
       const MARGIN = 50;
@@ -320,7 +351,7 @@ const generateIrlReportPdf = async (diagnostic) =>
         .fontSize(12)
         .fillColor(MUTED)
         .font("Helvetica")
-        .text("Your Hidden Energy Structure Constraint Map", { align: "center", width: pageWidth });
+        .text(IRL_REPORT_SUBTITLE_V22, { align: "center", width: pageWidth });
 
       doc.moveDown(0.5);
       doc
@@ -342,23 +373,11 @@ const generateIrlReportPdf = async (diagnostic) =>
         .stroke();
       doc.moveDown(1.2);
 
-      if (dp.signature_primary_id || dp.domain_primary || dp.orbit_pattern) {
+      const snapshotLines = buildPlainEnglishIrlPdfSnapshotLines(dp, cp);
+      if (snapshotLines.length > 0) {
         const cardX = MARGIN;
         const cardY = doc.y;
         const cardW = pageWidth;
-        const snapshotLines = [
-          dp.domain_primary ? `Primary domain: ${dp.domain_primary}` : null,
-          dp.structure_type ? `Structure type: ${dp.structure_type}` : null,
-          dp.signature_primary_id ? `Vortex signature: ${dp.signature_primary_id}` : null,
-          dp.EO ? `Egoic orientation: ${dp.EO}` : null,
-          dp.lack_channel ? `Lack channel: ${dp.lack_channel}` : null,
-          dp.protector_type ? `Protector: ${dp.protector_type}` : null,
-          dp.orbit_pattern ? `Behavioural loop: ${dp.orbit_pattern}` : null,
-          dp.gravity_depth ? `Gravity depth: ${dp.gravity_depth}` : null,
-          dp.CL_estimate ? `Coherence estimate: CL ${dp.CL_estimate}` : null,
-          dp.signature_confidence ? `Map confidence: ${dp.signature_confidence}` : null,
-        ].filter(Boolean);
-
         const lineH = 16;
         const cardH = 20 + snapshotLines.length * lineH + 20;
 
@@ -371,7 +390,7 @@ const generateIrlReportPdf = async (diagnostic) =>
           .font("Helvetica-Bold")
           .fontSize(9)
           .fillColor(PURPLE)
-          .text("YOUR STRUCTURE SNAPSHOT", { indent: 14, width: cardW - 28 });
+          .text(IRL_PDF_SNAPSHOT_CARD_HEADING, { indent: 14, width: cardW - 28 });
 
         doc.moveDown(0.4);
         snapshotLines.forEach((line) => {
@@ -506,4 +525,8 @@ const generateIrlReportPdf = async (diagnostic) =>
     }
   });
 
-module.exports = { generateIrlReportPdf };
+module.exports = {
+  generateIrlReportPdf,
+  normalizeIrlReportTextForPdf,
+  buildPlainEnglishIrlPdfSnapshotLines,
+};

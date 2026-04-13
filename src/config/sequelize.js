@@ -773,7 +773,41 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
       LIMIT 1;
     `);
     if (!existing.length) {
-      const IRL_PROMPT_CONTENT = `TITLE:
+      // Phase E.1 — Greenfield: prefer repo canonical v2.2 markdown; else bundled v1.0 fallback.
+      // Staging/prod with existing rows: use `npm run apply:irl-prompt-v22` (see docs/prompt-update-v2.md).
+      const fs = require("fs");
+      const path = require("path");
+      let irlPromptName = "Invisible Red Line Report Generator v2.2";
+      const irlPromptMeta = JSON.stringify({
+        model: "gpt-4o",
+        temperature: 0.4,
+        max_tokens: 4000,
+      });
+      let irlPromptContent = null;
+      const irlCanonicalPaths = [
+        path.join(__dirname, "../../../../docs/updated/invisible-red-line-report-prompt-v2.2.md"),
+        path.join(process.cwd(), "docs/updated/invisible-red-line-report-prompt-v2.2.md"),
+      ];
+      for (const p of irlCanonicalPaths) {
+        try {
+          if (fs.existsSync(p)) {
+            const t = fs.readFileSync(p, "utf8").trim();
+            if (t.length > 2000) {
+              irlPromptContent = t;
+              console.log("[initDb] IRL prompt seed loaded from canonical file:", p);
+              break;
+            }
+          }
+        } catch (readErr) {
+          console.log("[initDb] IRL canonical read skipped:", p, readErr?.message || readErr);
+        }
+      }
+      if (!irlPromptContent) {
+        console.warn(
+          "[initDb] IRL v2.2 canonical markdown not found — seeding bundled v1.0 fallback. Add docs/updated/invisible-red-line-report-prompt-v2.2.md to the repo image, or run `npm run apply:irl-prompt-v22` against this database for v2.2."
+        );
+        irlPromptName = "Invisible Red Line Report Generator v1.0";
+        irlPromptContent = `TITLE:
 Euphoriam AI — Invisible Red Line Report Generator v1.0
 (Front-End Conversion Report built from completed Constraint Diagnosis)
 
@@ -1166,16 +1200,17 @@ Do not include meta commentary.
 Do not explain the rules.
 Do not mention "developer", "prompt", "system", "888 rule" as instructions.
 Simply generate the report with the visible 888 markers exactly where required.`;
+      }
 
       await sequelize.query(
         `INSERT INTO prompts (name, type, content, "isActive", version, metadata, "createdAt", "updatedAt")
          VALUES (:name, :type, :content, true, 1, :metadata, NOW(), NOW());`,
         {
           replacements: {
-            name: "Invisible Red Line Report Generator v1.0",
+            name: irlPromptName,
             type: "invisible_red_line_report",
-            content: IRL_PROMPT_CONTENT,
-            metadata: JSON.stringify({ model: "gpt-4o", temperature: 0.4, max_tokens: 3000 }),
+            content: irlPromptContent,
+            metadata: irlPromptMeta,
           },
         }
       );

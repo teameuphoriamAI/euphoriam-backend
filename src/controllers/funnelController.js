@@ -33,6 +33,17 @@ const UC_SALES_URL = process.env.UC_SALES_URL || `${process.env.FRONTEND_URL || 
 
 const IP_ABUSE_THRESHOLD = 10; // distinct emails per IP per 24h before flagging
 
+/** Diagnostic id from Chat row (`dignosticId` column typo) and/or JSON `data.diagnostic_id`. */
+const funnelChatLinkedDiagnosticId = (chat) => {
+  if (!chat) return null;
+  const top = chat.dignosticId != null ? Number(chat.dignosticId) : NaN;
+  if (Number.isFinite(top) && top > 0) return top;
+  const raw = chat.data?.diagnostic_id;
+  const n = raw != null && raw !== "" ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n > 0) return n;
+  return null;
+};
+
 // ── Validation schemas ────────────────────────────────────────────────────────
 
 const createTokenSchema = Joi.object({
@@ -976,14 +987,17 @@ const getMyFunnelChats = async (req, res) => {
   // At most one open thread per access (legacy duplicates collapse to the latest).
   const deduped = [...(incomplete.length ? [incomplete[0]] : []), ...complete].slice(0, 25);
 
-  const list = deduped.map((c) => ({
-    id: c.id,
-    created_at: c.createdAt,
-    updated_at: c.updatedAt,
-    ended: Boolean(c.isChatEnded),
-    diagnostic_id: c.dignosticId || (c.data?.diagnostic_id ? Number(c.data.diagnostic_id) : null),
-    message_count: normalizeFunnelTranscriptRowsFromChatData(c.data || {}).length,
-  }));
+  const list = deduped.map((c) => {
+    const diagnostic_id = funnelChatLinkedDiagnosticId(c);
+    return {
+      id: c.id,
+      created_at: c.createdAt,
+      updated_at: c.updatedAt,
+      ended: Boolean(c.isChatEnded && diagnostic_id != null),
+      diagnostic_id,
+      message_count: normalizeFunnelTranscriptRowsFromChatData(c.data || {}).length,
+    };
+  });
 
   return successResponse(res, "Chats retrieved", { chats: list });
 };
@@ -1032,7 +1046,7 @@ const issueFunnelSocketSession = async (req, res) => {
   if (d.funnelMode !== true && d.report_type !== "invisible_red_line") {
     return errorResponse(res, "Not a funnel diagnostic chat", 403);
   }
-  if (chat.isChatEnded) {
+  if (chat.isChatEnded && funnelChatLinkedDiagnosticId(chat) != null) {
     return errorResponse(res, "This Q&A session is already complete. Open the report from Past Reports.", 400);
   }
 
@@ -1088,12 +1102,14 @@ const getFunnelChatTranscript = async (req, res) => {
   }
 
   const transcript = normalizeFunnelTranscriptRowsFromChatData(chat.data || {});
+  const diagnostic_id = funnelChatLinkedDiagnosticId(chat);
+  const ended = Boolean(chat.isChatEnded && diagnostic_id != null);
 
   return successResponse(res, "Chat transcript", {
     id: chat.id,
     created_at: chat.createdAt,
-    ended: Boolean(chat.isChatEnded),
-    diagnostic_id: chat.dignosticId || null,
+    ended,
+    diagnostic_id,
     transcript,
   });
 };

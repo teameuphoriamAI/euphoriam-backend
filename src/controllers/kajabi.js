@@ -1068,6 +1068,40 @@ const summarizeCourseAssessments = (courseAssessments) => {
   };
 };
 
+/**
+ * Minimal Kajabi fetch for Creator Club checks: customer + related offer/product
+ * titles only. Avoids per-course posts and assessment progress (major latency).
+ */
+export async function buildKajabiMembershipContext({ email }) {
+  const customerInfo = await getCustomerByEmail(email);
+  if (!customerInfo) {
+    console.warn("No customer found for email", email);
+    return null;
+  }
+
+  const customerDetails = await getCustomerFullDetails(customerInfo.id);
+  const customerData = customerDetails.data;
+  const rel = customerData?.relationships || {};
+
+  const offerIds = rel.offers?.data?.map((o) => o.id) || [];
+  const productIds = rel.products?.data?.map((p) => p.id) || [];
+
+  const [offers, products] = await Promise.all([
+    Promise.all(offerIds.map((id) => getOfferById(id))),
+    Promise.all(productIds.map((id) => getProductById(id))),
+  ]);
+
+  const normalizedProducts = products.map(normalizeKajabiProduct);
+  const normalizedOffers = offers.map(normalizeKajabiOffer);
+
+  return {
+    diagnosticContext: {
+      products: normalizedProducts,
+      offers: normalizedOffers,
+    },
+  };
+}
+
 // this function gives the full kajabi context for a given customer email
 
 export async function buildKajabiDiagnosticContext({

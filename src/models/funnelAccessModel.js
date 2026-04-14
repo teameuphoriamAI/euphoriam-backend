@@ -77,6 +77,7 @@ const FunnelAccess = sequelize.define(
       type: DataTypes.STRING(64),
       allowNull: true,
     },
+    // e.g. { signup_name: string } — set on direct-signup (checkUser) or create-token (first_name)
     metadata: {
       type: DataTypes.JSONB,
       allowNull: true,

@@ -43,7 +43,7 @@ const {
 const jwt = require("jsonwebtoken");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const { successResponse, errorResponse } = require("../utils/response");
-const { buildKajabiDiagnosticContext } = require("./kajabi");
+const { buildKajabiMembershipContext } = require("./kajabi");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const { sendEmail, sendEmailBasic } = require("../utils/email");
@@ -117,14 +117,14 @@ const normalizeSignatureId = (value) => {
 };
 
 /**
- * Finds or creates a user and checks/updates their Creator Club membership status
- * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
- * Always checks latest status from Kajabi and updates the database
+ * Finds or creates a user and checks/updates their Creator Club membership status.
+ * Uses a lightweight Kajabi probe (customer + offer/product titles only) so signup
+ * and funnel redirect are not blocked on full course/assessment hydration.
  */
-const checkCreatorClubByEmail = async ({ email, assessmentIds = [] }) => {
+const checkCreatorClubByEmail = async ({ email }) => {
   console.log("Checking Creator Club membership for email:", email);
 
-  const result = await buildKajabiDiagnosticContext({ email, assessmentIds });
+  const result = await buildKajabiMembershipContext({ email });
 
   if (!result) {
     console.warn(
@@ -156,7 +156,7 @@ const checkCreatorClubByEmail = async ({ email, assessmentIds = [] }) => {
 
 const findOrCreateCreatorUser = async (req, res) => {
   try {
-    let { email, name, assessmentIds = [] } = req.body;
+    let { email, name } = req.body;
     if (!email) return errorResponse(res, "Email is required", 400);
 
     email = email.toLowerCase().trim();
@@ -165,7 +165,6 @@ const findOrCreateCreatorUser = async (req, res) => {
     // 🔍 Check Kajabi membership FIRST
     const { clubStatus, diagnosticContext } = await checkCreatorClubByEmail({
       email,
-      assessmentIds,
     });
 
     // Non-UC members: route them into the free funnel (IRL Report) instead of blocking

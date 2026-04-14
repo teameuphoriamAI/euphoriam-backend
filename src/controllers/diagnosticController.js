@@ -156,7 +156,7 @@ const checkCreatorClubByEmail = async ({ email }) => {
 
 const findOrCreateCreatorUser = async (req, res) => {
   try {
-    let { email, name } = req.body;
+    let { email, name, signup: signupIntent } = req.body;
     if (!email) return errorResponse(res, "Email is required", 400);
 
     email = email.toLowerCase().trim();
@@ -170,6 +170,13 @@ const findOrCreateCreatorUser = async (req, res) => {
     // Non-UC members: route them into the free funnel (IRL Report) instead of blocking
     const isUcMember = clubStatus.club || clubStatus.bronze || clubStatus.silver;
     if (!isUcMember) {
+      if (signupIntent && !name) {
+        return errorResponse(
+          res,
+          "Name is required to create your free diagnostic account.",
+          400,
+        );
+      }
       const LINK_VALIDITY_DAYS = parseInt(process.env.FUNNEL_LINK_VALIDITY_DAYS || "10", 10);
       const frontendUrl = (process.env.FRONTEND_URL || "").replace(/\/$/, "");
       const now = new Date();
@@ -193,6 +200,9 @@ const findOrCreateCreatorUser = async (req, res) => {
         const token = generateFunnelToken({ email, kajabi_offer_source: "direct-signup", nonce });
         const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
 
+        const signupName = name && String(name).trim() ? String(name).trim() : null;
+        const metadata = signupName ? { signup_name: signupName } : {};
+
         funnelRecord = await withDbSlot(() =>
           FunnelAccess.create({
             email,
@@ -200,8 +210,22 @@ const findOrCreateCreatorUser = async (req, res) => {
             link_created_at: now,
             link_expiry: linkExpiry,
             kajabi_offer_source: "direct-signup",
+            metadata,
           })
         );
+      } else if (name && String(name).trim()) {
+        // Reused link: persist latest signup display name for User.create on start-diagnostic
+        const signupName = String(name).trim();
+        const prev = funnelRecord.metadata && typeof funnelRecord.metadata === "object"
+          ? funnelRecord.metadata
+          : {};
+        if (prev.signup_name !== signupName) {
+          await withDbSlot(() =>
+            funnelRecord.update({
+              metadata: { ...prev, signup_name: signupName },
+            })
+          );
+        }
       }
 
       const link = `${frontendUrl}/diagnostic/funnel?token=${encodeURIComponent(funnelRecord.link_token)}`;

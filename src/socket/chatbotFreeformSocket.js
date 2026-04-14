@@ -599,12 +599,43 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
 /* -------------------- Funnel First Question -------------------- */
 
 /**
+ * Loads User.name for funnel sessions so greetings use the real name when present.
+ * funnelDisplayName is null when no user row or name is empty (caller falls back to email local part).
+ */
+const hydrateFunnelSessionDisplayName = async (session) => {
+  session.funnelDisplayName = null;
+  if (!session?.email) return;
+  try {
+    const user = await User.findOne({
+      where: { email: session.email },
+      attributes: ["name"],
+    });
+    const n = user?.name != null ? String(user.name).trim() : "";
+    if (n) session.funnelDisplayName = n;
+  } catch (err) {
+    console.warn(
+      "[funnel socket] hydrateFunnelSessionDisplayName failed:",
+      err?.message || err,
+    );
+  }
+};
+
+/** Greeting / prompt name: User.name when set, else email local part, else "there". */
+const resolveFunnelGreetingName = (session) => {
+  const fromUser = (session?.funnelDisplayName || "").trim();
+  if (fromUser) return fromUser;
+  const fromEmail = (session?.email || "").split("@")[0]?.trim() || "";
+  if (fromEmail) return fromEmail;
+  return "there";
+};
+
+/**
  * Static welcome prepended to the first assistant bubble (free funnel only).
  * Explains the 25-question flow and the Invisible Red Line report outcome.
  */
 const buildFunnelWelcomeMarkdown = (session) => {
   const count = session.targetCount || 25;
-  const firstName = (session.email || "").split("@")[0]?.trim() || "there";
+  const firstName = resolveFunnelGreetingName(session);
   return `Hi ${firstName},
 
 Welcome to your **Invisible Red Line** diagnostic. I'll ask **${count} focused questions**—one at a time—about how you move toward what you want, where you feel friction, and what tends to repeat when pressure shows up. Your answers stay in this thread only.
@@ -640,7 +671,7 @@ const stripPreambleBetweenFunnelWelcomeAndQ1 = (text = "") => {
  */
 const sendFirstFunnelQuestion = async (socket, session) => {
   try {
-    const name = (session.email || "").split("@")[0] || "there";
+    const name = resolveFunnelGreetingName(session);
 
     // Retrieve a small set of RAG chunks for context (best-effort, non-fatal)
     let retrieved = [];
@@ -754,6 +785,7 @@ const wireChatbotFreeform = (io) => {
       isFunnelMode: false,
       funnel_access_id: null,
       funnel_chat_id: null,
+      funnelDisplayName: null,
     });
 
     socket.emit("connected", { sessionId: socket.id });
@@ -800,6 +832,7 @@ const wireChatbotFreeform = (io) => {
         }
         session.funnel_chat_id = parsedChatId;
         session.mode = "diagnostic"; // always diagnostic, never discovery
+        await hydrateFunnelSessionDisplayName(session);
         const restored = await tryRestoreFunnelTranscript(socket, session);
         socket.emit("ready", {
           sessionId: socket.id,
@@ -1044,7 +1077,9 @@ const wireChatbotFreeform = (io) => {
         transcript: session.transcript,
         targetCount: session.targetCount,
         introText: session.introPageText,
-        name: session.email?.split("@")[0] || "there",
+        name: session.isFunnelMode
+          ? resolveFunnelGreetingName(session)
+          : session.email?.split("@")[0] || "there",
         retrieved,
         priorReportSnippet: session.priorReportSnippet,
         lastTurnAssistant: assistantQuestions > 0,

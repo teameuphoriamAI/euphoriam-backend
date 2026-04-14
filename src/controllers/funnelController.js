@@ -236,6 +236,10 @@ const createToken = async (req, res) => {
 
   const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
 
+  const signupName =
+    first_name && String(first_name).trim() ? String(first_name).trim() : null;
+  const metadata = signupName ? { signup_name: signupName } : {};
+
   const record = await withDbSlot(() =>
     FunnelAccess.create({
       email,
@@ -244,6 +248,7 @@ const createToken = async (req, res) => {
       link_expiry: linkExpiry,
       kajabi_offer_source,
       ip_at_creation: clientIp,
+      metadata,
     })
   );
 
@@ -361,13 +366,23 @@ const startDiagnostic = async (req, res) => {
 
   const { email } = decoded;
 
+  const meta = record.metadata && typeof record.metadata === "object" ? record.metadata : {};
+  const signupName =
+    typeof meta.signup_name === "string" && meta.signup_name.trim()
+      ? meta.signup_name.trim()
+      : "";
+  const emailLocal = (email || "").split("@")[0]?.trim() || "";
+
   // Find or create super-base User record (builds market research base)
   let user = await withDbSlot(() => User.findOne({ where: { email } }));
   if (!user) {
-    const userName = email.split("@")[0];
+    const userName = signupName || emailLocal || "User";
     user = await withDbSlot(() =>
       User.create({ email, name: userName })
     );
+  } else if (signupName && emailLocal && user.name === emailLocal) {
+    // Backfill display name when row was created before signup_name existed (name was email local part)
+    await withDbSlot(() => user.update({ name: signupName }));
   }
 
   const accessIdStr = String(record.id);

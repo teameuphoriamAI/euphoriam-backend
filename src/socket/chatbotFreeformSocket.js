@@ -155,14 +155,19 @@ const detectDuplicateCoreQuestionAcrossNumbers = (transcript = [], candidateCont
 };
 
 const maxQuestionNumberInText = (text = "") => {
-  let max = 0;
-  const re = /Q\s*(\d{1,2})/gi;
   const s = String(text || "");
+  let max = 0;
+  const bump = (raw) => {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1 && n <= 99) max = Math.max(max, n);
+  };
   let m;
-  while ((m = re.exec(s)) !== null) {
-    const n = parseInt(m[1], 10);
-    if (n >= 1 && n <= 99) max = Math.max(max, n);
-  }
+  const reQ = /Q\s*(\d{1,2})\b/gi;
+  while ((m = reQ.exec(s)) !== null) bump(m[1]);
+  const reQHash = /\bquestion\s*#?\s*(\d{1,2})\b/gi;
+  while ((m = reQHash.exec(s)) !== null) bump(m[1]);
+  const reQWord = /\bquestion\s+(\d{1,2})(?:\s*[—–\-:]|\/|\s+of)\b/gi;
+  while ((m = reQWord.exec(s)) !== null) bump(m[1]);
   return max;
 };
 
@@ -178,12 +183,10 @@ const maxCoreQuestionFromTranscript = (transcript, cap = 25) => {
 
 /** True if this assistant bubble references the numbered question `cap` (e.g. 25), any common formatting. */
 const assistantMessageMentionsQuestionCap = (content, cap) => {
-  const re = /Q\s*(\d{1,2})/gi;
   const s = String(content || "");
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    if (parseInt(m[1], 10) === cap) return true;
-  }
+  if (new RegExp(`Q\\s*${cap}\\b`, "i").test(s)) return true;
+  if (new RegExp(`\\bquestion\\s*#?\\s*${cap}\\b`, "i").test(s)) return true;
+  if (new RegExp(`\\bquestion\\s+${cap}(?:\\s*[—–\\-:]|\\s+of)\\b`, "i").test(s)) return true;
   return false;
 };
 
@@ -1325,6 +1328,23 @@ Rules:
       }
 
       session.transcript.push(msg);
+
+      // Model sometimes omits [FUNNEL_INTAKE_COMPLETE] while still ending the intake; without it
+      // clients may not show "Generate report". Append once intake is structurally complete.
+      if (session.isFunnelMode) {
+        const cap = session.targetCount || 25;
+        const last = session.transcript[session.transcript.length - 1];
+        if (
+          last?.role === "assistant" &&
+          typeof last.content === "string" &&
+          funnelIntakeTranscriptComplete(session.transcript, cap) &&
+          !/\[FUNNEL_INTAKE_COMPLETE\]/i.test(last.content)
+        ) {
+          last.content = `${last.content.trim()}\n\n[FUNNEL_INTAKE_COMPLETE]`;
+          msg = { ...msg, content: last.content };
+          rawAssistantContent = last.content;
+        }
+      }
 
       if (session.isFunnelMode) {
         await persistFunnelChatTranscript(session);

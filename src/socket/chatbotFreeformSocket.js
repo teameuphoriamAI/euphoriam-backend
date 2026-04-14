@@ -217,6 +217,19 @@ const funnelIntakeTranscriptComplete = (transcript, cap = 25) => {
   return t.slice(capIdx + 1).some((m) => m.role === "user" && isAnswerLike(m.content));
 };
 
+/** When Q labels were stripped or never parsed, still allow report if counts match a finished intake. */
+const funnelIntakeLooksCompleteByCounts = (transcript, cap = 25) => {
+  const t = transcript || [];
+  const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  const asst = t.filter((m) => m.role === "assistant").length;
+  if (answered < cap) return false;
+  if (asst < cap - 1) return false;
+  return true;
+};
+
+const funnelIntakeTranscriptCompleteOrLegacy = (transcript, cap = 25) =>
+  funnelIntakeTranscriptComplete(transcript, cap) || funnelIntakeLooksCompleteByCounts(transcript, cap);
+
 const buildFunnelSystemPromptAppend = (targetCount) => `
 === FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===
 - Work through Q1 to Q${targetCount} in order. Do not skip or merge numbered questions.
@@ -234,7 +247,7 @@ const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => 
   const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
   // `asked` tracks the highest Q label seen in assistant text — it hits `cap` as soon as Q25 is *asked*,
   // not when it is *answered*. Gate on substantive answers AND a reply after the last Q(cap) ask.
-  const intakeComplete = funnelIntakeTranscriptComplete(t, cap);
+  const intakeComplete = funnelIntakeTranscriptCompleteOrLegacy(t, cap);
   // In funnel mode we finalize immediately after Q25 is answered (no CB clarifiers).
   const readyToFinalize = intakeComplete;
   return {
@@ -1337,7 +1350,7 @@ Rules:
         if (
           last?.role === "assistant" &&
           typeof last.content === "string" &&
-          funnelIntakeTranscriptComplete(session.transcript, cap) &&
+          funnelIntakeTranscriptCompleteOrLegacy(session.transcript, cap) &&
           !/\[FUNNEL_INTAKE_COMPLETE\]/i.test(last.content)
         ) {
           last.content = `${last.content.trim()}\n\n[FUNNEL_INTAKE_COMPLETE]`;
@@ -1406,7 +1419,7 @@ Rules:
         const answered = session.transcript.filter(
           (m) => m.role === "user" && isAnswerLike(m.content),
         ).length;
-        if (!funnelIntakeTranscriptComplete(session.transcript, cap)) {
+        if (!funnelIntakeTranscriptCompleteOrLegacy(session.transcript, cap)) {
           socket.emit("error", {
             message: `Please complete all ${cap} diagnostic questions before generating your report. (Progress: ${answered} answers, through Q${maxQ} of ${cap}.)`,
           });

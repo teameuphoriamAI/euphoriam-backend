@@ -217,10 +217,20 @@ const funnelIntakeTranscriptComplete = (transcript, cap = 25) => {
   return t.slice(capIdx + 1).some((m) => m.role === "user" && isAnswerLike(m.content));
 };
 
+/** User turns that look like answers (legacy: emoji-only / non-Latin failed `isAnswerLike` but intake is done). */
+const funnelUserTurnsSubstantiveLoose = (transcript) =>
+  (transcript || []).filter((m) => {
+    if (m?.role !== "user") return false;
+    const t = String(m.content || "").trim();
+    return t.length >= 2 && !t.toLowerCase().endsWith("?");
+  }).length;
+
 /** When Q labels were stripped or never parsed, still allow report if counts match a finished intake. */
 const funnelIntakeLooksCompleteByCounts = (transcript, cap = 25) => {
   const t = transcript || [];
-  const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  const strictAns = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  const looseAns = funnelUserTurnsSubstantiveLoose(t);
+  const answered = Math.max(strictAns, looseAns);
   const asst = t.filter((m) => m.role === "assistant").length;
   if (answered < cap) return false;
   if (asst < cap - 1) return false;

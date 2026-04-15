@@ -4,7 +4,7 @@ const { IRL_REPORT_SUBTITLE_V22 } = require("../../constants/irlBranding");
 
 const logoUrl = process.env.LOGO_URL;
 const ucSalesUrl = process.env.UC_SALES_URL || "";
-const ctaText = process.env.UC_CTA_TEXT || "Start Unlimited Creator";
+const ctaText = process.env.UC_CTA_TEXT || "Upgrade for Full Access";
 
 /**
  * Email template for the Invisible Red Line Report delivery.

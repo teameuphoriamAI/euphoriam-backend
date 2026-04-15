@@ -1079,7 +1079,7 @@ This report must have these exact sections in this order:
 18. One proof step for today
 19. The decision in front of you now
 
-If include_button_cta = true, include: [Start Unlimited Creator] or use offer_config.cta_text if provided.
+If include_button_cta = true, include: [Upgrade for Full Access] or use offer_config.cta_text if provided.
 
 ------------------------------------------------------------
 SECTION WRITING RULES
@@ -1174,7 +1174,7 @@ Format:
 SECTION 19 — The decision in front of you now
 Close hard. Binary choice: keep circling the structure vs install the system that starts changing it.
 Must include: 888 Based on your current pattern, UC is the right next step because...
-If include_button_cta = true, render: [offer_config.cta_text or "Start Unlimited Creator"]
+If include_button_cta = true, render: [offer_config.cta_text or "Upgrade for Full Access"]
 Must feel inevitable, not pushy.
 
 ------------------------------------------------------------

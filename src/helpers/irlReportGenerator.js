@@ -260,7 +260,7 @@ const buildIrlInputContent = ({
   lines.push(`  uc_offer_price_string: ${safe(offer_config.uc_offer_price_string)}`);
   lines.push(`  include_price_compare: ${safe(offer_config.include_price_compare)}`);
   lines.push(`  include_button_cta: ${safe(offer_config.include_button_cta)}`);
-  lines.push(`  cta_text: ${safe(offer_config.cta_text || "Start Unlimited Creator")}`);
+  lines.push(`  cta_text: ${safe(offer_config.cta_text || "Upgrade for Full Access")}`);
   lines.push("");
 
   lines.push("=== INPUTS END ===");

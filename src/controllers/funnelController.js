@@ -498,7 +498,7 @@ const completeDiagnostic = async ({
     uc_offer_price_string: process.env.UC_OFFER_PRICE || null,
     include_price_compare: process.env.UC_INCLUDE_PRICE_COMPARE === "true",
     include_button_cta: process.env.UC_INCLUDE_BUTTON_CTA !== "false",
-    cta_text: process.env.UC_CTA_TEXT || "Start Unlimited Creator",
+    cta_text: process.env.UC_CTA_TEXT || "Upgrade for Full Access",
   };
 
   let irlReport = reportText; // Fallback to Stage 1 report if Stage 2 fails

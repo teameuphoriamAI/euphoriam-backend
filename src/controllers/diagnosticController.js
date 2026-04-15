@@ -181,26 +181,21 @@ const findOrCreateCreatorUser = async (req, res) => {
       const frontendUrl = (process.env.FRONTEND_URL || "").replace(/\/$/, "");
       const now = new Date();
 
-      // Reuse an existing active (non-expired, non-blocked) funnel access record for this email
+      // One direct-signup row per email (DB unique index). Reuse + refresh token instead of inserting duplicates.
       let funnelRecord = await withDbSlot(() =>
         FunnelAccess.findOne({
-          where: { email, is_blocked: false },
+          where: { email, kajabi_offer_source: "direct-signup" },
           order: [["createdAt", "DESC"]],
         })
       );
 
-      const isExpired = funnelRecord &&
-        new Date(funnelRecord.link_expiry) <= now;
-      const isAtLimit = funnelRecord &&
-        funnelRecord.diagnostics_completed_count >= parseInt(process.env.FUNNEL_MAX_DIAGNOSTICS || "3", 10);
+      const signupName = name && String(name).trim() ? String(name).trim() : null;
+      const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
 
-      if (!funnelRecord || isExpired || isAtLimit) {
-        // Create a fresh funnel access record via the direct-signup path
+      if (!funnelRecord) {
+        // First direct-signup row for this email.
         const nonce = crypto.randomUUID();
         const token = generateFunnelToken({ email, kajabi_offer_source: "direct-signup", nonce });
-        const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
-
-        const signupName = name && String(name).trim() ? String(name).trim() : null;
         const metadata = signupName ? { signup_name: signupName } : {};
 
         funnelRecord = await withDbSlot(() =>
@@ -213,9 +208,34 @@ const findOrCreateCreatorUser = async (req, res) => {
             metadata,
           })
         );
-      } else if (name && String(name).trim()) {
+      } else if (funnelRecord.is_blocked) {
+        return errorResponse(
+          res,
+          "Access restricted. Please contact support.",
+          403,
+        );
+      } else {
+        // Existing row: always rotate to a fresh token/link validity so users can still log in to view history.
+        // This keeps counters/history intact and avoids unique key collisions on (email, kajabi_offer_source).
+        const nonce = crypto.randomUUID();
+        const token = generateFunnelToken({ email, kajabi_offer_source: "direct-signup", nonce });
+        const prev = funnelRecord.metadata && typeof funnelRecord.metadata === "object"
+          ? funnelRecord.metadata
+          : {};
+        await withDbSlot(() =>
+          funnelRecord.update({
+            link_token: token,
+            link_created_at: now,
+            link_expiry: linkExpiry,
+            metadata: signupName ? { ...prev, signup_name: signupName } : prev,
+          })
+        );
+        funnelRecord.link_token = token;
+        funnelRecord.link_expiry = linkExpiry;
+      }
+
+      if (funnelRecord && name && String(name).trim()) {
         // Reused link: persist latest signup display name for User.create on start-diagnostic
-        const signupName = String(name).trim();
         const prev = funnelRecord.metadata && typeof funnelRecord.metadata === "object"
           ? funnelRecord.metadata
           : {};

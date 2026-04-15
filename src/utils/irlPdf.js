@@ -303,6 +303,7 @@ const generateIrlReportPdf = async (diagnostic) =>
       const MUTED = "#666666";
       const MARKER_BG = "#f9f4ff";
       const MARKER_BORDER = "#9b59b6";
+      const ctaUrl = process.env.UC_SALES_URL || process.env.NEXT_PUBLIC_UC_SALES_URL || "";
 
       const doc = new PDFDocument({ margin: MARGIN, size: "A4" });
       const stream = fs.createWriteStream(filePath);
@@ -385,12 +386,15 @@ const generateIrlReportPdf = async (diagnostic) =>
           .roundedRect(cardX, cardY, cardW, cardH, 6)
           .fillAndStroke(LIGHT_PURPLE, PURPLE);
 
+        const cardPadX = 14;
+        const cardTextX = cardX + cardPadX;
+        const cardTextW = cardW - cardPadX * 2;
         doc.y = cardY + 16;
         doc
           .font("Helvetica-Bold")
           .fontSize(9)
           .fillColor(PURPLE)
-          .text(IRL_PDF_SNAPSHOT_CARD_HEADING, { indent: 14, width: cardW - 28 });
+          .text(IRL_PDF_SNAPSHOT_CARD_HEADING, cardTextX, doc.y, { width: cardTextW });
 
         doc.moveDown(0.4);
         snapshotLines.forEach((line) => {
@@ -398,18 +402,21 @@ const generateIrlReportPdf = async (diagnostic) =>
             .font("Helvetica")
             .fontSize(10)
             .fillColor(DARK)
-            .text(line, { indent: 14, width: cardW - 28, lineGap: 2 });
+            .text(line, cardTextX, doc.y, { width: cardTextW, lineGap: 2 });
         });
 
         doc.y = cardY + cardH + 16;
+        doc.x = MARGIN;
       }
 
       const cleanedReport = normalizeIrlReportTextForPdf(irlReport);
       const sections = parseIrlReportSections(cleanedReport);
 
       for (const section of sections) {
+        doc.x = MARGIN;
         if (doc.y > doc.page.height - doc.page.margins.bottom - 80) {
           doc.addPage();
+          doc.x = MARGIN;
         }
 
         if (section.heading) {
@@ -447,6 +454,10 @@ const generateIrlReportPdf = async (diagnostic) =>
                 width: pageWidth,
                 align: "center",
               });
+            if (ctaUrl) {
+              // Make the full CTA block clickable in the generated PDF.
+              doc.link(MARGIN, ctaY, pageWidth, ctaH, ctaUrl);
+            }
             doc.y = ctaY + ctaH + 12;
             continue;
           }

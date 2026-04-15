@@ -154,16 +154,18 @@ const checkAccess = (record) => {
     return { valid: false, reason: "blocked", diagnostics_remaining: 0, days_remaining: 0, can_start_new: false };
   }
 
+  // Quota is terminal for new diagnostics, but users should still be able to log in
+  // and view/download their existing reports/chats.
+  if (record.diagnostics_completed_count >= MAX_DIAGNOSTICS) {
+    return { valid: false, reason: "limit_reached", diagnostics_remaining: 0, days_remaining: 0, can_start_new: false };
+  }
+
   if (now >= new Date(record.link_expiry)) {
     return { valid: false, reason: "link_expired", diagnostics_remaining: 0, days_remaining: 0, can_start_new: false };
   }
 
   if (record.first_accessed_at && now >= new Date(record.expires_at)) {
     return { valid: false, reason: "access_expired", diagnostics_remaining: 0, days_remaining: 0, can_start_new: false };
-  }
-
-  if (record.diagnostics_completed_count >= MAX_DIAGNOSTICS) {
-    return { valid: false, reason: "limit_reached", diagnostics_remaining: 0, days_remaining: 0, can_start_new: false };
   }
 
   const diagnostics_remaining = MAX_DIAGNOSTICS - record.diagnostics_completed_count;

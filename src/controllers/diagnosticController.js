@@ -248,7 +248,7 @@ const findOrCreateCreatorUser = async (req, res) => {
         }
       }
 
-      const link = `${frontendUrl}/diagnostic/funnel?token=${encodeURIComponent(funnelRecord.link_token)}`;
+      const link = `${frontendUrl}/funnel?token=${encodeURIComponent(funnelRecord.link_token)}`;
 
       return successResponse(res, "Free diagnostic access granted", {
         funnel_redirect: true,

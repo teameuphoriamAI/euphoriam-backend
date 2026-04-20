@@ -4045,21 +4045,22 @@ ${questionForPrompt || "N/A"}
 USER'S REPLY:
 ${reply}
 
-Interpret generously. The question may ask about focus, desired outcome, patterns, triggers, what happens first, body/thoughts/behavior, feelings, examples, who taught you, where a belief came from, etc. Any reply that substantively relates to what was asked is an answer.
+BE EXTREMELY LENIENT. Almost any reply that isn't a greeting or off-topic question should count as YES.
 
 Count as YES (valid answer) when the reply:
-- Describes what the person does, thinks, feels, or experiences (e.g. "I get a coffee and get stuck thinking I don't have time" → valid for "what's the first thing that changes").
-- Gives concrete content: situation, examples, roles, responsibilities, beliefs, actions, thoughts, or reflections that relate to the question.
-- For "who taught you / where did this rule come from / what influenced this belief": accept when the user describes their role (e.g. "I'm a father and have to provide"), their responsibilities, culture, or how they see things working (e.g. "for a business to work people have to live your product"). That is describing the origin of the rule.
-- Is short but on-topic ("money", "my family", "nothing", "idk" when that fits).
-- Has typos or informal wording but clearly attempts to answer — output yes.
+- Expresses ANY position, even if brief: "neither", "both", "not chosen", "the first one", "second", "none", "all of them", "not really", "sort of"
+- Expresses uncertainty: "not sure", "idk", "I don't know", "maybe", "hard to say", "can't decide" — these ARE valid answers (uncertainty is data)
+- Is short but represents a choice or stance: "money", "my family", "nothing", "work", "failure", "rejection"
+- Describes feelings, thoughts, experiences, or beliefs in any form
+- Has typos or informal wording but represents an attempt to respond
+- Refers to prior answers or context: "same as before", "like I said"
 
-Count as NO only when the reply is clearly:
-- A greeting or sign-off with no attempt to answer ("hi", "bye", "see you").
-- A question directed at the bot ("who are you", "how many questions left").
-- Pure filler with no content ("ok" or "cool" by itself with nothing about the question).
+Count as NO only when the reply is CLEARLY:
+- A greeting or sign-off with ZERO content about the question ("hi", "bye", "hello there")
+- A meta-question directed at the bot ("who are you", "how many questions left", "what do you mean")
+- Pure acknowledgment with no stance ("ok", "cool", "got it" by itself)
 
-When in doubt, or when the reply has real content that could reasonably answer the question, output yes.
+CRITICAL: If the user gives ANY substantive response that could represent their answer, position, or state of mind — even if unclear or incomplete — output YES. When in doubt, output YES.
 
 Reply with exactly one word: yes or no.`;
 

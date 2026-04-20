@@ -62,7 +62,6 @@ const isAnswerLike = (text = "") => {
     "repeat",
     "don't understand",
     "do not understand",
-    "not sure",
     "what do you mean",
     "rephrase",
   ];
@@ -217,28 +216,9 @@ const funnelIntakeTranscriptComplete = (transcript, cap = 25) => {
   return t.slice(capIdx + 1).some((m) => m.role === "user" && isAnswerLike(m.content));
 };
 
-/** User turns that look like answers (legacy: emoji-only / non-Latin failed `isAnswerLike` but intake is done). */
-const funnelUserTurnsSubstantiveLoose = (transcript) =>
-  (transcript || []).filter((m) => {
-    if (m?.role !== "user") return false;
-    const t = String(m.content || "").trim();
-    return t.length >= 2 && !t.toLowerCase().endsWith("?");
-  }).length;
-
-/** When Q labels were stripped or never parsed, still allow report if counts match a finished intake. */
-const funnelIntakeLooksCompleteByCounts = (transcript, cap = 25) => {
-  const t = transcript || [];
-  const strictAns = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
-  const looseAns = funnelUserTurnsSubstantiveLoose(t);
-  const answered = Math.max(strictAns, looseAns);
-  const asst = t.filter((m) => m.role === "assistant").length;
-  if (answered < cap) return false;
-  if (asst < cap - 1) return false;
-  return true;
-};
-
+// Strict Q-cap gating only — legacy count-based fallback removed to prevent early completion.
 const funnelIntakeTranscriptCompleteOrLegacy = (transcript, cap = 25) =>
-  funnelIntakeTranscriptComplete(transcript, cap) || funnelIntakeLooksCompleteByCounts(transcript, cap);
+  funnelIntakeTranscriptComplete(transcript, cap);
 
 const buildFunnelSystemPromptAppend = (targetCount) => `
 === FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===

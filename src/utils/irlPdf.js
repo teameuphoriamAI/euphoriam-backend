@@ -69,6 +69,16 @@ const stripResidualIrlMdForPdf = (text) => {
     .trim();
 };
 
+// Internal "888" tokens are prompt-only markers and should never be shown in PDFs.
+const stripInternalIrlMarkersForPdf = (text) => {
+  if (!text) return "";
+  return String(text)
+    .replace(/^\s*888(?:\b|[.:_-])\s*/i, "")
+    .replace(/\b888\b/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+};
+
 const extractIrlBoldSegments = (line) => {
   if (!line || typeof line !== "string") return [{ bold: false, text: "" }];
   let s = line
@@ -164,6 +174,7 @@ const normalizeIrlReportTextForPdf = (reportText = "") => {
 
   for (let rawLine of lines) {
     let line = rawLine.trimEnd();
+    line = stripInternalIrlMarkersForPdf(line);
 
     const t = line.trim();
     if (isIrlDecorativeDividerLine(t)) continue;
@@ -264,7 +275,7 @@ const parseIrlReportSections = (reportText = "") => {
       continue;
     }
 
-    if (line.trimStart().startsWith("888")) {
+    if (/^\s*888(?:\b|[.:_-])/.test(line)) {
       current.lines.push({ type: "marker", text: line.trim() });
     } else if (line.startsWith("[") && line.includes("]")) {
       current.lines.push({ type: "cta", text: line.trim().replace(/^\[|\]$/g, "") });
@@ -450,7 +461,11 @@ const generateIrlReportPdf = async (diagnostic) =>
               .font("Helvetica-Bold")
               .fontSize(13)
               .fillColor("#ffffff")
-              .text(stripResidualIrlMdForPdf(cleanIrlPlainFragment(entry.text)), MARGIN, ctaY + 10, {
+              .text(
+                stripInternalIrlMarkersForPdf(stripResidualIrlMdForPdf(cleanIrlPlainFragment(entry.text))),
+                MARGIN,
+                ctaY + 10,
+                {
                 width: pageWidth,
                 align: "center",
               });
@@ -463,48 +478,11 @@ const generateIrlReportPdf = async (diagnostic) =>
           }
 
           if (entry.type === "marker") {
-            const raw = entry.text.replace(/^888\s*/, "").trim();
-            const innerW = pageWidth - 14;
-            const measureText = raw.replace(/\*\*/g, "");
-            doc.font("Helvetica-Bold").fontSize(10.5);
-            const textBlockH = doc.heightOfString(measureText, {
-              width: innerW,
-              lineGap: 2,
-            });
-            const boxH = Math.max(28, textBlockH + 14);
-
-            const pageBottom = doc.page.height - doc.page.margins.bottom;
-            if (doc.y + boxH + 6 > pageBottom) {
-              doc.addPage();
-            }
-
-            const lineY = doc.y;
-
-            doc
-              .rect(MARGIN, lineY, pageWidth, boxH)
-              .fillColor(MARKER_BG)
-              .fill();
-
-            doc
-              .moveTo(MARGIN, lineY)
-              .lineTo(MARGIN, lineY + boxH)
-              .strokeColor(MARKER_BORDER)
-              .lineWidth(3)
-              .stroke();
-
-            doc.x = MARGIN + 10;
-            doc.y = lineY + 7;
-            writeIrlMixedParagraph(doc, raw, {
-              pageWidth: innerW,
-              fontSize: 10.5,
-              color: DARK,
-            });
-            doc.x = MARGIN;
-            doc.y = lineY + boxH + 6;
+            // 888 markers are internal guidance only; never render them in user PDFs.
             continue;
           }
 
-          writeIrlMixedParagraph(doc, entry.text, {
+          writeIrlMixedParagraph(doc, stripInternalIrlMarkersForPdf(entry.text), {
             pageWidth,
             fontSize: 11,
             color: BODY,

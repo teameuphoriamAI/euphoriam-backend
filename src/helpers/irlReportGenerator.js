@@ -265,12 +265,23 @@ const buildIrlInputContent = ({
 
   lines.push("=== INPUTS END ===");
   lines.push("");
-  lines.push("Generate the Invisible Red Line Report now, following all section rules and voice guidelines from the system prompt.");
+  lines.push(
+    "Generate the Invisible Red Line Report now, following all section rules and voice guidelines from the system prompt."
+  );
+  lines.push("IMPORTANT: Do not include any internal marker token like '888' anywhere in the final report.");
 
   return lines.join("\n");
 };
 
 const countWords = (text) => String(text || "").trim().split(/\s+/).filter(Boolean).length;
+
+const stripInternalIrlMarkers = (text) =>
+  String(text || "")
+    .replace(/^\s*888(?:\b|[.:_-])\s*/gim, "")
+    .replace(/\b888\b/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 
 /** Phase F.4 — structured one-line JSON for log drains / alerts (grep `[IRL_QA]`). */
 const irlQaMetric = (code, extra = {}) => {
@@ -283,7 +294,7 @@ const irlQaMetric = (code, extra = {}) => {
  * Stage 2 of the funnel pipeline — generates the Invisible Red Line Report.
  *
  * Takes a fully structured packet (from Stage 1 extraction) and produces a
- * ~1000–1600 word personalised conversion report in 19 sections with 888 markers (v2.2).
+ * ~1000–1600 word personalised conversion report in 19 sections (v2.2).
  *
  * @param {object} params
  * @param {object} params.user               - { first_name, timezone }
@@ -327,6 +338,11 @@ const generateInvisibleRedLineReport = async ({
   });
 
   const systemMessage = { role: "system", content: systemPrompt.content };
+  const antiMarkerSystemMessage = {
+    role: "system",
+    content:
+      "Internal marker tokens (such as '888') are not user-facing content. Never output '888' in any line of the final report.",
+  };
   const userMessage = { role: "user", content: userContent };
 
   // 3. Call GPT-4o — quality matters, not speed
@@ -334,7 +350,7 @@ const generateInvisibleRedLineReport = async ({
   try {
     response = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: [systemMessage, userMessage],
+      messages: [systemMessage, antiMarkerSystemMessage, userMessage],
       temperature: 0.4,
       max_completion_tokens: IRL_MAX_COMPLETION_TOKENS,
     });
@@ -347,7 +363,7 @@ const generateInvisibleRedLineReport = async ({
     throw err;
   }
 
-  let reportText = (response?.choices?.[0]?.message?.content || "").trim();
+  let reportText = stripInternalIrlMarkers(response?.choices?.[0]?.message?.content || "");
 
   if (!reportText) {
     irlQaMetric("EMPTY_OUTPUT", { phase: "primary" });
@@ -368,7 +384,8 @@ const generateInvisibleRedLineReport = async ({
     const retryUser =
       "The previous draft was too short for publication.\n\n" +
       `It was only about ${wordCount} words; the minimum is ${IRL_MIN_WORD_COUNT} words.\n\n` +
-      "Regenerate the **complete** Invisible Red Line Report from the same inputs above: keep all 19 numbered sections, all 888 personalization rules, and deepen thin sections with concrete behaviour and consequence language until the total clearly meets the minimum. " +
+      "Regenerate the **complete** Invisible Red Line Report from the same inputs above: keep all 19 numbered sections, preserve personalization depth, and deepen thin sections with concrete behaviour and consequence language until the total clearly meets the minimum. " +
+      "Do not include any internal marker token like '888' anywhere in the report. " +
       "Do not reply with meta-commentary — output only the finished report.";
 
     let response2;
@@ -377,6 +394,7 @@ const generateInvisibleRedLineReport = async ({
         model: "gpt-4o",
         messages: [
           systemMessage,
+          antiMarkerSystemMessage,
           userMessage,
           { role: "assistant", content: reportText },
           { role: "user", content: retryUser },
@@ -393,7 +411,7 @@ const generateInvisibleRedLineReport = async ({
       throw err;
     }
 
-    reportText = (response2?.choices?.[0]?.message?.content || "").trim();
+    reportText = stripInternalIrlMarkers(response2?.choices?.[0]?.message?.content || "");
     if (!reportText) {
       irlQaMetric("EMPTY_OUTPUT", { phase: "retry" });
       throw new Error("IRL Report retry generation returned empty content");

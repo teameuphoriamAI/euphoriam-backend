@@ -1163,7 +1163,12 @@ const getMarketResearch = async (req, res) => {
       return successResponse(res, "Market research data (cached)", cached.data);
     }
 
-    const data = await getMarketResearchData({ date_from, date_to, funnel_source, report_type });
+    const data = await getMarketResearchData({
+      date_from,
+      date_to,
+      funnel_source,
+      report_type,
+    });
     _mrCache.set(cacheKey, { data, ts: Date.now() });
 
     return successResponse(res, "Market research data", data);
@@ -1175,16 +1180,21 @@ const getMarketResearch = async (req, res) => {
 
 /**
  * GET /api/admin/market-research/export
- * Returns a CSV of all diagnostic records with anonymised emails.
+ * Returns a CSV of all diagnostic records with real emails.
  */
 const exportMarketResearchCsv = async (req, res) => {
   try {
     const { date_from, date_to, funnel_source, report_type } = req.query;
-    const rows = await getMarketResearchRows({ date_from, date_to, funnel_source, report_type });
+    const rows = await getMarketResearchRows({
+      date_from,
+      date_to,
+      funnel_source,
+      report_type,
+    });
 
     const CSV_HEADERS = [
       "date",
-      "email_hash",
+      "email",
       "eo",
       "lack",
       "avoid",

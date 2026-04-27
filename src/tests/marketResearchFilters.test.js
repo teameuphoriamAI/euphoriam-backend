@@ -56,18 +56,45 @@ describe("getMarketResearchData — filter injection into SQL", () => {
     expect(opts.bind).toHaveProperty("funnel_source", "masterclass-jan-2026");
   });
 
-  test("custom report_type is forwarded as bind param", async () => {
-    await getMarketResearchData({ report_type: "full" });
+  test("user_audience=uc filters Creator Club members (users.membership + join u)", async () => {
+    await getMarketResearchData({ user_audience: "uc" });
     const firstCall = sequelize.query.mock.calls[0];
-    const [, opts] = firstCall;
-    expect(opts.bind).toHaveProperty("report_type", "full");
+    const [sql, opts] = firstCall;
+    expect(sql).toContain("LEFT JOIN users u");
+    expect(sql).toContain("isCreatorClub");
+    expect(opts.bind).not.toHaveProperty("report_type");
+    expect(sql).not.toContain("structuredPacket");
   });
 
-  test("report_type=all removes the report_type filter entirely", async () => {
-    await getMarketResearchData({ report_type: "all" });
+  test("user_audience=non_member filters funnel rows and requires structuredPacket", async () => {
+    await getMarketResearchData({ user_audience: "non_member" });
     const firstCall = sequelize.query.mock.calls[0];
-    const [, opts] = firstCall;
+    const [sql, opts] = firstCall;
+    expect(sql).toContain("funnel_access_id IS NOT NULL");
+    expect(sql).toContain("structuredPacket");
     expect(opts.bind).not.toHaveProperty("report_type");
+  });
+
+  test("user_audience=both does not filter by report_type or require structuredPacket", async () => {
+    await getMarketResearchData({ user_audience: "both" });
+    const firstCall = sequelize.query.mock.calls[0];
+    const [sql, opts] = firstCall;
+    expect(opts.bind).not.toHaveProperty("report_type");
+    expect(sql).not.toContain("structuredPacket");
+  });
+
+  test("default funnel IRL does not join users (avoids heavy OR join + lock pressure)", async () => {
+    await getMarketResearchData({});
+    const firstCall = sequelize.query.mock.calls[0];
+    const [sql] = firstCall;
+    expect(sql).not.toContain("LEFT JOIN users u");
+  });
+
+  test("user_audience=non_member does not join users", async () => {
+    await getMarketResearchData({ user_audience: "non_member" });
+    const firstCall = sequelize.query.mock.calls[0];
+    const [sql] = firstCall;
+    expect(sql).not.toContain("LEFT JOIN users u");
   });
 
   test("no filters → only structuredPacket presence check in SQL", async () => {
@@ -94,6 +121,8 @@ describe("getMarketResearchData — filter injection into SQL", () => {
     const data = await getMarketResearchData({});
     const expectedKeys = [
       "total_diagnostics",
+      "user_audience",
+      "field_coverage",
       "date_range",
       "eo_distribution",
       "lack_distribution",

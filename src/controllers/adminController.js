@@ -1147,7 +1147,30 @@ const searchUserSessionsSemantic = async (req, res) => {
 const _mrCache = new Map();
 const MR_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const getCacheKey = (params) => JSON.stringify(params);
+/**
+ * Merges `req.body` and `req.query` so filters work when sent as query params, JSON body (e.g. some clients
+ * attach a body to GET), or a mix. Query wins on conflicts. Supports `userAudience` as alias for `user_audience`.
+ */
+const getMrFilterParams = (req) => {
+  const b = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const q = req.query && typeof req.query === "object" ? req.query : {};
+  const m = { ...b, ...q };
+  return {
+    date_from: m.date_from,
+    date_to: m.date_to,
+    funnel_source: m.funnel_source,
+    user_audience: m.user_audience ?? m.userAudience,
+  };
+};
+
+/** Stable cache key: all slots explicit so `user_audience` is never dropped by `JSON.stringify` (undefined is omitted). */
+const getCacheKey = ({ date_from, date_to, funnel_source, user_audience }) =>
+  JSON.stringify({
+    date_from: date_from ?? null,
+    date_to: date_to ?? null,
+    funnel_source: funnel_source ?? null,
+    user_audience: user_audience ?? null,
+  });
 
 /**
  * GET /api/admin/market-research
@@ -1155,7 +1178,7 @@ const getCacheKey = (params) => JSON.stringify(params);
  */
 const getMarketResearch = async (req, res) => {
   try {
-    const { date_from, date_to, funnel_source, user_audience } = req.query;
+    const { date_from, date_to, funnel_source, user_audience } = getMrFilterParams(req);
     const cacheKey = getCacheKey({ date_from, date_to, funnel_source, user_audience });
 
     const cached = _mrCache.get(cacheKey);
@@ -1184,7 +1207,7 @@ const getMarketResearch = async (req, res) => {
  */
 const exportMarketResearchCsv = async (req, res) => {
   try {
-    const { date_from, date_to, funnel_source, user_audience } = req.query;
+    const { date_from, date_to, funnel_source, user_audience } = getMrFilterParams(req);
     const rows = await getMarketResearchRows({
       date_from,
       date_to,
@@ -1245,14 +1268,17 @@ const exportMarketResearchCsv = async (req, res) => {
  */
 const generateMarketResearchReport = async (req, res) => {
   try {
+    const b = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const q = req.query && typeof req.query === "object" ? req.query : {};
+    const m = { ...q, ...b };
     const {
       date_from,
       date_to,
       funnel_source,
-      user_audience,
       focus_area,
       custom_question,
-    } = req.body || {};
+    } = m;
+    const user_audience = m.user_audience ?? m.userAudience;
 
     // Load the market_research prompt from the DB
     const promptRecord = await withDbSlot(() =>

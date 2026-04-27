@@ -1155,8 +1155,8 @@ const getCacheKey = (params) => JSON.stringify(params);
  */
 const getMarketResearch = async (req, res) => {
   try {
-    const { date_from, date_to, funnel_source, report_type } = req.query;
-    const cacheKey = getCacheKey({ date_from, date_to, funnel_source, report_type });
+    const { date_from, date_to, funnel_source, user_audience } = req.query;
+    const cacheKey = getCacheKey({ date_from, date_to, funnel_source, user_audience });
 
     const cached = _mrCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < MR_CACHE_TTL_MS) {
@@ -1167,7 +1167,7 @@ const getMarketResearch = async (req, res) => {
       date_from,
       date_to,
       funnel_source,
-      report_type,
+      user_audience,
     });
     _mrCache.set(cacheKey, { data, ts: Date.now() });
 
@@ -1184,12 +1184,12 @@ const getMarketResearch = async (req, res) => {
  */
 const exportMarketResearchCsv = async (req, res) => {
   try {
-    const { date_from, date_to, funnel_source, report_type } = req.query;
+    const { date_from, date_to, funnel_source, user_audience } = req.query;
     const rows = await getMarketResearchRows({
       date_from,
       date_to,
       funnel_source,
-      report_type,
+      user_audience,
     });
 
     const CSV_HEADERS = [
@@ -1240,11 +1240,19 @@ const exportMarketResearchCsv = async (req, res) => {
 
 /**
  * POST /api/admin/market-research/report
- * Calls GPT-4o to generate a market research insight report for copywriting.
+ * Body: same filters as GET /market-research — date_from, date_to, funnel_source, user_audience;
+ * plus focus_area, custom_question for the LLM. Calls GPT-4o to generate a market research insight report.
  */
 const generateMarketResearchReport = async (req, res) => {
   try {
-    const { date_from, date_to, focus_area, custom_question } = req.body || {};
+    const {
+      date_from,
+      date_to,
+      funnel_source,
+      user_audience,
+      focus_area,
+      custom_question,
+    } = req.body || {};
 
     // Load the market_research prompt from the DB
     const promptRecord = await withDbSlot(() =>
@@ -1265,8 +1273,13 @@ Include:
 
 Be specific. Use the data. Write in a tone suitable for a marketing strategist.`;
 
-    // Get aggregated data
-    const data = await getMarketResearchData({ date_from, date_to });
+    // Get aggregated data (same filter set as GET /api/admin/market-research)
+    const data = await getMarketResearchData({
+      date_from,
+      date_to,
+      funnel_source,
+      user_audience,
+    });
 
     // Build user content
     const focusSection = focus_area ? `\nFocus area for this report: ${focus_area}` : "";
@@ -1299,6 +1312,8 @@ Generate the market research insight report now.`;
       data_summary: {
         total_diagnostics: data.total_diagnostics,
         date_range: data.date_range,
+        user_audience: data.user_audience,
+        funnel_source: funnel_source || null,
       },
     });
   } catch (err) {

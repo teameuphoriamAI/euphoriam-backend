@@ -14,9 +14,15 @@ app.use(express.urlencoded({ extended: true, limit: "500mb" }));
 app.use(
   cors({
     origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
+);
+
+/** Site root — Render and uptime tools often probe `HEAD GET /`; only `/api` was mounted previously (404). */
+app.head("/", (_req, res) => res.sendStatus(200));
+app.get("/", (_req, res) =>
+  res.status(200).type("text/plain").send("Euphoriam API"),
 );
 
 // Route registration

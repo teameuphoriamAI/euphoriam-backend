@@ -190,6 +190,9 @@ const extractStructuredPacket = async ({
   transcript = [],
   existingMetrics = {},
 }) => {
+  // Always load the latest active prompt (avoid stale 5m cache after DB updates).
+  _cache.delete("stage1_constraint_extraction");
+
   // 1. Load extraction prompt from DB
   const extractionPrompt = await getPromptByType("stage1_constraint_extraction");
 

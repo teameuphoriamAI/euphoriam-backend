@@ -8,6 +8,7 @@ const {
   checkWantsEmail,
   calculateDiagnosticConfidence,
   getLatestPromptFromDb,
+  invalidateLatestPromptCache,
   buildChatPrompts,
   isAiLikelyAnswer,
   isLikelyGibberishMessage,
@@ -308,7 +309,20 @@ const persistFunnelChatTranscript = async (session) => {
 const tryRestoreFunnelTranscript = async (socket, session) => {
   if (!session.funnel_chat_id) return false;
   try {
-    const chat = await Chat.findByPk(session.funnel_chat_id, { attributes: ["id", "data"] });
+    const chat = await Chat.findByPk(session.funnel_chat_id, {
+      attributes: ["id", "data", "userId"],
+    });
+    if (!chat) return false;
+    const accessId = chat.data?.funnel_access_id;
+    if (String(accessId ?? "") !== String(session.funnel_access_id ?? "")) {
+      console.warn("[funnel socket] restore skipped: funnel_access_id mismatch");
+      return false;
+    }
+    const owner = await User.findOne({ where: { email: session.email } });
+    if (!owner || chat.userId !== owner.id) {
+      console.warn("[funnel socket] restore skipped: chat owner mismatch");
+      return false;
+    }
     const rows = normalizeFunnelTranscriptRowsFromChatData(chat?.data || {});
     if (rows.length === 0) return false;
     session.transcript = rows.map((r) => ({ role: r.role, content: r.content }));
@@ -1423,6 +1437,8 @@ Rules:
 
         try {
           const metrics = {};
+          // Ensure Stage 1 uses the latest `Diagnostic` prompt from DB (60s cache would otherwise lag edits).
+          invalidateLatestPromptCache("Diagnostic");
           const [retrieved, prompt] = await Promise.all([
             retrieveSimilarChunks({ query: session.transcript.at(-1)?.content || "", topK: 3 }),
             getLatestPromptFromDb(),

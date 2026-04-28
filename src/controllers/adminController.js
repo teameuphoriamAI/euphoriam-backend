@@ -459,10 +459,20 @@ const getStats = async (req, res) => {
       },
     );
 
-    const totalDiagnostics = await Diagnostic.count().catch((err) => {
-      console.error("[admin] Error counting diagnostics:", err);
-      return 0;
-    });
+    const [totalClassicDiagnostics, totalRedlineReports] = await Promise.all([
+      Diagnostic.count({
+        where: { report_type: { [Op.ne]: "invisible_red_line" } },
+      }).catch((err) => {
+        console.error("[admin] Error counting classic diagnostics:", err);
+        return 0;
+      }),
+      Diagnostic.count({
+        where: { report_type: "invisible_red_line" },
+      }).catch((err) => {
+        console.error("[admin] Error counting redline reports:", err);
+        return 0;
+      }),
+    ]);
 
     const totalDiscoveries = await Discovery.count().catch((err) => {
       console.error("[admin] Error counting discoveries:", err);
@@ -485,16 +495,26 @@ const getStats = async (req, res) => {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const recentDiagnostics = await Diagnostic.count({
-      where: {
-        createdAt: {
-          [Op.gte]: thirtyDaysAgo,
+    const [recentClassicDiagnostics, recentRedlineReports] = await Promise.all([
+      Diagnostic.count({
+        where: {
+          createdAt: { [Op.gte]: thirtyDaysAgo },
+          report_type: { [Op.ne]: "invisible_red_line" },
         },
-      },
-    }).catch((err) => {
-      console.error("[admin] Error counting recent diagnostics:", err);
-      return 0;
-    });
+      }).catch((err) => {
+        console.error("[admin] Error counting recent classic diagnostics:", err);
+        return 0;
+      }),
+      Diagnostic.count({
+        where: {
+          createdAt: { [Op.gte]: thirtyDaysAgo },
+          report_type: "invisible_red_line",
+        },
+      }).catch((err) => {
+        console.error("[admin] Error counting recent redline reports:", err);
+        return 0;
+      }),
+    ]);
 
     // Get users by date (last 30 days)
     const recentUsers = await User.count({
@@ -527,9 +547,23 @@ const getStats = async (req, res) => {
     for (const user of usersWithReports) {
       try {
         // Run counts in parallel
-        const [diagnosticCount, discoveryCount, discoveryChatCount] =
+        const userDiagnosticMatch = [{ userId: user.id }];
+        if (user.email) userDiagnosticMatch.push({ email: user.email });
+
+        const [diagnosticCount, redlineCount, discoveryCount, discoveryChatCount] =
           await Promise.all([
-            Diagnostic.count({ where: { email: user.email } }).catch(() => 0),
+            Diagnostic.count({
+              where: {
+                [Op.or]: userDiagnosticMatch,
+                report_type: { [Op.ne]: "invisible_red_line" },
+              },
+            }).catch(() => 0),
+            Diagnostic.count({
+              where: {
+                [Op.or]: userDiagnosticMatch,
+                report_type: "invisible_red_line",
+              },
+            }).catch(() => 0),
             Discovery.count({ where: { userId: user.id } }).catch(() => 0),
             DiscoveryChat.count({ where: { userId: user.id } }).catch(() => 0),
           ]);
@@ -538,8 +572,10 @@ const getStats = async (req, res) => {
           id: user.id,
           name: user.name,
           email: user.email,
-          totalReports: diagnosticCount + discoveryCount + discoveryChatCount,
+          totalReports:
+            diagnosticCount + redlineCount + discoveryCount + discoveryChatCount,
           diagnostics: diagnosticCount,
+          redlineReports: redlineCount,
           diagnosticChat: discoveryCount,
           discoveries: discoveryChatCount,
         });
@@ -554,14 +590,17 @@ const getStats = async (req, res) => {
     const stats = {
       overview: {
         totalUsers,
-        totalDiagnostics,
+        totalDiagnostics: totalClassicDiagnostics,
+        totalRedlineReports,
         totalDiscoveries,
-        totalReports: totalDiagnostics + totalDiscoveries,
+        totalReports:
+          totalClassicDiagnostics + totalRedlineReports + totalDiscoveries,
         totalPrompts,
         activePrompts,
       },
       recent: {
-        diagnosticsLast30Days: recentDiagnostics,
+        diagnosticsLast30Days: recentClassicDiagnostics,
+        redlineReportsLast30Days: recentRedlineReports,
         usersLast30Days: recentUsers,
       },
 
@@ -606,7 +645,7 @@ const getMonthlystats = async (req, res) => {
     const [allDiagnostics, allDiscovery, allDiscoveryChat] = await Promise.all([
       Diagnostic.findAll({
         where: { createdAt: { [Op.gte]: startDate } },
-        attributes: ["createdAt"],
+        attributes: ["createdAt", "report_type"],
         raw: true,
       }).catch(() => []),
 
@@ -622,6 +661,15 @@ const getMonthlystats = async (req, res) => {
         raw: true,
       }).catch(() => []),
     ]);
+
+    /** Paid / classic diagnostic rows — excludes funnel Invisible Red Line (`report_type`). */
+    const classicDiagnostics = allDiagnostics.filter(
+      (r) => r.report_type !== "invisible_red_line",
+    );
+    /** Funnel IRL reports stored on `diagnostics` with `report_type = invisible_red_line`. */
+    const redlineDiagnostics = allDiagnostics.filter(
+      (r) => r.report_type === "invisible_red_line",
+    );
 
     const getKey = (date) => {
       const d = new Date(date);
@@ -682,7 +730,8 @@ const getMonthlystats = async (req, res) => {
 
     const stats = {
       trends: {
-        diagnostics: countByGroup(allDiagnostics),
+        diagnostics: countByGroup(classicDiagnostics),
+        redlineReports: countByGroup(redlineDiagnostics),
         discovery: countByGroup(allDiscoveryChat),
         discoveryChat: countByGroup(allDiscovery),
       },

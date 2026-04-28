@@ -4479,6 +4479,11 @@ const getLatestPromptFromDb = async (type = "Diagnostic") => {
   }
 };
 
+/** Clears the in-memory prompt cache for `type` so the next fetch reads the DB (after prompt edits). */
+const invalidateLatestPromptCache = (type = "Diagnostic") => {
+  _promptCache.delete(type);
+};
+
 module.exports = {
   // DEEP_INTAKE_QUESTIONS,
   // buildIntakeQuestionResponse,
@@ -4512,6 +4517,7 @@ module.exports = {
   shouldAutoFinalize,
   saveChatState,
   getLatestPromptFromDb,
+  invalidateLatestPromptCache,
   safeFindDiagnostic,
   cleanTranscriptText,
   calculateDiagnosticConfidence,

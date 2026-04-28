@@ -319,6 +319,9 @@ const generateInvisibleRedLineReport = async ({
     optional_inputs,
   });
 
+  // Always load the latest active prompt from DB (5m cache would otherwise hide prompt edits until restart/TTL).
+  invalidatePromptCache("invisible_red_line_report");
+
   // 1. Load IRL report prompt from DB
   const systemPrompt = await getPromptByType("invisible_red_line_report");
 

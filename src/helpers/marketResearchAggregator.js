@@ -28,7 +28,7 @@ const normalizeUserAudience = (user_audience) => {
  * @param {string} [opts.date_to]      ISO date string
  * @param {string} [opts.funnel_source] kajabi_offer_source value
  * @param {string} [opts.user_audience]  "uc" (Creator Club) | "non_member" (funnel) | "both"
- * @returns {{ whereClauses: string[], bind: object, user_audience: "uc" | "non_member" | "both" }}
+ * @returns {{ whereClauses: string[], bind: object, user_audience: "uc" | "non_member" | "both" | "default" | "invalid" }}
  */
 const buildFilters = ({ date_from, date_to, funnel_source, user_audience } = {}) => {
   const whereClauses = [];
@@ -68,7 +68,16 @@ const buildFilters = ({ date_from, date_to, funnel_source, user_audience } = {})
     bind.funnel_source = funnel_source;
   }
 
-  const userAudienceLabel = cohort || "non_member";
+  const rawAudience =
+    user_audience == null || user_audience === ""
+      ? ""
+      : String(user_audience).trim();
+  /** Reflects SQL branch: default slice is funnel IRL (`invisible_red_line` + structuredPacket), not the explicit `non_member` cohort predicate. */
+  const userAudienceLabel = cohort
+    ? cohort
+    : !rawAudience
+      ? "default"
+      : "invalid";
 
   /** Only Creator Club filtering needs `users`; joining u on every query can hit PG max_locks (OR join + many aggregations). */
   const includeUserJoin = cohort === "uc";

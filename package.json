@@ -9,6 +9,7 @@
     "preflight": "node src/scripts/preFlightCheck.js",
     "apply:irl-prompt-v22": "node src/scripts/applyIrlPromptV22.js",
     "verify:irl-prompt": "node src/scripts/verifyActiveIrlPrompt.js",
+    "test:irl-pdf": "node src/scripts/testIrlRedlinePdf.js",
     "start": "node index.js",
     "dev": "nodemon index.js"
   },

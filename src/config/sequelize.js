@@ -777,7 +777,7 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
       // Staging/prod with existing rows: use `npm run apply:irl-prompt-v22` (see docs/prompt-update-v2.md).
       const fs = require("fs");
       const path = require("path");
-      let irlPromptName = "Invisible Red Line Report Generator v2.2";
+      let irlPromptName = "Your hidden structure report generator v2.2";
       const irlPromptMeta = JSON.stringify({
         model: "gpt-4o",
         temperature: 0.4,
@@ -806,9 +806,9 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
         console.warn(
           "[initDb] IRL v2.2 canonical markdown not found — seeding bundled v1.0 fallback. Add docs/updated/invisible-red-line-report-prompt-v2.2.md to the repo image, or run `npm run apply:irl-prompt-v22` against this database for v2.2."
         );
-        irlPromptName = "Invisible Red Line Report Generator v1.0";
+        irlPromptName = "Your hidden structure report generator v1.0";
         irlPromptContent = `TITLE:
-Euphoriam AI — Invisible Red Line Report Generator v1.0
+Euphoriam AI — Your hidden structure report generator v1.0
 (Front-End Conversion Report built from completed Constraint Diagnosis)
 
 BRAIN DEPENDENCY:
@@ -824,14 +824,14 @@ Your job is NOT to produce the full Treatment Plan.
 
 Your job is to take an already completed diagnostic state and generate a short, high-conviction, high-relevance front-end report called:
 
-INVISIBLE RED LINE REPORT
+YOUR HIDDEN STRUCTURE REPORT
 Subtitle: Your Hidden Energy Structure Constraint Map
 
 This report is a conversion asset.
 Its purpose is to:
 1) make the person feel deeply understood
 2) make the hidden structure visible
-3) show the user their likely Invisible Red Line
+3) show the user their likely hidden-structure barrier
 4) personalise the cost of staying in the pattern
 5) make the hidden cost of the pattern feel greater than the visible cost of UC
 6) position Unlimited Creator as the logical next step
@@ -1029,7 +1029,7 @@ This is not optional.
 
 DO prefix 888 to:
 - structure snapshot lines
-- invisible red line sentence
+- hidden structure barrier sentence
 - hidden constraint paragraph
 - current structure type line
 - personalised avoidance map
@@ -1055,14 +1055,14 @@ PRIMARY OUTPUT GOAL
 ------------------------------------------------------------
 
 Generate one front-end report titled:
-INVISIBLE RED LINE REPORT
+YOUR HIDDEN STRUCTURE REPORT
 Your Hidden Energy Structure Constraint Map
 
 This report must have these exact sections in this order:
 1. Before you read this
 2. Your structure snapshot
 3. What your system is actually doing
-4. Your Invisible Red Line
+4. Your hidden structure
 5. Your hidden energy structure constraint
 6. Why this feels so personal
 7. The state you're most likely in right now
@@ -1098,7 +1098,7 @@ SECTION 3 — What your system is actually doing
 Mostly fixed explanation, tailored implicitly to the diagnosis.
 Do not prefix 888 unless directly inserting a personalised line.
 
-SECTION 4 — Your Invisible Red Line
+SECTION 4 — Your hidden structure
 Must include one 888 sentence exactly in this shape:
 888 When I get close to growth, my structure protects me by [behaviour cluster] so I can avoid [protector consequence cluster].
 Build [behaviour cluster] from: main_avoidance_behaviours, behaviour_evidence, signature sabotages.
@@ -1266,7 +1266,7 @@ diagnostic_packet fields:
 constraint_packet fields:
 - name: Short name for the constraint pattern (e.g. "The Safety Loop", "Collapse Under Pressure")
 - protector_rule: The core protection rule in the form "I protect myself by..."
-- red_barrier_sentence: The Invisible Red Line sentence — the exact barrier between current state and desired outcome
+- red_barrier_sentence: The hidden structure barrier sentence — the exact barrier between current state and desired outcome
 - how_it_caps_output: Mechanistic explanation of how this constraint limits results (1-2 sentences)
 - good_intent: What this pattern was originally trying to do / protect against (1 sentence)
 - bad_cost: What this pattern now costs the person (1-2 sentences)

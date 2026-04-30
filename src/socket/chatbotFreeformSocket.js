@@ -15,6 +15,7 @@ const {
 } = require("../helpers/euphoriamChatbot");
 const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
 const { PromptType } = require("../utils/types");
+const { IRL_REPORT_PUBLIC_TITLE } = require("../constants/irlBranding");
 
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
@@ -224,6 +225,11 @@ const funnelIntakeTranscriptCompleteOrLegacy = (transcript, cap = 25) =>
 const buildFunnelSystemPromptAppend = (targetCount) => `
 === FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===
 - Work through Q1 to Q${targetCount} in order. Do not skip or merge numbered questions.
+- Ask every Q in simple beginner language (short, everyday words, no jargon).
+- Keep each question to one clear ask; avoid complex multi-part phrasing.
+- Do NOT use internal terms the user may not understand (e.g. triangle/orbit/abduction/EO/lack channel/protector/signature/constraint).
+- Prefer plain replacements, e.g. "confident vs stuck" instead of "top vs bottom triangle".
+- Do NOT start responses with "Got it."; vary naturally or go straight to the next question.
 - If a reply is unclear, gibberish, or off-topic, re-ask the SAME Q number with fresh wording — never advance until you have a real answer.
 - Funnel mode does NOT use clarifier questions. Never ask CB1/CB2/etc and never ask extra confidence questions after Q${targetCount}.
 - As soon as the user gives a substantive answer to Q${targetCount}, end your reply with a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
@@ -289,7 +295,7 @@ const persistFunnelChatTranscript = async (session) => {
       appUser = await User.create({ email: session.email, name: userName });
     }
     const chatType = session.mode === "discovery" ? "Discovery" : "Diagnostic";
-    await saveChatIncrementally({
+    const saved = await saveChatIncrementally({
       userId: appUser.id,
       diagnosticId: session.existingDiagnostic?.id || null,
       discoveryId: null,
@@ -298,6 +304,30 @@ const persistFunnelChatTranscript = async (session) => {
       isChatEnded: false,
       existingChatId: session.funnel_chat_id,
     });
+
+    // Recovery path: if token points to a deleted/missing chat row, create a fresh funnel chat
+    // so refresh can restore instead of restarting from Q1 every time.
+    if (!saved) {
+      const oldChatId = session.funnel_chat_id;
+      const fallback = await Chat.create({
+        userId: appUser.id,
+        chatType: "Diagnostic",
+        isChatEnded: false,
+        data: {
+          transcript: toSave,
+          funnelMode: true,
+          funnel_access_id: session.funnel_access_id,
+          report_type: "invisible_red_line",
+          startedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        },
+      });
+      session.funnel_chat_id = fallback.id;
+      console.warn(
+        "[funnel socket] persist recovered by creating fallback chat",
+        { oldChatId, newChatId: fallback.id }
+      );
+    }
   } catch (err) {
     console.error("[funnel socket] persist transcript failed:", err);
   }
@@ -651,16 +681,16 @@ const resolveFunnelGreetingName = (session) => {
 
 /**
  * Static welcome prepended to the first assistant bubble (free funnel only).
- * Explains the 25-question flow and the Invisible Red Line report outcome.
+ * Explains the 25-question flow and the hidden structure report outcome.
  */
 const buildFunnelWelcomeMarkdown = (session) => {
   const count = session.targetCount || 25;
   const firstName = resolveFunnelGreetingName(session);
   return `Hi ${firstName},
 
-Welcome to your **Invisible Red Line** diagnostic. I'll ask **${count} focused questions**—one at a time—about how you move toward what you want, where you feel friction, and what tends to repeat when pressure shows up. Your answers stay in this thread only.
+Welcome to this diagnostic. I'll ask **${count} focused questions**—one at a time—about how you move toward what you want, where you feel friction, and what tends to repeat when pressure shows up. Your answers stay in this thread only.
 
-When we finish, you'll get an **Invisible Red Line report**: a clear readout of the patterns we surfaced and what they imply for you—so you can see the "line" between where you are now and how you actually want to operate.
+When we finish, you'll get **${IRL_REPORT_PUBLIC_TITLE}**: a clear readout of the patterns we surfaced and what they imply for you—so you can see more clearly where you are now and how you actually want to operate.
 
 There are no trick questions. Short answers are fine; honest detail helps. Whenever you're ready, we'll start with the first question below.`;
 };
@@ -1432,7 +1462,7 @@ Rules:
 
         socket.emit("status", {
           stage: "generating_report",
-          message: "Generating your Invisible Red Line Report...",
+          message: "Generating your hidden structure report...",
         });
 
         try {
@@ -1492,8 +1522,8 @@ Rules:
             pdfUrl: result.pdf_url,
             reportText: result.report_text,
             status: "completed",
-            statusMessage: "Your Invisible Red Line Report has been generated and emailed.",
-            userMessage: `Your Invisible Red Line Report has been generated and emailed to ${session.email}. Please check your inbox.`,
+            statusMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed.`,
+            userMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed to ${session.email}. Please check your inbox.`,
             emailed: true,
           });
         } catch (err) {

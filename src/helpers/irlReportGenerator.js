@@ -1,6 +1,8 @@
 const openai = require("../config/openai");
 const { Prompt } = require("../models/promptModel");
 const { withDbSlot } = require("../config/sequelize");
+const { PromptType } = require("../utils/types");
+const { IRL_REPORT_PUBLIC_TITLE } = require("../constants/irlBranding");
 
 // ── v2.2 length / completion (Phase B) ───────────────────────────────────────
 
@@ -266,9 +268,12 @@ const buildIrlInputContent = ({
   lines.push("=== INPUTS END ===");
   lines.push("");
   lines.push(
-    "Generate the Invisible Red Line Report now, following all section rules and voice guidelines from the system prompt."
+    `Generate ${IRL_REPORT_PUBLIC_TITLE} now, following all section rules and voice guidelines from the system prompt.`
   );
   lines.push("IMPORTANT: Do not include any internal marker token like '888' anywhere in the final report.");
+  lines.push(
+    "IMPORTANT: If the report includes any questions for the user, write them in very simple everyday language that a complete beginner can understand. Avoid technical words and jargon."
+  );
 
   return lines.join("\n");
 };
@@ -291,7 +296,7 @@ const irlQaMetric = (code, extra = {}) => {
 // ── Task 4.1 — generateInvisibleRedLineReport() ───────────────────────────────
 
 /**
- * Stage 2 of the funnel pipeline — generates the Invisible Red Line Report.
+ * Stage 2 of the funnel pipeline — generates your hidden structure report.
  *
  * Takes a fully structured packet (from Stage 1 extraction) and produces a
  * ~1000–1600 word personalised conversion report in 19 sections (v2.2).
@@ -319,15 +324,22 @@ const generateInvisibleRedLineReport = async ({
     optional_inputs,
   });
 
-  // Always load the latest active prompt from DB (5m cache would otherwise hide prompt edits until restart/TTL).
+  // Always load latest active prompts from DB (5m cache would otherwise hide prompt edits until restart/TTL).
   invalidatePromptCache("invisible_red_line_report");
+  invalidatePromptCache(PromptType.BRAINPROMPT);
 
-  // 1. Load IRL report prompt from DB
-  const systemPrompt = await getPromptByType("invisible_red_line_report");
+  // 1. Load IRL report prompt + Brain Prompt from DB
+  const [systemPrompt, brainPrompt] = await Promise.all([
+    getPromptByType("invisible_red_line_report"),
+    getPromptByType(PromptType.BRAINPROMPT),
+  ]);
 
   if (!systemPrompt?.content) {
     irlQaMetric("PROMPT_MISSING", { type: "invisible_red_line_report" });
     throw new Error("invisible_red_line_report prompt not found in DB. Run initDb() to seed it.");
+  }
+  if (!brainPrompt?.content) {
+    irlQaMetric("PROMPT_MISSING", { type: PromptType.BRAINPROMPT });
   }
 
   // 2. Assemble the structured user-turn message
@@ -340,11 +352,23 @@ const generateInvisibleRedLineReport = async ({
     offer_config,
   });
 
-  const systemMessage = { role: "system", content: systemPrompt.content };
+  const combinedSystemPrompt = [
+    brainPrompt?.content ? `BRAIN PROMPT (Core Engine):\n${brainPrompt.content}` : "",
+    systemPrompt.content,
+  ]
+    .filter(Boolean)
+    .join("\n\n────────────────────────────────\n\n");
+
+  const systemMessage = { role: "system", content: combinedSystemPrompt };
   const antiMarkerSystemMessage = {
     role: "system",
     content:
       "Internal marker tokens (such as '888') are not user-facing content. Never output '888' in any line of the final report.",
+  };
+  const plainLanguageQuestionSystemMessage = {
+    role: "system",
+    content:
+      "When writing questions in the report, use plain, beginner-friendly language. Assume the reader has no prior knowledge. Keep questions short, concrete, and free of technical jargon.",
   };
   const userMessage = { role: "user", content: userContent };
 
@@ -353,7 +377,12 @@ const generateInvisibleRedLineReport = async ({
   try {
     response = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: [systemMessage, antiMarkerSystemMessage, userMessage],
+      messages: [
+        systemMessage,
+        antiMarkerSystemMessage,
+        plainLanguageQuestionSystemMessage,
+        userMessage,
+      ],
       temperature: 0.4,
       max_completion_tokens: IRL_MAX_COMPLETION_TOKENS,
     });
@@ -387,7 +416,7 @@ const generateInvisibleRedLineReport = async ({
     const retryUser =
       "The previous draft was too short for publication.\n\n" +
       `It was only about ${wordCount} words; the minimum is ${IRL_MIN_WORD_COUNT} words.\n\n` +
-      "Regenerate the **complete** Invisible Red Line Report from the same inputs above: keep all 19 numbered sections, preserve personalization depth, and deepen thin sections with concrete behaviour and consequence language until the total clearly meets the minimum. " +
+      `Regenerate the **complete** ${IRL_REPORT_PUBLIC_TITLE} from the same inputs above: keep all 19 numbered sections, preserve personalization depth, and deepen thin sections with concrete behaviour and consequence language until the total clearly meets the minimum. ` +
       "Do not include any internal marker token like '888' anywhere in the report. " +
       "Do not reply with meta-commentary — output only the finished report.";
 
@@ -398,6 +427,7 @@ const generateInvisibleRedLineReport = async ({
         messages: [
           systemMessage,
           antiMarkerSystemMessage,
+          plainLanguageQuestionSystemMessage,
           userMessage,
           { role: "assistant", content: reportText },
           { role: "user", content: retryUser },

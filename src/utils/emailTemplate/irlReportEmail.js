@@ -1,13 +1,16 @@
 require("dotenv").config();
 
-const { IRL_REPORT_SUBTITLE_V22 } = require("../../constants/irlBranding");
+const {
+  IRL_REPORT_PUBLIC_TITLE,
+  IRL_REPORT_SUBTITLE_V22,
+} = require("../../constants/irlBranding");
 
 const logoUrl = process.env.LOGO_URL;
 const ucSalesUrl = process.env.UC_SALES_URL || "";
 const ctaText = process.env.UC_CTA_TEXT || "Upgrade for Full Access";
 
 /**
- * Email template for the Invisible Red Line Report delivery.
+ * Email template for your hidden structure report delivery.
  * Short and direct — Nathan voice. The PDF is the real payload;
  * the email just frames it with the right message.
  *
@@ -21,7 +24,7 @@ const irlReportEmail = (firstName = "there") => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Your Invisible Red Line Report</title>
+  <title>${IRL_REPORT_PUBLIC_TITLE}</title>
   <style>
     @media only screen and (max-width: 600px) {
       .email-container { width: 100% !important; padding: 20px !important; }
@@ -57,7 +60,7 @@ const irlReportEmail = (firstName = "there") => {
           <tr>
             <td style="padding-bottom:24px;border-bottom:2px solid #f0e9ff;">
               <h1 style="margin:0;font-size:26px;color:#1a1a1a;line-height:1.3;font-weight:700;">
-                Your Invisible Red Line Report
+                ${IRL_REPORT_PUBLIC_TITLE}
               </h1>
               <p style="margin:10px 0 0;font-size:14px;color:#666;line-height:1.5;">
                 ${IRL_REPORT_SUBTITLE_V22}
@@ -78,7 +81,7 @@ const irlReportEmail = (firstName = "there") => {
           <tr>
             <td style="padding-bottom:20px;">
               <p style="margin:0;font-size:16px;color:#333;line-height:1.8;">
-                Your Invisible Red Line Report is attached.
+                ${IRL_REPORT_PUBLIC_TITLE} is attached.
               </p>
             </td>
           </tr>
@@ -103,7 +106,7 @@ const irlReportEmail = (firstName = "there") => {
           <tr>
             <td style="background-color:#f9f4ff;border-radius:8px;border-left:4px solid #9b59b6;padding:18px 20px;margin-bottom:28px;">
               <p style="margin:0;font-size:15px;color:#333;line-height:1.6;">
-                📎 <strong>Your Invisible Red Line Report is attached as a PDF.</strong><br />
+                📎 <strong>${IRL_REPORT_PUBLIC_TITLE} is attached as a PDF.</strong><br />
                 Download and save it — it's yours to keep.
               </p>
             </td>

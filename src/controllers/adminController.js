@@ -662,7 +662,7 @@ const getMonthlystats = async (req, res) => {
       }).catch(() => []),
     ]);
 
-    /** Paid / classic diagnostic rows — excludes funnel Invisible Red Line (`report_type`). */
+    /** Paid / classic diagnostic rows — excludes funnel hidden-structure report (`report_type`). */
     const classicDiagnostics = allDiagnostics.filter(
       (r) => r.report_type !== "invisible_red_line",
     );

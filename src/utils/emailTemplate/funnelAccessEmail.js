@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const { IRL_REPORT_PUBLIC_TITLE } = require("../../constants/irlBranding");
+
 const logoUrl = process.env.LOGO_URL;
 const supportEmail = process.env.SUPPORT_EMAIL;
 
@@ -59,7 +61,7 @@ const funnelAccessEmail = (firstName = "there", diagnosticLink = "", daysValid =
           <tr>
             <td style="padding-bottom:24px;border-bottom:2px solid #f0e9ff;text-align:center;">
               <h1 style="margin:0;font-size:24px;color:#1a1a1a;line-height:1.3;font-weight:700;">
-                Your Invisible Red Line Diagnosis is ready.
+                Your hidden structure diagnosis is ready.
               </h1>
             </td>
           </tr>
@@ -85,7 +87,7 @@ const funnelAccessEmail = (firstName = "there", diagnosticLink = "", daysValid =
             <td style="padding-bottom:16px;">
               <p style="margin:0;font-size:16px;color:#333;line-height:1.8;">
                 Answer <strong>25 short questions</strong> and the system will generate your
-                personal <strong>Invisible Red Line Report</strong> — the hidden pattern that may be
+                personal <strong>${IRL_REPORT_PUBLIC_TITLE}</strong> — the hidden pattern that may be
                 pulling you off course in money, relationships, and momentum, spelled out in plain English.
               </p>
             </td>

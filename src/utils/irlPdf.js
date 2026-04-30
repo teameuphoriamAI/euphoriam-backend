@@ -1,5 +1,5 @@
 /**
- * Invisible Red Line (IRL) report PDF — PDFKit template and markdown cleanup.
+ * Your hidden structure report PDF — PDFKit template and markdown cleanup.
  * Kept separate from diagnosticPdf.js (full diagnostic PDF path).
  */
 
@@ -9,6 +9,8 @@ const PDFDocument = require("pdfkit");
 require("dotenv").config();
 const axios = require("axios");
 const {
+  IRL_REPORT_PUBLIC_TITLE,
+  IRL_REPORT_PUBLIC_TITLE_PDF,
   IRL_REPORT_SUBTITLE_V22,
   IRL_PDF_SNAPSHOT_CARD_HEADING,
 } = require("../constants/irlBranding");
@@ -208,6 +210,8 @@ const normalizeIrlReportTextForPdf = (reportText = "") => {
     const lower = line.trim().toLowerCase();
     if (
       lower === "invisible red line report" ||
+      lower === IRL_REPORT_PUBLIC_TITLE.toLowerCase() ||
+      lower === IRL_REPORT_PUBLIC_TITLE_PDF.toLowerCase() ||
       lower === "your hidden energy structure constraint map" ||
       lower === "your hidden pattern that keeps pulling you off course" ||
       lower.startsWith("subtitle:") ||
@@ -289,7 +293,7 @@ const parseIrlReportSections = (reportText = "") => {
 };
 
 /**
- * Generate a PDF for an Invisible Red Line Report diagnostic.
+ * Generate a PDF for a funnel hidden-structure report diagnostic.
  */
 const generateIrlReportPdf = async (diagnostic) =>
   new Promise(async (resolve, reject) => {
@@ -356,7 +360,7 @@ const generateIrlReportPdf = async (diagnostic) =>
         .fontSize(22)
         .fillColor(DARK)
         .font("Helvetica-Bold")
-        .text("INVISIBLE RED LINE REPORT", { align: "center", width: pageWidth });
+        .text(IRL_REPORT_PUBLIC_TITLE_PDF, { align: "center", width: pageWidth });
 
       doc.moveDown(0.3);
       doc

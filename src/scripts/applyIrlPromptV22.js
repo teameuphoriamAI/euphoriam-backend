@@ -60,7 +60,7 @@ async function main() {
     );
     await Prompt.create(
       {
-        name: "Invisible Red Line Report Generator v2.2",
+        name: "Your hidden structure report generator v2.2",
         type: TYPE,
         content,
         isActive: true,

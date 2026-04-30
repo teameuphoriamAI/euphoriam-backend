@@ -2,7 +2,11 @@ const {
   buildPlainEnglishIrlPdfSnapshotLines,
   normalizeIrlReportTextForPdf,
 } = require("../utils/irlPdf");
-const { IRL_REPORT_SUBTITLE_V22 } = require("../constants/irlBranding");
+const {
+  IRL_REPORT_PUBLIC_TITLE,
+  IRL_REPORT_PUBLIC_TITLE_PDF,
+  IRL_REPORT_SUBTITLE_V22,
+} = require("../constants/irlBranding");
 
 describe("IRL PDF branding (Phase C)", () => {
   test("v2.2 subtitle constant matches spec", () => {
@@ -36,6 +40,8 @@ describe("IRL PDF branding (Phase C)", () => {
   test("normalize strips v1 and v2 cover subtitle echo lines from body", () => {
     const raw = [
       "Invisible Red Line Report",
+      IRL_REPORT_PUBLIC_TITLE,
+      IRL_REPORT_PUBLIC_TITLE_PDF,
       "Your Hidden Energy Structure Constraint Map",
       "Your Hidden Pattern That Keeps Pulling You Off Course",
       "Subtitle: something",
@@ -47,5 +53,7 @@ describe("IRL PDF branding (Phase C)", () => {
     expect(out).toContain("Before you read this");
     expect(out).not.toMatch(/Energy Structure|Constraint Map/);
     expect(out).not.toContain("Your Hidden Pattern That Keeps Pulling You Off Course");
+    expect(out).not.toContain(IRL_REPORT_PUBLIC_TITLE);
+    expect(out).not.toContain(IRL_REPORT_PUBLIC_TITLE_PDF);
   });
 });

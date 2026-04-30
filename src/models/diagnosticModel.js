@@ -35,7 +35,7 @@ const Diagnostic = sequelize.define(
       type: DataTypes.STRING(50),
       allowNull: false,
       defaultValue: "full",
-      comment: '"full" = existing paid diagnostic report | "invisible_red_line" = funnel IRL report',
+      comment: '"full" = existing paid diagnostic report | "invisible_red_line" = funnel hidden-structure report',
     },
     funnel_access_id: {
       type: DataTypes.UUID,

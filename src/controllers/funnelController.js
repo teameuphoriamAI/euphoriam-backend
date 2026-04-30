@@ -22,6 +22,7 @@ const { funnelAccessEmail } = require("../utils/emailTemplate/funnelAccessEmail"
 const { generateIrlReportPdf } = require("../utils/irlPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const { normalizeFunnelTranscriptRowsFromChatData } = require("../utils/funnelTranscriptNormalize");
+const { IRL_REPORT_PUBLIC_TITLE } = require("../constants/irlBranding");
 const fs = require("fs");
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -491,7 +492,7 @@ const completeDiagnostic = async ({
     console.error("[funnel] Stage 1 extraction failed (non-fatal):", extractErr.message);
   }
 
-  // ── Stage 2: Generate Invisible Red Line Report ──────────────────────────
+  // ── Stage 2: Generate your hidden structure report ──────────────────────────
   // Build offer_config from env vars (overridable per-request in future)
   const offer_config = {
     uc_offer_name: process.env.UC_OFFER_NAME || "Unlimited Creator",
@@ -558,7 +559,7 @@ const completeDiagnostic = async ({
       userId: user.id,
       funnel_access_id,
       report_type: "invisible_red_line",
-      title: `Invisible Red Line Report – ${userName}`,
+      title: `${IRL_REPORT_PUBLIC_TITLE} – ${userName}`,
       data: {
         diagnosticVersion: 3,
         generatedAt: new Date().toISOString(),
@@ -608,7 +609,7 @@ const completeDiagnostic = async ({
   try {
     await sendEmail(
       email,
-      "Your Invisible Red Line Report – Euphoriam AI",
+      `${IRL_REPORT_PUBLIC_TITLE} – Euphoriam AI`,
       irlReportEmail(userName),
       pdfLocalPath || null
     );
@@ -766,7 +767,7 @@ const resendReport = async (req, res) => {
   try {
     await sendEmail(
       email,
-      "Your Invisible Red Line Report – Euphoriam AI (Resent)",
+      `${IRL_REPORT_PUBLIC_TITLE} – Euphoriam AI (Resent)`,
       irlReportEmail(userName),
       pdfPath
     );

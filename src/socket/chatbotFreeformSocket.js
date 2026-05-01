@@ -681,7 +681,7 @@ const resolveFunnelGreetingName = (session) => {
 
 /**
  * Static welcome prepended to the first assistant bubble (free funnel only).
- * Explains the 25-question flow and the hidden structure report outcome.
+ * Explains the 25-question flow and the hidden structure map outcome.
  */
 const buildFunnelWelcomeMarkdown = (session) => {
   const count = session.targetCount || 25;
@@ -1462,7 +1462,7 @@ Rules:
 
         socket.emit("status", {
           stage: "generating_report",
-          message: "Generating your hidden structure report...",
+          message: "Generating your hidden structure map...",
         });
 
         try {

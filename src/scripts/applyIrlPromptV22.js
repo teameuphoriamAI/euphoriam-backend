@@ -60,7 +60,7 @@ async function main() {
     );
     await Prompt.create(
       {
-        name: "Your hidden structure report generator v2.2",
+        name: "Your hidden structure map generator v2.2",
         type: TYPE,
         content,
         isActive: true,

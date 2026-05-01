@@ -10,7 +10,7 @@ const ucSalesUrl = process.env.UC_SALES_URL || "";
 const ctaText = process.env.UC_CTA_TEXT || "Upgrade for Full Access";
 
 /**
- * Email template for your hidden structure report delivery.
+ * Email template for your hidden structure map delivery.
  * Short and direct — Nathan voice. The PDF is the real payload;
  * the email just frames it with the right message.
  *

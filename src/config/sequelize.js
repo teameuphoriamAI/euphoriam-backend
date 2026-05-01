@@ -777,7 +777,7 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
       // Staging/prod with existing rows: use `npm run apply:irl-prompt-v22` (see docs/prompt-update-v2.md).
       const fs = require("fs");
       const path = require("path");
-      let irlPromptName = "Your hidden structure report generator v2.2";
+      let irlPromptName = "Your hidden structure map generator v2.2";
       const irlPromptMeta = JSON.stringify({
         model: "gpt-4o",
         temperature: 0.4,
@@ -806,9 +806,9 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
         console.warn(
           "[initDb] IRL v2.2 canonical markdown not found — seeding bundled v1.0 fallback. Add docs/updated/invisible-red-line-report-prompt-v2.2.md to the repo image, or run `npm run apply:irl-prompt-v22` against this database for v2.2."
         );
-        irlPromptName = "Your hidden structure report generator v1.0";
+        irlPromptName = "Your hidden structure map generator v1.0";
         irlPromptContent = `TITLE:
-Euphoriam AI — Your hidden structure report generator v1.0
+Euphoriam AI — Your hidden structure map generator v1.0
 (Front-End Conversion Report built from completed Constraint Diagnosis)
 
 BRAIN DEPENDENCY:
@@ -824,7 +824,7 @@ Your job is NOT to produce the full Treatment Plan.
 
 Your job is to take an already completed diagnostic state and generate a short, high-conviction, high-relevance front-end report called:
 
-YOUR HIDDEN STRUCTURE REPORT
+YOUR HIDDEN STRUCTURE MAP
 Subtitle: Your Hidden Energy Structure Constraint Map
 
 This report is a conversion asset.
@@ -1055,7 +1055,7 @@ PRIMARY OUTPUT GOAL
 ------------------------------------------------------------
 
 Generate one front-end report titled:
-YOUR HIDDEN STRUCTURE REPORT
+YOUR HIDDEN STRUCTURE MAP
 Your Hidden Energy Structure Constraint Map
 
 This report must have these exact sections in this order:

@@ -1,5 +1,5 @@
 /**
- * Your hidden structure report PDF — PDFKit template and markdown cleanup.
+ * Your hidden structure map PDF — PDFKit template and markdown cleanup.
  * Kept separate from diagnosticPdf.js (full diagnostic PDF path).
  */
 

@@ -492,7 +492,7 @@ const completeDiagnostic = async ({
     console.error("[funnel] Stage 1 extraction failed (non-fatal):", extractErr.message);
   }
 
-  // ── Stage 2: Generate your hidden structure report ──────────────────────────
+  // ── Stage 2: Generate your hidden structure map ──────────────────────────
   // Build offer_config from env vars (overridable per-request in future)
   const offer_config = {
     uc_offer_name: process.env.UC_OFFER_NAME || "Unlimited Creator",

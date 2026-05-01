@@ -296,7 +296,7 @@ const irlQaMetric = (code, extra = {}) => {
 // ── Task 4.1 — generateInvisibleRedLineReport() ───────────────────────────────
 
 /**
- * Stage 2 of the funnel pipeline — generates your hidden structure report.
+ * Stage 2 of the funnel pipeline — generates your hidden structure map.
  *
  * Takes a fully structured packet (from Stage 1 extraction) and produces a
  * ~1000–1600 word personalised conversion report in 19 sections (v2.2).

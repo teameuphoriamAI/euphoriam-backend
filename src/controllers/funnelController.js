@@ -23,6 +23,7 @@ const { generateIrlReportPdf } = require("../utils/irlPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const { normalizeFunnelTranscriptRowsFromChatData } = require("../utils/funnelTranscriptNormalize");
 const { IRL_REPORT_PUBLIC_TITLE } = require("../constants/irlBranding");
+const { deleteChatFromVectorDB } = require("../services/vectorStoreService");
 const fs = require("fs");
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -996,13 +997,86 @@ const getMyFunnelChats = async (req, res) => {
       id: c.id,
       created_at: c.createdAt,
       updated_at: c.updatedAt,
+      /** Q&A closed and a diagnostic report row is linked (sidebar complete). */
       ended: Boolean(c.isChatEnded && diagnostic_id != null),
+      /** Raw DB flag: false = messages can still be appended for this thread. */
+      is_chat_ended: Boolean(c.isChatEnded),
       diagnostic_id,
       message_count: normalizeFunnelTranscriptRowsFromChatData(c.data || {}).length,
     };
   });
 
   return successResponse(res, "Chats retrieved", { chats: list });
+};
+
+/**
+ * DELETE /api/funnel/chats/:chatId
+ * Remove an in-progress funnel Q&A row, or a closed thread that has no linked report yet.
+ * Same auth as GET /api/funnel/chat/:chatId. Cannot delete once a diagnostic is linked.
+ */
+const deleteFunnelChat = async (req, res) => {
+  const token = extractToken(req) || req.query.token;
+  const rawId = req.params.chatId;
+  const chatId = rawId != null ? parseInt(String(rawId), 10) : NaN;
+
+  if (!token) {
+    return errorResponse(res, "Token is required", 401);
+  }
+  if (!Number.isFinite(chatId)) {
+    return errorResponse(res, "chatId is required", 400);
+  }
+
+  let record;
+  let decoded;
+  try {
+    ({ record, decoded } = await resolveToken(token));
+  } catch (err) {
+    return errorResponse(res, err.message, err.status || 401);
+  }
+
+  const user = await withDbSlot(() => User.findOne({ where: { email: decoded.email } }));
+  if (!user) {
+    return errorResponse(res, "User not found", 404);
+  }
+
+  const outcome = await withDbSlot(async () => {
+    const chat = await Chat.findByPk(chatId);
+    if (!chat) return "not_found";
+    if (Number(chat.userId) !== Number(user.id)) return "forbidden";
+    const d = chat.data || {};
+    if (String(d.funnel_access_id) !== String(record.id)) return "forbidden";
+    if (d.funnelMode !== true && d.report_type !== "invisible_red_line") return "not_funnel";
+    const diagnosticId = funnelChatLinkedDiagnosticId(chat);
+    if (chat.isChatEnded && diagnosticId != null) return "has_report";
+    await Diagnostic.update({ chatId: null }, { where: { chatId: chat.id } });
+    await chat.destroy();
+    return "ok";
+  });
+
+  if (outcome === "not_found") {
+    return errorResponse(res, "Chat not found", 404);
+  }
+  if (outcome === "forbidden") {
+    return errorResponse(res, "Access denied", 403);
+  }
+  if (outcome === "not_funnel") {
+    return errorResponse(res, "Not a funnel diagnostic chat", 403);
+  }
+  if (outcome === "has_report") {
+    return errorResponse(
+      res,
+      "This session already has a linked report and cannot be deleted. Open it from Past Reports.",
+      400
+    );
+  }
+
+  try {
+    await deleteChatFromVectorDB(chatId);
+  } catch (e) {
+    console.warn("[deleteFunnelChat] Vector DB cleanup failed:", e.message || e);
+  }
+
+  return successResponse(res, "Chat deleted", { id: chatId });
 };
 
 /**
@@ -1112,6 +1186,7 @@ const getFunnelChatTranscript = async (req, res) => {
     id: chat.id,
     created_at: chat.createdAt,
     ended,
+    is_chat_ended: Boolean(chat.isChatEnded),
     diagnostic_id,
     transcript,
   });
@@ -1129,6 +1204,7 @@ module.exports = {
   downloadReportPdf,
   getMyDiagnostics,
   getMyFunnelChats,
+  deleteFunnelChat,
   getFunnelChatTranscript,
   issueFunnelSocketSession,
 };

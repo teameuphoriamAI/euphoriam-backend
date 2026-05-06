@@ -232,8 +232,9 @@ const buildFunnelSystemPromptAppend = (targetCount) => `
 - Do NOT start responses with "Got it."; vary naturally or go straight to the next question.
 - If a reply is unclear, gibberish, or off-topic, re-ask the SAME Q number with fresh wording — never advance until you have a real answer.
 - Funnel mode does NOT use clarifier questions. Never ask CB1/CB2/etc and never ask extra confidence questions after Q${targetCount}.
-- As soon as the user gives a substantive answer to Q${targetCount}, end your reply with a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
-- Do NOT output [FUNNEL_INTAKE_COMPLETE] before Q${targetCount} is fully answered.`;
+- As soon as the user gives a substantive answer to Q${targetCount}, end with one optional short acknowledgment (one sentence max), then a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
+- Do NOT output [FUNNEL_INTAKE_COMPLETE] before Q${targetCount} is fully answered.
+- Do NOT tell the user you will "generate", "email", or "create" their report in prose — the app does that automatically as soon as intake is complete. Never invite further chat after the tag.`;
 
 const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => {
   const t = session.transcript;
@@ -814,6 +815,110 @@ const sendFirstFunnelQuestion = async (socket, session) => {
   }
 };
 
+/**
+ * Free funnel IRL: run Stage 1 report + persist diagnostic / PDF / email.
+ * Called from client "finalize" and automatically when Q1–Q25 intake is complete.
+ */
+const runFunnelIrFinalize = async (socket, session) => {
+  if (!session?.isFunnelMode || !session?.email) return false;
+  const cap = session.targetCount || 25;
+  if (!funnelIntakeTranscriptCompleteOrLegacy(session.transcript, cap)) {
+    const maxQ = maxCoreQuestionFromTranscript(session.transcript, cap);
+    const answered = session.transcript.filter(
+      (m) => m.role === "user" && isAnswerLike(m.content),
+    ).length;
+    socket.emit("error", {
+      message: `Please complete all ${cap} diagnostic questions before generating your report. (Progress: ${answered} answers, through Q${maxQ} of ${cap}.)`,
+    });
+    return false;
+  }
+  if (session.funnelFinalizeDone) {
+    return true;
+  }
+  if (session.funnelFinalizeInProgress) {
+    return false;
+  }
+
+  session.funnelFinalizeInProgress = true;
+  clearInactivity(session);
+
+  socket.emit("status", {
+    stage: "generating_report",
+    message: "Generating your hidden structure map...",
+  });
+
+  try {
+    const metrics = {};
+    invalidateLatestPromptCache("Diagnostic");
+    const [retrieved, prompt] = await Promise.all([
+      retrieveSimilarChunks({ query: session.transcript.at(-1)?.content || "", topK: 3 }),
+      getLatestPromptFromDb(),
+    ]);
+
+    const promptContent =
+      typeof prompt === "string" ? prompt : prompt?.fullPrompt || prompt?.content || "";
+
+    const userPromptContent = buildFinalReportPrompt({
+      customerContext: null,
+      intakeAnswers: session.transcript,
+      introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
+      retrieved,
+      previousReport: null,
+    });
+
+    const stage1Response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: promptContent },
+        { role: "user", content: userPromptContent },
+      ],
+      temperature: 0.15,
+      max_completion_tokens: 4500,
+    });
+
+    const stage1ReportText = sanitizeReportText(
+      stage1Response?.choices?.[0]?.message?.content?.trim() || "",
+      metrics,
+    );
+
+    socket.emit("status", {
+      stage: "compiling_report",
+      message: "Compiling your personalised report...",
+    });
+
+    const result = await completeFunnelDiagnostic({
+      funnel_access_id: session.funnel_access_id,
+      email: session.email,
+      transcript: session.transcript,
+      reportText: stage1ReportText,
+      metrics,
+      chat_id: session.funnel_chat_id,
+    });
+
+    session.funnelFinalizeDone = true;
+
+    socket.emit("done", {
+      isFunnelMode: true,
+      diagnosticId: result.diagnostic_id,
+      pdfUrl: result.pdf_url,
+      reportText: result.report_text,
+      status: "completed",
+      statusMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed.`,
+      userMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed to ${session.email}. Please check your inbox.`,
+      emailed: true,
+    });
+    return true;
+  } catch (err) {
+    console.error("[socket funnel] Finalize failed:", err);
+    socket.emit("error", {
+      message: "Failed to generate your report. Please try again.",
+    });
+    return false;
+  } finally {
+    session.funnelFinalizeInProgress = false;
+  }
+};
+
 /* -------------------- Socket Wiring -------------------- */
 
 const wireChatbotFreeform = (io) => {
@@ -996,6 +1101,35 @@ const wireChatbotFreeform = (io) => {
             },
             progress: buildFunnelProgressPayload(session, ""),
           });
+          return;
+        }
+
+        const funnelCap = session.targetCount || 25;
+        if (session.funnelFinalizeInProgress) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content: "I'm generating your report now — please stay on this page for a moment.",
+            },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+        if (session.funnelFinalizeDone) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content:
+                "Your report has already been generated. Check your email or the reports section for this diagnostic.",
+            },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+        if (funnelIntakeTranscriptCompleteOrLegacy(session.transcript, funnelCap)) {
+          session.transcript.push({ role: "user", content });
+          await persistFunnelChatTranscript(session);
+          await runFunnelIrFinalize(socket, session);
           return;
         }
       }
@@ -1436,6 +1570,10 @@ Rules:
         message: msg,
         progress: progressPayload,
       });
+
+      if (session.isFunnelMode && progressPayload.readyToFinalize) {
+        await runFunnelIrFinalize(socket, session);
+      }
     });
 
     /* -------------------- FINALIZE -------------------- */
@@ -1448,90 +1586,7 @@ Rules:
 
       // ── FUNNEL FINALIZE (IRL Report flow) ──────────────────────────────────
       if (session.isFunnelMode) {
-        const cap = session.targetCount || 25;
-        const maxQ = maxCoreQuestionFromTranscript(session.transcript, cap);
-        const answered = session.transcript.filter(
-          (m) => m.role === "user" && isAnswerLike(m.content),
-        ).length;
-        if (!funnelIntakeTranscriptCompleteOrLegacy(session.transcript, cap)) {
-          socket.emit("error", {
-            message: `Please complete all ${cap} diagnostic questions before generating your report. (Progress: ${answered} answers, through Q${maxQ} of ${cap}.)`,
-          });
-          return;
-        }
-
-        socket.emit("status", {
-          stage: "generating_report",
-          message: "Generating your hidden structure map...",
-        });
-
-        try {
-          const metrics = {};
-          // Ensure Stage 1 uses the latest `Diagnostic` prompt from DB (60s cache would otherwise lag edits).
-          invalidateLatestPromptCache("Diagnostic");
-          const [retrieved, prompt] = await Promise.all([
-            retrieveSimilarChunks({ query: session.transcript.at(-1)?.content || "", topK: 3 }),
-            getLatestPromptFromDb(),
-          ]);
-
-          const promptContent = typeof prompt === "string"
-            ? prompt
-            : prompt?.fullPrompt || prompt?.content || "";
-
-          const userPromptContent = buildFinalReportPrompt({
-            customerContext: null,
-            intakeAnswers: session.transcript,
-            introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
-            retrieved,
-            previousReport: null,
-          });
-
-          // Stage 1 report — used as input to completeFunnelDiagnostic (Phase 3/4 will run IRL on top)
-          const stage1Response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-              { role: "system", content: promptContent },
-              { role: "user", content: userPromptContent },
-            ],
-            temperature: 0.15,
-            max_completion_tokens: 4500,
-          });
-
-          const stage1ReportText = sanitizeReportText(
-            stage1Response?.choices?.[0]?.message?.content?.trim() || "",
-            metrics
-          );
-
-          socket.emit("status", {
-            stage: "compiling_report",
-            message: "Compiling your personalised report...",
-          });
-
-          const result = await completeFunnelDiagnostic({
-            funnel_access_id: session.funnel_access_id,
-            email: session.email,
-            transcript: session.transcript,
-            reportText: stage1ReportText,
-            metrics,
-            chat_id: session.funnel_chat_id,
-          });
-
-          socket.emit("done", {
-            isFunnelMode: true,
-            diagnosticId: result.diagnostic_id,
-            pdfUrl: result.pdf_url,
-            reportText: result.report_text,
-            status: "completed",
-            statusMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed.`,
-            userMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed to ${session.email}. Please check your inbox.`,
-            emailed: true,
-          });
-        } catch (err) {
-          console.error("[socket funnel] Finalize failed:", err);
-          socket.emit("error", {
-            message: "Failed to generate your report. Please try again.",
-          });
-        }
+        await runFunnelIrFinalize(socket, session);
         return;
       }
 

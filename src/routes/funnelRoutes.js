@@ -87,6 +87,9 @@ router.get("/diagnostics", asyncHandler(funnelController.getMyDiagnostics));
 // GET /api/funnel/chats — funnel Q&A sessions for sidebar history
 router.get("/chats", asyncHandler(funnelController.getMyFunnelChats));
 
+// DELETE /api/funnel/chats/:chatId — discard in-progress (or unlinked) funnel Q&A
+router.delete("/chats/:chatId", asyncHandler(funnelController.deleteFunnelChat));
+
 // GET /api/funnel/chat/:chatId — read-only transcript
 router.get("/chat/:chatId", asyncHandler(funnelController.getFunnelChatTranscript));
 

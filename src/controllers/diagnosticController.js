@@ -5683,10 +5683,14 @@ Take your time and share what feels true for you.`;
     transcriptInternal2 = transcriptInternal2.slice(-MAX_TRANSCRIPT_LENGTH);
   }
 
+  const isDiagnosticIntakeRestart =
+    intakeStateInternal2?.requestingNewDiagnostic === true ||
+    intakeStateInternal2?.mode === "diagnostic";
   const isCompleted2 =
-    intakeStateInternal2?.completedAt ||
-    intakeStateInternal2?.finalizedAt ||
-    false;
+    !isDiagnosticIntakeRestart &&
+    Boolean(
+      intakeStateInternal2?.completedAt || intakeStateInternal2?.finalizedAt,
+    );
   let allQuestionsAnswered = false;
   let distinctQuestionsAnsweredCount = 0;
   if (transcriptInternal2 && transcriptInternal2.length > 0) {
@@ -5886,9 +5890,7 @@ Take your time and share what feels true for you.`;
       ? `Welcome back ${name}, let's continue where we left off.`
       : null;
   introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
-  targetCountForRun = hasExistingReport
-    ? Math.min(targetCount, 6)
-    : targetCount;
+  targetCountForRun = targetCount;
 
   // Check if this is the first user interaction (no user messages in transcript)
   const isFirstUserInteraction =
@@ -5927,6 +5929,8 @@ Take your time and share what feels true for you.`;
     isIncompleteChatDiscoveryMode =
       hasIncompleteChat &&
       hasExistingReport &&
+      !intakeStateInternal2?.requestingNewDiagnostic &&
+      intakeStateInternal2?.mode !== "diagnostic" &&
       (existingState?.mode === "discovery" ||
         intakeStateInternal2?.mode === "discovery");
 
@@ -5973,12 +5977,22 @@ Take your time and share what feels true for you.`;
     const needsReportGeneration =
       distinctQuestionsAnswered >= 25 && !hasActualReportGenerated;
 
+    const activeDiagnosticIntake =
+      distinctQuestionsAnswered > 0 &&
+      distinctQuestionsAnswered < 25 &&
+      (wantsNewDiagnostic ||
+        existingState?.requestingNewDiagnostic ||
+        existingState?.mode === "diagnostic" ||
+        intakeStateInternal2?.requestingNewDiagnostic ||
+        intakeStateInternal2?.mode === "diagnostic");
+
     // Only allow discovery mode if:
     // 1. Report has actually been generated (not just diagnostic record exists)
     // 2. User didn't explicitly ask for a new diagnostic
     // 3. User doesn't have an incomplete diagnostic chat
     // 4. No need for report generation
     isDiscoveryMode =
+      !activeDiagnosticIntake &&
       !needsReportGeneration && // NEVER discovery if we need to generate report first
       hasActualReportGenerated && // ONLY discovery if report actually exists
       !wantsNewDiagnostic && // User didn't ask for new diagnostic
@@ -5999,6 +6013,14 @@ Take your time and share what feels true for you.`;
       hasExistingReport,
       distinctQuestionsAnswered,
     });
+
+    targetCountForRun =
+      hasExistingReport &&
+      !wantsNewDiagnostic &&
+      !intakeInProgress &&
+      isDiscoveryMode
+        ? Math.min(targetCount, 6)
+        : targetCount;
 
     // When user asks for new diagnostic while in discovery: continue same chat and keep full conversation (do not clear transcript)
     const switchingDiscoveryToDiagnostic =
@@ -6659,10 +6681,15 @@ Take your time and share what feels true for you.`,
         : derivedAnsweredCount,
     lastQuestionNumber: maxQuestionNumber,
     pendingQuestion,
+    mode: isDiscoveryMode ? "discovery" : "diagnostic",
     updatedAt: new Date().toISOString(),
-    requestingNewDiagnostic: shouldShowExistingReportFirst
+    requestingNewDiagnostic: isDiscoveryMode
       ? false
-      : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
+      : shouldShowExistingReportFirst
+        ? false
+        : wantsNewDiagnostic ||
+          existingState.requestingNewDiagnostic ||
+          distinctQuestionsAnswered < 25,
     exchangesAtLastDeclinedEndChat:
       req.body.userConfirmedEndChat === false
         ? substantialExchanges

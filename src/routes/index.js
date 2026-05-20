@@ -11,6 +11,7 @@ const adminRoutes = require("./adminRoutes");
 const chatRoutes = require("./chatRoutes");
 const barcodeRoutes = require("./barcodeRoutes");
 const funnelRoutes = require("./funnelRoutes");
+const stage1Routes = require("./stage1Routes");
 
 const router = express.Router();
 
@@ -30,5 +31,6 @@ router.use("/discoveries", discoveryRoutes);
 router.use("/admin", adminRoutes);
 router.use("/chat", chatRoutes);
 router.use("/funnel", funnelRoutes);
+router.use("/stage1", stage1Routes);
 
 module.exports = router;

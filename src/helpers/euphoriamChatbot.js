@@ -499,21 +499,42 @@ const formatFactsContext = (context = {}) => {
 };
 
 /**
- * Returns the pre-built welcome message for new diagnostic users (no prior report, first interaction).
- * Fetches the Diagnostic prompt from DB and extracts Q1 from it. Falls back to null if Q1 cannot be extracted.
+ * Extract Q1 block from the Diagnostic prompt in DB.
  */
-const getDiagnosticNewUserWelcomeMessage = async (userName) => {
+const extractQ1BlockFromDiagnosticPrompt = async () => {
   const { PromptType } = require("../utils/types");
   const diagnosticPromptObj = await getLatestPromptFromDb(
     PromptType.DIAGNOSTIC,
   );
   const diagnosticPromptContent = diagnosticPromptObj?.content || "";
-
-  // Extract Q1 block from prompt (supports Q1:, Q1 —, Q1., **Q1 —**, etc.; stops at Q2)
   const q1Match = diagnosticPromptContent.match(
     /(?:^|\n)((?:\*\*)?Q1\s*[—–\-\.\):]\s*[\s\S]*?)(?=\n\s*(?:\*\*)?Q2\s*[—–\-\.\):]|$)/im,
   );
-  const q1Block = q1Match ? q1Match[1].trim() : null;
+  return q1Match ? q1Match[1].trim() : null;
+};
+
+/**
+ * True when this user already completed a diagnostic (report, PDF, or finalized intake).
+ */
+const diagnosticHasCompletedReport = (diagnostic) => {
+  if (!diagnostic) return false;
+  const d = diagnostic.data || {};
+  return Boolean(
+    d.aiReport ||
+      diagnostic.report ||
+      diagnostic.pdfUrl ||
+      d.generatedAt ||
+      d.intakeState?.completedAt ||
+      d.intakeState?.finalizedAt,
+  );
+};
+
+/**
+ * Returns the pre-built welcome message for new diagnostic users (no prior report, first interaction).
+ * Fetches the Diagnostic prompt from DB and extracts Q1 from it. Falls back to null if Q1 cannot be extracted.
+ */
+const getDiagnosticNewUserWelcomeMessage = async (userName) => {
+  const q1Block = await extractQ1BlockFromDiagnosticPrompt();
 
   if (!q1Block) {
     console.warn(
@@ -528,6 +549,29 @@ const getDiagnosticNewUserWelcomeMessage = async (userName) => {
       : "there";
 
   return `Hi ${displayName}, I don't have your intake on record yet, so we'll start with the 25-Question Deep Intake Engine™. One question at a time. No rushing. No fixing. Just mapping.
+
+${q1Block}`;
+};
+
+/**
+ * Welcome when restarting the 25-question intake but a prior diagnostic already exists on file.
+ */
+const getDiagnosticRepeatIntakeWelcomeMessage = async (userName) => {
+  const q1Block = await extractQ1BlockFromDiagnosticPrompt();
+
+  if (!q1Block) {
+    console.warn(
+      "[getDiagnosticRepeatIntakeWelcomeMessage] Could not extract Q1 from Diagnostic prompt",
+    );
+    return null;
+  }
+
+  const displayName =
+    typeof userName === "string" && userName.trim().length
+      ? userName.trim()
+      : "there";
+
+  return `Hi ${displayName}, I've loaded your last diagnostic report on file. We're starting a fresh 25-Question Deep Intake Engine™ from the beginning — one question at a time. No rushing. No fixing. Just mapping.
 
 ${q1Block}`;
 };
@@ -3796,7 +3840,11 @@ const checkWantsNewDiagnostic = async (transcript, existingState) => {
   const previouslyRequestedNewDiagnostic =
     existingState.requestingNewDiagnostic === true;
   const intakeInProgress =
-    existingState.answeredCount > 0 && existingState.answeredCount < 12;
+    existingState.requestingNewDiagnostic === true ||
+    (existingState.mode === "diagnostic" &&
+      existingState.answeredCount > 0 &&
+      existingState.answeredCount < 25) ||
+    (existingState.answeredCount > 0 && existingState.answeredCount < 25);
 
   // If there are no user messages yet (first interaction), don't use the persisted flag
   // This allows showing existing report first on first interaction
@@ -4495,6 +4543,8 @@ module.exports = {
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
   getDiagnosticNewUserWelcomeMessage,
+  getDiagnosticRepeatIntakeWelcomeMessage,
+  diagnosticHasCompletedReport,
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   sanitizeReportText,

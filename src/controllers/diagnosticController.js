@@ -165,19 +165,15 @@ const findOrCreateCreatorUser = async (req, res) => {
       assessmentIds,
     });
 
-    if (!clubStatus.club) {
-      return errorResponse(
-        res,
-        "You do not have an active Creator Club membership.",
-        403,
-      );
-    }
-    if (!(clubStatus.club || clubStatus.bronze || clubStatus.silver)) {
-      return errorResponse(
-        res,
-        "You do not have any active Creator Club membership (club, bronze, or silver).",
-        403,
-      );
+    const isPaid =
+      clubStatus &&
+      typeof clubStatus === "object" &&
+      (clubStatus.club || clubStatus.bronze || clubStatus.silver);
+
+    if (!isPaid) {
+      const { buildFreeFunnelCheckUserResult } = require("./funnelController");
+      const funnelPayload = await buildFreeFunnelCheckUserResult(email);
+      return successResponse(res, "Free funnel access", funnelPayload);
     }
     // Find user
     let user = await User.findOne({ where: { email } });

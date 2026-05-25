@@ -109,56 +109,85 @@ const ensureMetaRow = async (userId) => {
   return meta;
 };
 
+/** In-process lock to prevent concurrent legacy migrations for the same user. */
+const _migrationLocks = new Map();
+
 const migrateLegacyFromMetadata = async (user, legacyStage1) => {
   const userId = user.id;
   if (!legacyStage1 || !Array.isArray(legacyStage1.domain_maps) || !legacyStage1.domain_maps.length) {
     return false;
   }
+  if (legacyStage1._storage === "domain_goals_table") {
+    return false;
+  }
 
-  const count = await withDbSlot(() =>
-    DomainGoal.count({ where: { userId } }),
-  );
-  if (count > 0) return false;
+  if (_migrationLocks.has(userId)) {
+    await _migrationLocks.get(userId);
+    return false;
+  }
 
-  await withDbSlot(async () => {
-    await ensureMetaRow(userId);
-    await UserStage1Meta.update(
-      {
-        primaryDomain: legacyStage1.primary_domain || null,
-        activeDomains: legacyStage1.active_domains || [],
-        mapResistanceInProgress: Boolean(legacyStage1.map_resistance_in_progress),
-        walkthroughCompleted: Boolean(legacyStage1.walkthrough_completed),
-        walkthroughCompletedAt: legacyStage1.walkthrough_completed_at
-          ? new Date(legacyStage1.walkthrough_completed_at)
-          : null,
-      },
-      { where: { userId } },
+  const runMigration = (async () => {
+    const count = await withDbSlot(() =>
+      DomainGoal.count({ where: { userId } }),
     );
+    if (count > 0) return false;
 
-    for (const map of legacyStage1.domain_maps) {
-      const d = normalizeDomain(map.domain);
-      if (!d) continue;
-      const merged = applyGoalsCompleteFlag({ ...defaultDomainMap(d), ...map, domain: d });
-      await DomainGoal.create({
-        userId,
-        ...domainMapToRowFields(merged),
-      });
+    await withDbSlot(async () => {
+      await ensureMetaRow(userId);
+      await UserStage1Meta.update(
+        {
+          primaryDomain: legacyStage1.primary_domain || null,
+          activeDomains: legacyStage1.active_domains || [],
+          mapResistanceInProgress: Boolean(legacyStage1.map_resistance_in_progress),
+          walkthroughCompleted: Boolean(legacyStage1.walkthrough_completed),
+          walkthroughCompletedAt: legacyStage1.walkthrough_completed_at
+            ? new Date(legacyStage1.walkthrough_completed_at)
+            : null,
+        },
+        { where: { userId } },
+      );
+
+      for (const map of legacyStage1.domain_maps) {
+        const d = normalizeDomain(map.domain);
+        if (!d) continue;
+        const merged = applyGoalsCompleteFlag({ ...defaultDomainMap(d), ...map, domain: d });
+        await DomainGoal.findOrCreate({
+          where: { userId, domain: d },
+          defaults: { userId, ...domainMapToRowFields(merged) },
+        });
+      }
+
+      const nextMeta = { ...(user.metadata || {}) };
+      nextMeta.stage1 = {
+        ...legacyStage1,
+        domain_maps: [],
+        _storage: "domain_goals_table",
+      };
+      const { User } = require("../models/userModel");
+      await User.update({ metadata: nextMeta }, { where: { id: userId } });
+    });
+
+    console.log(
+      `[stage1Repository] Migrated ${legacyStage1.domain_maps.length} goals to domain_goals for user ${userId}`,
+    );
+    return true;
+  })();
+
+  _migrationLocks.set(userId, runMigration);
+  try {
+    return await runMigration;
+  } catch (err) {
+    if (
+      err?.name === "SequelizeUniqueConstraintError" ||
+      /unique/i.test(err?.message || "")
+    ) {
+      console.warn(`[stage1Repository] Migration race for user ${userId} ignored`);
+      return false;
     }
-
-    const nextMeta = { ...(user.metadata || {}) };
-    nextMeta.stage1 = {
-      ...legacyStage1,
-      domain_maps: [],
-      _storage: "domain_goals_table",
-    };
-    const { User } = require("../models/userModel");
-    await User.update({ metadata: nextMeta }, { where: { id: userId } });
-  });
-
-  console.log(
-    `[stage1Repository] Migrated ${legacyStage1.domain_maps.length} goals to domain_goals for user ${userId}`,
-  );
-  return true;
+    throw err;
+  } finally {
+    _migrationLocks.delete(userId);
+  }
 };
 
 /** Build in-memory stage1 shape from normalized tables (+ optional legacy metadata). */

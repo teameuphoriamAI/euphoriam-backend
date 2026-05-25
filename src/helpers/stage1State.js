@@ -346,6 +346,7 @@ module.exports = {
   emptyStage1State,
   getStage1FromUser,
   isGoalsComplete,
+  applyGoalsCompleteFlag,
   computeOnboardingStatus,
   listDomainStatuses,
   buildHomeDashboard,

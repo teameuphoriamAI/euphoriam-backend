@@ -82,7 +82,14 @@ const getHome = async (req, res) => {
     const stage1 = await loadStage1ForUser(user);
     return successResponse(res, "Stage 1 home", buildHomePayload(user, stage1));
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to load home", err.status || 500);
+    console.error("[stage1] getHome failed:", err);
+    const detail =
+      err?.errors?.[0]?.message || err?.original?.message || err.message;
+    return errorResponse(
+      res,
+      detail || "Failed to load home",
+      err.status || 500,
+    );
   }
 };
 
@@ -114,7 +121,14 @@ const listDomains = async (req, res) => {
       domains: items,
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to list domains", err.status || 500);
+    console.error("[stage1] listDomains failed:", err);
+    const detail =
+      err?.errors?.[0]?.message || err?.original?.message || err.message;
+    return errorResponse(
+      res,
+      detail || "Failed to list domains",
+      err.status || 500,
+    );
   }
 };
 

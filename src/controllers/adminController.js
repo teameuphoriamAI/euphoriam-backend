@@ -13,8 +13,20 @@ const { extractTextFromPdf } = require("../utils/pdfParser");
 // const Joi = require("joi");
 const { createEmbeddings } = require("../config/Embedding");
 const { generateSessionSummary } = require("../config/sessionSummary");
-const { cleanTranscriptText } = require("../helpers/euphoriamChatbot");
+const { cleanTranscriptText, invalidateLatestPromptCache } = require("../helpers/euphoriamChatbot");
 const { PromptType, UserStatus, UserRole } = require("../utils/types");
+
+const bustPromptCache = (type) => {
+  if (!type) return;
+  invalidateLatestPromptCache(type);
+  if (
+    type === PromptType.BRAINPROMPT ||
+    type === PromptType.COACHBRAINPROMPT
+  ) {
+    invalidateLatestPromptCache(PromptType.BRAINPROMPT);
+    invalidateLatestPromptCache(PromptType.COACHBRAINPROMPT);
+  }
+};
 
 // Vector store service for semantic search
 const {
@@ -304,6 +316,8 @@ const createPrompt = async (req, res) => {
 
     console.log("📚 Prompt history saved");
 
+    bustPromptCache(type);
+
     return successResponse(res, "Prompt created", prompt, 201);
   } catch (error) {
     console.error("❌ [createPrompt] Error occurred");
@@ -387,6 +401,11 @@ const updatePrompt = async (req, res) => {
       isActive: updatedPrompt.isActive,
       version: updatedPrompt.version,
     });
+
+    bustPromptCache(prompt.type);
+    if (updates.type && updates.type !== prompt.type) {
+      bustPromptCache(updates.type);
+    }
 
     return successResponse(res, "Prompt updated", updatedPrompt);
   } catch (error) {

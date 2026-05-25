@@ -4087,6 +4087,8 @@ Reply with exactly one word: yes or no.`;
  */
 const buildChatPrompts = async ({
   isDiscoveryMode,
+  stage1MapResistance = false,
+  activeGoalContext = null,
   transcript,
   targetCount,
   introText,
@@ -4212,7 +4214,40 @@ Use this context to provide continuity and personalized responses when the user 
 `;
   }
 
-  if (isDiscoveryMode) {
+  if (stage1MapResistance) {
+    const { PromptType } = require("../utils/types");
+    const { buildMapResistanceIntakePrompt } = require("./stage1GoalContext");
+    const [brainPromptObj] = await Promise.all([
+      getLatestPromptFromDb(PromptType.BRAINPROMPT),
+    ]);
+    const brainPrompt = brainPromptObj?.content || "";
+    systemPrompt = `${brainPrompt}\n\n${introText || ""}\n\n${SUPPORT_LOCK_PROMPT}${historicalContextSection}`;
+    const lastUserMsg = transcript.filter((m) => m?.role === "user").slice(-1)[0];
+    let mapGibberish = false;
+    if (lastUserMsg?.content) {
+      try {
+        mapGibberish = await isLikelyGibberishMessage(lastUserMsg.content);
+      } catch {
+        mapGibberish = false;
+      }
+    }
+    const lastAsstQ = [...transcript]
+      .reverse()
+      .find((m) => m?.role === "assistant" && /Q\d+/i.test(m?.content || ""));
+    const currentQ = lastAsstQ ? extractQuestionNumber(lastAsstQ.content) : null;
+
+    userPrompt = await buildMapResistanceIntakePrompt({
+      transcript,
+      userName: name,
+      resumeNotice,
+      activeGoalContext: activeGoalContext || {},
+      targetCount: targetCount || 12,
+      aiAnswered: mapGibberish ? false : aiAnswered,
+      lastUserContent: lastUserMsg?.content || "",
+      isGibberish: mapGibberish,
+      currentQuestionNumber: currentQ,
+    });
+  } else if (isDiscoveryMode) {
     // Discovery mode: fetch latest prompts from DB in parallel (Diagnostic Chat + Brain Prompt)
     const { PromptType } = require("../utils/types");
     const [brainPromptObj, discoveryChatPromptObj] = await Promise.all([

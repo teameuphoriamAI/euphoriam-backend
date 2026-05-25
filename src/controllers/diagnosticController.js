@@ -5031,7 +5031,8 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
   const askedQuestions = updatedTranscript.filter(
     (m) => m.role === "assistant",
   ).length;
-  const totalQuestions = 25; // As defined in the new prompt
+  const isMapResistance = existingState?.mode === "map_resistance";
+  const totalQuestions = isMapResistance ? targetCount : 25;
 
   return successResponse(res, "Next chatbot message", {
     nextMessage,
@@ -5048,6 +5049,15 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
     answeredCount,
     pendingQuestion,
     aiAnswered,
+    targetCount: totalQuestions,
+    progress: {
+      answered: answeredCount,
+      currentQuestion: existingState?.lastQuestionNumber ?? maxQuestionNumber,
+      total: totalQuestions,
+      pendingQuestion,
+    },
+    aiAnswered:
+      existingState?.mode === "map_resistance" ? aiAnswered : undefined,
     status: "chatting",
     statusMessage: "Chatting in progress",
   });
@@ -5061,6 +5071,8 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     introPageText,
     targetCount = 25, // 25 core questions in the Deep Intake Engine
   } = req.body || {};
+  const stage1MapResistance = Boolean(req.body?.stage1MapResistance);
+  const stage1ActiveDomain = req.body?.activeDomain || null;
   let name = req.user.name;
   let email = req.user.email;
   // 1. Declare all variables at the top to avoid ReferenceErrors across different logic paths
@@ -5105,14 +5117,14 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   // 2. Initialize core data: User and Diagnostic State
   appUser = await User.findOne({ where: { email, name } });
   diagState = await loadDiagnosticState(email);
-  const {
+  let {
     existingDiagnostic,
     existingState,
     existingReport,
     diagnosticMetrics,
     incompleteChatId,
   } = diagState;
-  const hasExistingReport = Boolean(existingReport);
+  const hasExistingReport = stage1MapResistance ? false : Boolean(existingReport);
 
   // Load metrics for discovery/diagnostic
   discoveryRes = await loadLatestDiscoveryMetrics(
@@ -5167,6 +5179,69 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     }
   }
 
+  if (hasNoMessages && !finalize && stage1MapResistance) {
+    const goalCtx = req.body?.activeGoalContext || {};
+    const domain = stage1ActiveDomain || goalCtx.active_domain;
+    const target = req.body?.targetCount || 12;
+    const { getStage1MapResistanceWelcomeMessage } = require("../helpers/stage1GoalContext");
+    const { Chat } = require("../models/chatModel");
+
+    let mapTranscript = [];
+    if (appUser && domain) {
+      const mrChat = await Chat.findOne({
+        where: { userId: appUser.id, isChatEnded: false },
+        order: [["updatedAt", "DESC"]],
+      });
+      if (
+        mrChat?.data?.stage1MapResistance &&
+        mrChat?.data?.stage1MapResistanceDomain === domain &&
+        Array.isArray(mrChat.data.transcript) &&
+        mrChat.data.transcript.length > 0
+      ) {
+        mapTranscript = mrChat.data.transcript;
+        const lastMsg = mapTranscript[mapTranscript.length - 1];
+        return successResponse(res, "Resuming map resistance", {
+          nextMessage: lastMsg?.role === "assistant" ? lastMsg : null,
+          transcript: mapTranscript,
+          messages: mapTranscript,
+          mode: "map_resistance",
+          targetCount: target,
+          progress: {
+            answered: mapTranscript.filter((m) => m.role === "user").length,
+            total: target,
+          },
+          intakeState: {
+            transcript: mapTranscript,
+            mode: "map_resistance",
+            activeDomain: domain,
+          },
+          status: "resumable",
+          hasIncompleteChat: true,
+          incompleteChatId: mrChat.id,
+        });
+      }
+    }
+
+    const welcome = getStage1MapResistanceWelcomeMessage(name, goalCtx);
+    const welcomeTranscript = [{ role: "assistant", content: welcome }];
+    return successResponse(res, "Map resistance started", {
+      nextMessage: { role: "assistant", content: welcome },
+      transcript: welcomeTranscript,
+      messages: welcomeTranscript,
+      mode: "map_resistance",
+      targetCount: target,
+      progress: { answered: 0, total: target },
+      intakeState: {
+        transcript: welcomeTranscript,
+        mode: "map_resistance",
+        activeDomain: domain,
+        answeredCount: 0,
+      },
+      status: "chatting",
+      statusMessage: `Mapping resistance for ${goalCtx.domain_label || domain}`,
+    });
+  }
+
   if (hasNoMessages && !finalize) {
     let metricsForResponse = latestDiscoveryMetrics || diagnosticMetrics;
     const intakeStateInternal = existingState || {};
@@ -5202,7 +5277,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     // and they don't have an ongoing discovery chat, start a NEW discovery chat
     // CRITICAL: Check Chat model for existing discovery chat to prevent duplicate welcome messages on refresh
     let existingDiscoveryChat = null;
-    if (appUser && hasExistingReportGenerated) {
+    if (appUser && hasExistingReportGenerated && !stage1MapResistance) {
       const { Chat } = require("../models/chatModel");
       existingDiscoveryChat = await Chat.findOne({
         where: {
@@ -5623,10 +5698,32 @@ Take your time and share what feels true for you.`;
   // 2. Either it's not completed/finalized, OR
   // 3. 25 questions are answered BUT no report has been generated yet (needs confidence check + report)
   const needsReportGeneration = allQuestionsAnswered && !hasExistingReport;
-  hasIncompleteChat =
-    transcriptInternal2 &&
-    transcriptInternal2.length > 0 &&
-    (!isCompleted2 || needsReportGeneration);
+
+  if (stage1MapResistance) {
+    transcriptInternal2 = [];
+    const { Chat } = require("../models/chatModel");
+    if (appUser && stage1ActiveDomain) {
+      const mrChat = await Chat.findOne({
+        where: { userId: appUser.id, isChatEnded: false },
+        order: [["updatedAt", "DESC"]],
+      });
+      if (
+        mrChat?.data?.stage1MapResistance &&
+        mrChat?.data?.stage1MapResistanceDomain === stage1ActiveDomain &&
+        Array.isArray(mrChat.data.transcript)
+      ) {
+        transcriptInternal2 = mrChat.data.transcript;
+        incompleteChatId = mrChat.id;
+      }
+    }
+    hasIncompleteChat =
+      transcriptInternal2.length > 0 && !isCompleted2;
+  } else {
+    hasIncompleteChat =
+      transcriptInternal2 &&
+      transcriptInternal2.length > 0 &&
+      (!isCompleted2 || needsReportGeneration);
+  }
 
   console.log("[diagnostic] Incomplete chat check:", {
     transcriptLength: transcriptInternal2.length,
@@ -5809,9 +5906,10 @@ Take your time and share what feels true for you.`;
       ? `Welcome back ${name}, let's continue where we left off.`
       : null;
   introText = introPageText || DEFAULT_INTRO_PAGE_TEXT;
-  targetCountForRun = hasExistingReport
-    ? Math.min(targetCount, 6)
-    : targetCount;
+  if (stage1MapResistance && req.body?.activeGoalContext) {
+    introText = introPageText || introText;
+  }
+  targetCountForRun = stage1MapResistance ? targetCount || 12 : targetCount;
 
   // Check if this is the first user interaction (no user messages in transcript)
   const isFirstUserInteraction =
@@ -5830,6 +5928,17 @@ Take your time and share what feels true for you.`;
             reply: lastUser.content,
           })
         : false;
+
+    if (stage1MapResistance && lastUser?.content) {
+      const gibberish = await isLikelyGibberishMessage(lastUser.content);
+      if (gibberish) {
+        aiAnswered = false;
+        console.log(
+          "[diagnostic] Map resistance: gibberish reply — staying on current question",
+          { preview: String(lastUser.content).slice(0, 40) },
+        );
+      }
+    }
 
     const qStats = trackQuestionNumbers(transcript);
     distinctQuestionNumbers = qStats.distinctQuestionNumbers;
@@ -5901,14 +6010,16 @@ Take your time and share what feels true for you.`;
     // 2. User didn't explicitly ask for a new diagnostic
     // 3. User doesn't have an incomplete diagnostic chat
     // 4. No need for report generation
-    isDiscoveryMode =
-      !needsReportGeneration && // NEVER discovery if we need to generate report first
-      hasActualReportGenerated && // ONLY discovery if report actually exists
-      !wantsNewDiagnostic && // User didn't ask for new diagnostic
-      !hasIncompleteDiagnosticChat && // No incomplete diagnostic chat
-      (isIncompleteChatDiscoveryMode ||
-        shouldShowExistingReportFirst ||
-        !intakeInProgress);
+    isDiscoveryMode = stage1MapResistance
+      ? false
+      : !activeDiagnosticIntake &&
+        !needsReportGeneration && // NEVER discovery if we need to generate report first
+        hasActualReportGenerated && // ONLY discovery if report actually exists
+        !wantsNewDiagnostic && // User didn't ask for new diagnostic
+        !hasIncompleteDiagnosticChat && // No incomplete diagnostic chat
+        (isIncompleteChatDiscoveryMode ||
+          shouldShowExistingReportFirst ||
+          !intakeInProgress);
 
     console.log("[diagnostic] Final mode decision:", {
       isDiscoveryMode,
@@ -6105,6 +6216,8 @@ Take your time and share what feels true for you.`;
 
     const { userPrompt, systemPrompt } = await buildChatPrompts({
       isDiscoveryMode,
+      stage1MapResistance,
+      activeGoalContext: req.body?.activeGoalContext || null,
       transcript,
       targetCount: targetCountForRun,
       introText,
@@ -6131,6 +6244,7 @@ Take your time and share what feels true for you.`;
 
     // Diagnostic + new user + first interaction: use pre-built welcome message (skip AI call)
     const isDiagnosticNewUserFirstLoad =
+      !stage1MapResistance &&
       !isDiscoveryMode &&
       !hasExistingReport &&
       transcript.length === 0 &&
@@ -6521,14 +6635,24 @@ Take your time and share what feels true for you.`,
   if (appUser && updatedTranscript.length > 0) {
     // Always pass existingChatId when resuming so we update the SAME chat (one active session).
     // Prevents duplicate chat sessions on frontend refresh or retries.
-    const useExistingChat = incompleteChatId && !isNewDiscoverySession;
+    const forceNewChatForTurn = stage1MapResistance
+      ? updatedTranscript.length <= 2 && !incompleteChatId
+      : isNewDiscoverySession;
+    const useExistingChat =
+      incompleteChatId && !forceNewChatForTurn && !isNewDiscoverySession;
     await saveChatIncrementally({
       userId: appUser.id,
       diagnosticId: existingDiagnostic?.id || null,
       chatType: isDiscoveryMode ? "discovery" : "dignostic",
       transcript: updatedTranscript,
       isChatEnded: false,
-      forceNewChat: isNewDiscoverySession, // Force new session if this was the welcome message turn
+      forceNewChat: forceNewChatForTurn,
+      chatDataExtras: stage1MapResistance
+        ? {
+            stage1MapResistance: true,
+            stage1MapResistanceDomain: stage1ActiveDomain,
+          }
+        : undefined,
       ...(useExistingChat ? { existingChatId: incompleteChatId } : {}),
     });
   }
@@ -6582,6 +6706,11 @@ Take your time and share what feels true for you.`,
         : derivedAnsweredCount,
     lastQuestionNumber: maxQuestionNumber,
     pendingQuestion,
+    mode: stage1MapResistance
+      ? "map_resistance"
+      : isDiscoveryMode
+        ? "discovery"
+        : "diagnostic",
     updatedAt: new Date().toISOString(),
     requestingNewDiagnostic: shouldShowExistingReportFirst
       ? false
@@ -6687,6 +6816,14 @@ Take your time and share what feels true for you.`,
   // ============================================
   // FINALIZE FLOW (finalize=true)
   // ============================================
+  if (finalize && stage1MapResistance) {
+    return errorResponse(
+      res,
+      "Map Resistance uses POST /api/stage1/domains/:domain/map-resistance/finalize — not diagnostic finalize.",
+      400,
+    );
+  }
+
   if (finalize) {
     const transcriptForFinal =
       (Array.isArray(existingState.transcript) &&

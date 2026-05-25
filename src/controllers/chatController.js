@@ -63,6 +63,7 @@ const saveChatIncrementally = async ({
   forceNewChat = false,
   pdfSummary = null, // PDF report summary to save with chat
   existingChatId = null, // when switching discovery → diagnostic: update this chat instead of creating new one
+  chatDataExtras = null, // e.g. stage1MapResistance + domain tag
 }) => {
   try {
     if (!userId) {
@@ -217,6 +218,9 @@ const saveChatIncrementally = async ({
       const updateData = {
         data: {
           ...(chat.data || {}),
+          ...(chatDataExtras && typeof chatDataExtras === "object"
+            ? chatDataExtras
+            : {}),
           transcript: transcriptToSave,
           // messages: transcript,
           lastUpdated: new Date().toISOString(),
@@ -270,6 +274,9 @@ const saveChatIncrementally = async ({
         chatType: chatType,
         isChatEnded: isChatEnded,
         data: {
+          ...(chatDataExtras && typeof chatDataExtras === "object"
+            ? chatDataExtras
+            : {}),
           transcript: transcriptToSave,
           sessionStartedAt: new Date().toISOString(),
           lastUpdated: new Date().toISOString(),

@@ -13,6 +13,7 @@ exports.ChatType = Object.freeze({
   DIAGNOSTIC_CHAT: "Diagnostic Chat",
   DISCOVERY: "Discovery",
   BRAINPROMPT: "Brain Prompt",
+  COACHBRAINPROMPT:"Coach Brain Prompt"
 });
 
 exports.PromptType = Object.freeze({
@@ -20,4 +21,13 @@ exports.PromptType = Object.freeze({
   DIAGNOSTIC_CHAT: "Diagnostic Chat",
   DISCOVERY: "Discovery",
   BRAINPROMPT: "Brain Prompt",
+  /** V2 goal-specific structural coach OS (Nathan); layers on Brain Prompt */
+  COACHBRAINPROMPT: "Coach Brain Prompt",
+  STAGE1_MAP_RESISTANCE: "stage1_map_resistance",
+  STAGE1_DAILY_COACH: "stage1_daily_coach",
+  STAGE1_FRICTION_RESCUE: "stage1_friction_rescue",
+  STAGE1_GOAL_INTAKE: "stage1_goal_intake",
+  INVISIBLE_RED_LINE_REPORT: "invisible_red_line_report",
+  STAGE1_CONSTRAINT_EXTRACTION: "stage1_constraint_extraction",
+  MARKET_RESEARCH: "market_research",
 });

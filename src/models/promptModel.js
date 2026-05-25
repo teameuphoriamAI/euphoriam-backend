@@ -15,7 +15,7 @@ const Prompt = sequelize.define(
     },
     type: {
       type: DataTypes.ENUM(...Object.values(PromptType)),
-      defaultValue: PromptType.DIAGNOSTIC,
+      allowNull: false,
     },
     content: {
       type: DataTypes.TEXT,

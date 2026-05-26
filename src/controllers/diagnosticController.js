@@ -43,7 +43,7 @@ const {
 const jwt = require("jsonwebtoken");
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const { successResponse, errorResponse } = require("../utils/response");
-const { buildKajabiDiagnosticContext } = require("./kajabi");
+const { buildKajabiMembershipContext } = require("./kajabi");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const { sendEmail, sendEmailBasic } = require("../utils/email");
@@ -59,6 +59,9 @@ const {
 const { updateMetricsFromDiscovery } = require("../helpers/metricsCalculator");
 const { PromptType } = require("../utils/types");
 const { isCreatorClubMember } = require("./userController");
+const { FunnelAccess } = require("../models/funnelAccessModel");
+const { generateFunnelToken } = require("../utils/funnelToken");
+const crypto = require("crypto");
 const isQuestion = (text = "") => text.trim().endsWith("?");
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
@@ -114,14 +117,14 @@ const normalizeSignatureId = (value) => {
 };
 
 /**
- * Finds or creates a user and checks/updates their Creator Club membership status
- * This is the ONLY place we call buildKajabiDiagnosticContext - just for membership checking
- * Always checks latest status from Kajabi and updates the database
+ * Finds or creates a user and checks/updates their Creator Club membership status.
+ * Uses a lightweight Kajabi probe (customer + offer/product titles only) so signup
+ * and funnel redirect are not blocked on full course/assessment hydration.
  */
-const checkCreatorClubByEmail = async ({ email, assessmentIds = [] }) => {
+const checkCreatorClubByEmail = async ({ email }) => {
   console.log("Checking Creator Club membership for email:", email);
 
-  const result = await buildKajabiDiagnosticContext({ email, assessmentIds });
+  const result = await buildKajabiMembershipContext({ email });
 
   if (!result) {
     console.warn(
@@ -153,7 +156,7 @@ const checkCreatorClubByEmail = async ({ email, assessmentIds = [] }) => {
 
 const findOrCreateCreatorUser = async (req, res) => {
   try {
-    let { email, name, assessmentIds = [] } = req.body;
+    let { email, name, signup: signupIntent } = req.body;
     if (!email) return errorResponse(res, "Email is required", 400);
 
     email = email.toLowerCase().trim();
@@ -162,7 +165,6 @@ const findOrCreateCreatorUser = async (req, res) => {
     // 🔍 Check Kajabi membership FIRST
     const { clubStatus, diagnosticContext } = await checkCreatorClubByEmail({
       email,
-      assessmentIds,
     });
 
     const isPaid =
@@ -5677,10 +5679,14 @@ Take your time and share what feels true for you.`;
     transcriptInternal2 = transcriptInternal2.slice(-MAX_TRANSCRIPT_LENGTH);
   }
 
+  const isDiagnosticIntakeRestart =
+    intakeStateInternal2?.requestingNewDiagnostic === true ||
+    intakeStateInternal2?.mode === "diagnostic";
   const isCompleted2 =
-    intakeStateInternal2?.completedAt ||
-    intakeStateInternal2?.finalizedAt ||
-    false;
+    !isDiagnosticIntakeRestart &&
+    Boolean(
+      intakeStateInternal2?.completedAt || intakeStateInternal2?.finalizedAt,
+    );
   let allQuestionsAnswered = false;
   let distinctQuestionsAnsweredCount = 0;
   if (transcriptInternal2 && transcriptInternal2.length > 0) {
@@ -5955,6 +5961,8 @@ Take your time and share what feels true for you.`;
     isIncompleteChatDiscoveryMode =
       hasIncompleteChat &&
       hasExistingReport &&
+      !intakeStateInternal2?.requestingNewDiagnostic &&
+      intakeStateInternal2?.mode !== "diagnostic" &&
       (existingState?.mode === "discovery" ||
         intakeStateInternal2?.mode === "discovery");
 
@@ -6001,6 +6009,15 @@ Take your time and share what feels true for you.`;
     const needsReportGeneration =
       distinctQuestionsAnswered >= 25 && !hasActualReportGenerated;
 
+    const activeDiagnosticIntake =
+      distinctQuestionsAnswered > 0 &&
+      distinctQuestionsAnswered < 25 &&
+      (wantsNewDiagnostic ||
+        existingState?.requestingNewDiagnostic ||
+        existingState?.mode === "diagnostic" ||
+        intakeStateInternal2?.requestingNewDiagnostic ||
+        intakeStateInternal2?.mode === "diagnostic");
+
     // Only allow discovery mode if:
     // 1. Report has actually been generated (not just diagnostic record exists)
     // 2. User didn't explicitly ask for a new diagnostic
@@ -6029,6 +6046,14 @@ Take your time and share what feels true for you.`;
       hasExistingReport,
       distinctQuestionsAnswered,
     });
+
+    targetCountForRun =
+      hasExistingReport &&
+      !wantsNewDiagnostic &&
+      !intakeInProgress &&
+      isDiscoveryMode
+        ? Math.min(targetCount, 6)
+        : targetCount;
 
     // When user asks for new diagnostic while in discovery: continue same chat and keep full conversation (do not clear transcript)
     const switchingDiscoveryToDiagnostic =
@@ -6708,9 +6733,13 @@ Take your time and share what feels true for you.`,
         ? "discovery"
         : "diagnostic",
     updatedAt: new Date().toISOString(),
-    requestingNewDiagnostic: shouldShowExistingReportFirst
+    requestingNewDiagnostic: isDiscoveryMode
       ? false
-      : wantsNewDiagnostic || existingState.requestingNewDiagnostic || false,
+      : shouldShowExistingReportFirst
+        ? false
+        : wantsNewDiagnostic ||
+          existingState.requestingNewDiagnostic ||
+          distinctQuestionsAnswered < 25,
     exchangesAtLastDeclinedEndChat:
       req.body.userConfirmedEndChat === false
         ? substantialExchanges

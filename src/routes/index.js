@@ -25,7 +25,6 @@ router.use("/diagnostics", diagnosticRoutes);
 router.use("/barcode", barcodeRoutes);
 router.use("/kajabi", kajabiRoutes);
 router.use("/voice-notes", voiceRoutes);
-router.use("/voice-notes", voiceRoutes);
 router.use("/rag", ragRoutes);
 router.use("/discoveries", discoveryRoutes);
 // router.use("/discoveriesChat", discoveryChatRoutes);

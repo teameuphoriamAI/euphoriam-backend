@@ -1,4 +1,5 @@
 const { Op } = require("sequelize");
+const crypto = require("crypto");
 const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
@@ -15,6 +16,9 @@ const { createEmbeddings } = require("../config/Embedding");
 const { generateSessionSummary } = require("../config/sessionSummary");
 const { cleanTranscriptText, invalidateLatestPromptCache } = require("../helpers/euphoriamChatbot");
 const { PromptType, UserStatus, UserRole } = require("../utils/types");
+const { getMarketResearchData, getMarketResearchRows } = require("../helpers/marketResearchAggregator");
+const openai = require("../config/openai");
+const { withDbSlot } = require("../config/sequelize");
 
 const bustPromptCache = (type) => {
   if (!type) return;
@@ -474,10 +478,20 @@ const getStats = async (req, res) => {
       },
     );
 
-    const totalDiagnostics = await Diagnostic.count().catch((err) => {
-      console.error("[admin] Error counting diagnostics:", err);
-      return 0;
-    });
+    const [totalClassicDiagnostics, totalRedlineReports] = await Promise.all([
+      Diagnostic.count({
+        where: { report_type: { [Op.ne]: "invisible_red_line" } },
+      }).catch((err) => {
+        console.error("[admin] Error counting classic diagnostics:", err);
+        return 0;
+      }),
+      Diagnostic.count({
+        where: { report_type: "invisible_red_line" },
+      }).catch((err) => {
+        console.error("[admin] Error counting redline reports:", err);
+        return 0;
+      }),
+    ]);
 
     const totalDiscoveries = await Discovery.count().catch((err) => {
       console.error("[admin] Error counting discoveries:", err);
@@ -500,16 +514,26 @@ const getStats = async (req, res) => {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const recentDiagnostics = await Diagnostic.count({
-      where: {
-        createdAt: {
-          [Op.gte]: thirtyDaysAgo,
+    const [recentClassicDiagnostics, recentRedlineReports] = await Promise.all([
+      Diagnostic.count({
+        where: {
+          createdAt: { [Op.gte]: thirtyDaysAgo },
+          report_type: { [Op.ne]: "invisible_red_line" },
         },
-      },
-    }).catch((err) => {
-      console.error("[admin] Error counting recent diagnostics:", err);
-      return 0;
-    });
+      }).catch((err) => {
+        console.error("[admin] Error counting recent classic diagnostics:", err);
+        return 0;
+      }),
+      Diagnostic.count({
+        where: {
+          createdAt: { [Op.gte]: thirtyDaysAgo },
+          report_type: "invisible_red_line",
+        },
+      }).catch((err) => {
+        console.error("[admin] Error counting recent redline reports:", err);
+        return 0;
+      }),
+    ]);
 
     // Get users by date (last 30 days)
     const recentUsers = await User.count({
@@ -542,9 +566,23 @@ const getStats = async (req, res) => {
     for (const user of usersWithReports) {
       try {
         // Run counts in parallel
-        const [diagnosticCount, discoveryCount, discoveryChatCount] =
+        const userDiagnosticMatch = [{ userId: user.id }];
+        if (user.email) userDiagnosticMatch.push({ email: user.email });
+
+        const [diagnosticCount, redlineCount, discoveryCount, discoveryChatCount] =
           await Promise.all([
-            Diagnostic.count({ where: { email: user.email } }).catch(() => 0),
+            Diagnostic.count({
+              where: {
+                [Op.or]: userDiagnosticMatch,
+                report_type: { [Op.ne]: "invisible_red_line" },
+              },
+            }).catch(() => 0),
+            Diagnostic.count({
+              where: {
+                [Op.or]: userDiagnosticMatch,
+                report_type: "invisible_red_line",
+              },
+            }).catch(() => 0),
             Discovery.count({ where: { userId: user.id } }).catch(() => 0),
             DiscoveryChat.count({ where: { userId: user.id } }).catch(() => 0),
           ]);
@@ -553,8 +591,10 @@ const getStats = async (req, res) => {
           id: user.id,
           name: user.name,
           email: user.email,
-          totalReports: diagnosticCount + discoveryCount + discoveryChatCount,
+          totalReports:
+            diagnosticCount + redlineCount + discoveryCount + discoveryChatCount,
           diagnostics: diagnosticCount,
+          redlineReports: redlineCount,
           diagnosticChat: discoveryCount,
           discoveries: discoveryChatCount,
         });
@@ -569,14 +609,17 @@ const getStats = async (req, res) => {
     const stats = {
       overview: {
         totalUsers,
-        totalDiagnostics,
+        totalDiagnostics: totalClassicDiagnostics,
+        totalRedlineReports,
         totalDiscoveries,
-        totalReports: totalDiagnostics + totalDiscoveries,
+        totalReports:
+          totalClassicDiagnostics + totalRedlineReports + totalDiscoveries,
         totalPrompts,
         activePrompts,
       },
       recent: {
-        diagnosticsLast30Days: recentDiagnostics,
+        diagnosticsLast30Days: recentClassicDiagnostics,
+        redlineReportsLast30Days: recentRedlineReports,
         usersLast30Days: recentUsers,
       },
 
@@ -621,7 +664,7 @@ const getMonthlystats = async (req, res) => {
     const [allDiagnostics, allDiscovery, allDiscoveryChat] = await Promise.all([
       Diagnostic.findAll({
         where: { createdAt: { [Op.gte]: startDate } },
-        attributes: ["createdAt"],
+        attributes: ["createdAt", "report_type"],
         raw: true,
       }).catch(() => []),
 
@@ -637,6 +680,15 @@ const getMonthlystats = async (req, res) => {
         raw: true,
       }).catch(() => []),
     ]);
+
+    /** Paid / classic diagnostic rows — excludes funnel hidden-structure report (`report_type`). */
+    const classicDiagnostics = allDiagnostics.filter(
+      (r) => r.report_type !== "invisible_red_line",
+    );
+    /** Funnel IRL reports stored on `diagnostics` with `report_type = invisible_red_line`. */
+    const redlineDiagnostics = allDiagnostics.filter(
+      (r) => r.report_type === "invisible_red_line",
+    );
 
     const getKey = (date) => {
       const d = new Date(date);
@@ -697,7 +749,8 @@ const getMonthlystats = async (req, res) => {
 
     const stats = {
       trends: {
-        diagnostics: countByGroup(allDiagnostics),
+        diagnostics: countByGroup(classicDiagnostics),
+        redlineReports: countByGroup(redlineDiagnostics),
         discovery: countByGroup(allDiscoveryChat),
         discoveryChat: countByGroup(allDiscovery),
       },
@@ -1156,6 +1209,213 @@ const searchUserSessionsSemantic = async (req, res) => {
   }
 };
 
+// ── Market Research ────────────────────────────────────────────────────────────
+
+// Simple in-memory cache — keyed by stringified filter params, 5-min TTL
+const _mrCache = new Map();
+const MR_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Merges `req.body` and `req.query` so filters work when sent as query params, JSON body (e.g. some clients
+ * attach a body to GET), or a mix. Query wins on conflicts. Supports `userAudience` as alias for `user_audience`.
+ */
+const getMrFilterParams = (req) => {
+  const b = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const q = req.query && typeof req.query === "object" ? req.query : {};
+  const m = { ...b, ...q };
+  return {
+    date_from: m.date_from,
+    date_to: m.date_to,
+    funnel_source: m.funnel_source,
+    user_audience: m.user_audience ?? m.userAudience,
+  };
+};
+
+/** Stable cache key: all slots explicit so `user_audience` is never dropped by `JSON.stringify` (undefined is omitted). */
+const getCacheKey = ({ date_from, date_to, funnel_source, user_audience }) =>
+  JSON.stringify({
+    date_from: date_from ?? null,
+    date_to: date_to ?? null,
+    funnel_source: funnel_source ?? null,
+    user_audience: user_audience ?? null,
+  });
+
+/**
+ * GET /api/admin/market-research
+ * Returns aggregated diagnostic data for market research purposes.
+ */
+const getMarketResearch = async (req, res) => {
+  try {
+    const { date_from, date_to, funnel_source, user_audience } = getMrFilterParams(req);
+    const cacheKey = getCacheKey({ date_from, date_to, funnel_source, user_audience });
+
+    const cached = _mrCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MR_CACHE_TTL_MS) {
+      return successResponse(res, "Market research data (cached)", cached.data);
+    }
+
+    const data = await getMarketResearchData({
+      date_from,
+      date_to,
+      funnel_source,
+      user_audience,
+    });
+    _mrCache.set(cacheKey, { data, ts: Date.now() });
+
+    return successResponse(res, "Market research data", data);
+  } catch (err) {
+    console.error("[getMarketResearch] Error:", err);
+    return errorResponse(res, "Failed to fetch market research data", 500);
+  }
+};
+
+/**
+ * GET /api/admin/market-research/export
+ * Returns a CSV of all diagnostic records with real emails.
+ */
+const exportMarketResearchCsv = async (req, res) => {
+  try {
+    const { date_from, date_to, funnel_source, user_audience } = getMrFilterParams(req);
+    const rows = await getMarketResearchRows({
+      date_from,
+      date_to,
+      funnel_source,
+      user_audience,
+    });
+
+    const CSV_HEADERS = [
+      "date",
+      "email",
+      "eo",
+      "lack",
+      "avoid",
+      "vortex_signature",
+      "domain",
+      "desired_outcome",
+      "current_loop",
+      "orbit_pattern",
+      "structure_type",
+      "gravity_depth",
+      "cl_estimate",
+      "protector_type",
+      "contradiction_rate",
+      "recovery_speed",
+      "funnel_source",
+    ];
+
+    const escapeCell = (val) => {
+      if (val == null) return "";
+      const str = String(val).replace(/\r?\n/g, " ");
+      return str.includes(",") || str.includes('"') || str.includes("\n")
+        ? `"${str.replace(/"/g, '""')}"`
+        : str;
+    };
+
+    const lines = [CSV_HEADERS.join(",")];
+    for (const row of rows) {
+      lines.push(CSV_HEADERS.map((h) => escapeCell(row[h])).join(","));
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="euphoriam-market-research-${dateStr}.csv"`
+    );
+    return res.send(lines.join("\n"));
+  } catch (err) {
+    console.error("[exportMarketResearchCsv] Error:", err);
+    return errorResponse(res, "Failed to export CSV", 500);
+  }
+};
+
+/**
+ * POST /api/admin/market-research/report
+ * Body: same filters as GET /market-research — date_from, date_to, funnel_source, user_audience;
+ * plus focus_area, custom_question for the LLM. Calls GPT-4o to generate a market research insight report.
+ */
+const generateMarketResearchReport = async (req, res) => {
+  try {
+    const b = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const q = req.query && typeof req.query === "object" ? req.query : {};
+    const m = { ...q, ...b };
+    const {
+      date_from,
+      date_to,
+      funnel_source,
+      focus_area,
+      custom_question,
+    } = m;
+    const user_audience = m.user_audience ?? m.userAudience;
+
+    // Load the market_research prompt from the DB
+    const promptRecord = await withDbSlot(() =>
+      Prompt.findOne({ where: { type: "market_research", isActive: true }, order: [["createdAt", "DESC"]] })
+    );
+
+    const systemPrompt = promptRecord?.content || `You are a market research analyst specialising in consciousness and personal development.
+You will receive aggregated diagnostic data from the Euphoriam AI platform (real user data, fully anonymised).
+Generate a structured market research report designed to inform marketing copywriting.
+
+Include:
+1. Who the audience really is (demographic-level description based on the patterns)
+2. What their real pain is (beneath the stated desire)
+3. Most common hidden structures and what that means for copy
+4. Language patterns that will resonate (derived from top desired outcomes)
+5. Marketing angles that match the dominant vortex signatures
+6. 5–10 copy headline suggestions based on dominant patterns
+
+Be specific. Use the data. Write in a tone suitable for a marketing strategist.`;
+
+    // Get aggregated data (same filter set as GET /api/admin/market-research)
+    const data = await getMarketResearchData({
+      date_from,
+      date_to,
+      funnel_source,
+      user_audience,
+    });
+
+    // Build user content
+    const focusSection = focus_area ? `\nFocus area for this report: ${focus_area}` : "";
+    const questionSection = custom_question ? `\nSpecific question to answer: ${custom_question}` : "";
+
+    const userContent = `Here is aggregated Euphoriam diagnostic data from ${data.total_diagnostics} users:
+
+${JSON.stringify(data, null, 2)}
+${focusSection}${questionSection}
+
+Generate the market research insight report now.`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.5,
+      max_completion_tokens: 2000,
+    });
+
+    const report_text = (response?.choices?.[0]?.message?.content || "").trim();
+    const tokens_used = response?.usage?.total_tokens || 0;
+
+    return successResponse(res, "Market research report generated", {
+      report_text,
+      model: "gpt-4o",
+      tokens_used,
+      data_summary: {
+        total_diagnostics: data.total_diagnostics,
+        date_range: data.date_range,
+        user_audience: data.user_audience,
+        funnel_source: funnel_source || null,
+      },
+    });
+  } catch (err) {
+    console.error("[generateMarketResearchReport] Error:", err);
+    return errorResponse(res, "Failed to generate report", 500);
+  }
+};
+
 module.exports = {
   adminLogin,
   getAllUsers,
@@ -1177,4 +1437,7 @@ module.exports = {
   getUserLatestSession,
   singleUserSessionToUser,
   searchUserSessionsSemantic,
+  getMarketResearch,
+  exportMarketResearchCsv,
+  generateMarketResearchReport,
 };

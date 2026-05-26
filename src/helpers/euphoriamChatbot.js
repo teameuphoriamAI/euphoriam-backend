@@ -499,21 +499,42 @@ const formatFactsContext = (context = {}) => {
 };
 
 /**
- * Returns the pre-built welcome message for new diagnostic users (no prior report, first interaction).
- * Fetches the Diagnostic prompt from DB and extracts Q1 from it. Falls back to null if Q1 cannot be extracted.
+ * Extract Q1 block from the Diagnostic prompt in DB.
  */
-const getDiagnosticNewUserWelcomeMessage = async (userName) => {
+const extractQ1BlockFromDiagnosticPrompt = async () => {
   const { PromptType } = require("../utils/types");
   const diagnosticPromptObj = await getLatestPromptFromDb(
     PromptType.DIAGNOSTIC,
   );
   const diagnosticPromptContent = diagnosticPromptObj?.content || "";
-
-  // Extract Q1 block from prompt (supports Q1:, Q1 —, Q1., **Q1 —**, etc.; stops at Q2)
   const q1Match = diagnosticPromptContent.match(
     /(?:^|\n)((?:\*\*)?Q1\s*[—–\-\.\):]\s*[\s\S]*?)(?=\n\s*(?:\*\*)?Q2\s*[—–\-\.\):]|$)/im,
   );
-  const q1Block = q1Match ? q1Match[1].trim() : null;
+  return q1Match ? q1Match[1].trim() : null;
+};
+
+/**
+ * True when this user already completed a diagnostic (report, PDF, or finalized intake).
+ */
+const diagnosticHasCompletedReport = (diagnostic) => {
+  if (!diagnostic) return false;
+  const d = diagnostic.data || {};
+  return Boolean(
+    d.aiReport ||
+      diagnostic.report ||
+      diagnostic.pdfUrl ||
+      d.generatedAt ||
+      d.intakeState?.completedAt ||
+      d.intakeState?.finalizedAt,
+  );
+};
+
+/**
+ * Returns the pre-built welcome message for new diagnostic users (no prior report, first interaction).
+ * Fetches the Diagnostic prompt from DB and extracts Q1 from it. Falls back to null if Q1 cannot be extracted.
+ */
+const getDiagnosticNewUserWelcomeMessage = async (userName) => {
+  const q1Block = await extractQ1BlockFromDiagnosticPrompt();
 
   if (!q1Block) {
     console.warn(
@@ -528,6 +549,29 @@ const getDiagnosticNewUserWelcomeMessage = async (userName) => {
       : "there";
 
   return `Hi ${displayName}, I don't have your intake on record yet, so we'll start with the 25-Question Deep Intake Engine™. One question at a time. No rushing. No fixing. Just mapping.
+
+${q1Block}`;
+};
+
+/**
+ * Welcome when restarting the 25-question intake but a prior diagnostic already exists on file.
+ */
+const getDiagnosticRepeatIntakeWelcomeMessage = async (userName) => {
+  const q1Block = await extractQ1BlockFromDiagnosticPrompt();
+
+  if (!q1Block) {
+    console.warn(
+      "[getDiagnosticRepeatIntakeWelcomeMessage] Could not extract Q1 from Diagnostic prompt",
+    );
+    return null;
+  }
+
+  const displayName =
+    typeof userName === "string" && userName.trim().length
+      ? userName.trim()
+      : "there";
+
+  return `Hi ${displayName}, I've loaded your last diagnostic report on file. We're starting a fresh 25-Question Deep Intake Engine™ from the beginning — one question at a time. No rushing. No fixing. Just mapping.
 
 ${q1Block}`;
 };
@@ -653,6 +697,9 @@ ${confidenceBlock}
 - You are currently at Core Question: ${coreQuestionCount}/25.
 ${coreQuestionCount > 0 ? `- The user just answered Q${coreQuestionCount}. The NEXT question you MUST ask is Q${coreQuestionCount + 1} — and ONLY Q${coreQuestionCount + 1}. Do NOT skip to Q${coreQuestionCount + 2} or any later number.` : ""}
 - DO NOT attempt to finalize or signal completion until Core Question 25 has been answered.
+- Every core question (Q1–Q25) MUST be easy for a beginner to understand: use short, plain everyday words.
+- Avoid technical terms, abstract jargon, and long multi-part phrasing.
+- Keep each question body to one clear ask (max ~18 words when possible) and include a simple example if helpful.
 
 QUESTION FLOW:
 1. **Core Intake (Q1 - Q25)**: One question at a time.
@@ -666,29 +713,20 @@ QUESTION FLOW:
 
 🚨🚨🚨 CRITICAL RESPONSE FORMAT - ACKNOWLEDGEMENT STYLE:
 
-🚫🚫🚫 ABSOLUTELY FORBIDDEN PHRASES — NEVER USE THESE:
-- "I hear you" / "I hear you, [name]" / "I hear you're asking"
-- "You mentioned" / "You mentioned [X]"
-- "Anyway, here's where we are —"
-- "Back to the question —"
-- "Let's get back to where we were"
-- "I'm here to assist you through this process"
-- "I still need your input on this one"
-- "that seems like a lot of information" / "that's a lot at once" / "let's simplify it a bit"
+Use natural acknowledgement, not scripted acknowledgement.
+- Mirror the user's tone and wording briefly, then continue.
+- Avoid repeating the same opener pattern across turns.
+- Keep acknowledgements short and conversational (or skip them when a direct answer is better).
+- Avoid meta/process talk (for example: "back to the question", "I'm here to assist", "let's simplify it a bit").
 
-When the user gives a long, detailed answer: ACKNOWLEDGE it (e.g. "Got it."), reflect what it reveals, and move to the next question. Do NOT ask them to simplify or repeat.
-
-✅ INSTEAD, USE NATURAL RESPONSES:
-- "Got it." / "That tracks." / "Noted." / "Makes sense."
-- Just answer directly without announcing: "19 more to go." not "I hear you're asking how many..."
-- Transition naturally: "So —" or just go straight to the question
+When the user gives a long, detailed answer: briefly reflect what it reveals, then move to the next question. Do NOT ask them to simplify or repeat.
 
 Your response must flow naturally WITHOUT any labels like "STEP 1" or "STEP 2". Follow this structure invisibly:
 
-1. Start with a brief, NATURAL acknowledgement of the LAST user message only — use "Got it.", "That tracks.", "Makes sense." — NEVER "I hear you". You MUST respond to what they said most recently (see "LAST USER MESSAGE" above), not to an older message in the transcript.
-2. Then reflect/interpret what their answer reveals (2-4 sentences)
-3. Add a grounding statement (1 line)
-4. Then ask the next question with a brief intro
+1. Start with either (a) a brief natural acknowledgement or (b) a direct response to what they said.
+2. Add a short reflection about what their answer reveals (1-2 sentences, plain language).
+3. Add one brief bridge line to the next step.
+4. Then ask the next question.
 
 SPECIAL CASE — WHEN THE USER ASKS A QUESTION (e.g. "what are you doing?", "how many questions left?"):
 - JUST ANSWER IT DIRECTLY. Don't say "I hear you're asking about X" — just give the answer.
@@ -700,29 +738,33 @@ SPECIAL CASE — WHEN THE USER ASKS A QUESTION (e.g. "what are you doing?", "how
 ⚠️ DO NOT output "STEP 1:", "STEP 2:", etc. — these are internal instructions only!
 
 🚨 MANDATORY QUESTION NUMBERING: Every core question (Q1–Q25) MUST be prefixed with **Q{N} — Question Name** (e.g. **Q1 — Desired Reality**, **Q7 — Duration**). NEVER ask a core question without this format. Clarifier questions use **CB{N}** (e.g. **CB1**, **CB2**).
+🚨 QUESTION CLARITY STANDARD: For Q1–Q25 and any rephrased version, ask in plain language a 12-year-old can understand.
+🚨 NO JARGON IN QUESTION TITLE OR BODY:
+- Do NOT use internal framework words the user may not know (e.g. "triangle", "orbit", "abduction", "EO", "lack channel", "protector", "signature", "constraint").
+- Replace framework labels with simple everyday wording.
+- If a concept is needed, explain it in plain words inside the question.
+- Example rewrite:
+  - Avoid: **Q7 — Top/Bottom Triangle** "Do you feel top or bottom triangle?"
+  - Use: **Q7 — Current State** "Right now, do you feel more confident and able, or more stuck and lacking?"
 
 EXAMPLE OF CORRECT OUTPUT FORMAT:
 
 User says: "In the head"
 
 Your response:
-"Got it.
-'In the head' is very clear.
+"That tells me the pressure is mostly internal, not just from outside events.
 
-That tells me the pressure is **internal**, not circumstantial — like the mind is looping, compressing, holding everything.
-
-The next piece is about how long this has been with you.
+Now let's map how long this has been present.
 
 **Q7 — Duration**
-How long have you been aware of this pattern? Is this recent, or has it been running for years?"
+How long have you noticed this pattern - is it new, or has it been there for years?"
 
 ---
 
 MORE EXAMPLES:
 
 User says: "Money"
-→ "Got it.
-So the tension sits in **security** — the field is reading threat around resources, survival, stability.
+→ "This points to pressure around security and stability.
 
 We're just mapping the structure. No fixing yet.
 
@@ -732,8 +774,7 @@ Next, we look at what happens when this gets triggered.
 When the money pressure hits, what's the first thing that changes — your thoughts, your body, or your behaviour?"
 
 User says: "I procrastinate"
-→ "That tracks.
-So the pattern is avoidance — the system delays action, probably to protect from something. That's useful data.
+→ "This shows an avoidance pattern - action gets delayed when pressure appears.
 
 We don't analyse it yet. We just map it.
 
@@ -743,9 +784,9 @@ The next piece is about what you're avoiding.
 What specifically are you putting off? Is it a task, a conversation, a decision — or something else?"
 
 🚨 VALID SHORT ANSWERS — ACCEPT AND MOVE TO NEXT QUESTION (do NOT ask for more):
-- These replies are VALID answers. Acknowledge briefly (e.g. "Got it.", "That's okay.", "Noted.") and move to the next question. Do NOT say "That didn't come through clearly" or ask them to share more.
+- These replies are VALID answers. Briefly respond in plain words and move to the next question. Do NOT say "That didn't come through clearly" or ask them to share more.
 - Examples: "none", "nothing", "not for now", "not right now", "i don't remember", "i dont remember", "nothing comes to mind", "can't think of any", "unsure", "not really", "not really sure", "no idea", "don't have one", "nothing specific", "skip", "pass".
-- For these, give a one-line acknowledgment (e.g. "Got it — no problem." or "That's okay.") then ask the NEXT question (Q${coreQuestionCount + 1}) with **Q${coreQuestionCount + 1} — [Name]**.
+- For these, give a one-line response (e.g. "That's okay.") then ask the NEXT question (Q${coreQuestionCount + 1}) with **Q${coreQuestionCount + 1} — [Name]**.
 
 🚨 IMPORTANT — GREETINGS & SOCIAL MESSAGES (hi, hello, how are you?, off-topic questions, etc.):
 - If the user sends a greeting, casual remark, or off-topic question instead of answering:
@@ -781,9 +822,9 @@ What specifically are you putting off? Is it a task, a conversation, a decision 
 📝 MORE REFLECTION EXAMPLES (adapt to context):
 
 For short/single-word answers:
-- "purpose" → "Got it. So the pull is toward **meaning** — the structure is asking for direction, not just activity. That's the first thread."
-- "money" → "Got it. So the field is reading **security** — resources, survival, stability. That's where the weight sits."
-- "nothing" / "none" / "not for now" / "i dont remember" → ACCEPT. Brief acknowledgment (e.g. "Got it." or "That's okay — that's valid.") then ask the NEXT question (Q${coreQuestionCount + 1}). Do NOT rephrase or ask for more.
+- "purpose" → "This points to a need for meaning and direction."
+- "money" → "This points to pressure around security and stability."
+- "nothing" / "none" / "not for now" / "i dont remember" → ACCEPT. Brief response (e.g. "That's okay — that's valid.") then ask the NEXT question (Q${coreQuestionCount + 1}). Do NOT rephrase or ask for more.
 - "idk" / "i don't know" → ACCEPT. "That's okay." then ask the NEXT question. Do NOT say "Let me rephrase" or ask for more.
 - "idk" / "i don't know" → ACCEPT. "That's okay." then ask the NEXT question. Do NOT say "Let me rephrase" or ask for more.
 
@@ -1992,7 +2033,7 @@ RESPONSE GUIDELINES
 
 🚨🚨🚨 ABSOLUTE PROHIBITION - NEVER USE THESE PHRASES:
 - NEVER say "I'm here" or "I'm here to help"
-- NEVER say "I hear you" or "I hear you, [name]" or "I hear you mentioning" — use "Got it.", "That tracks.", "When you say [X], that points to…", "Noted.", or "Clear." instead
+- NEVER say "I hear you" or "I hear you, [name]" or "I hear you mentioning" — use direct plain responses such as "When you say [X], that points to..." or go straight to the question.
 - NEVER say "tell me more about that" or "what's on your mind?"
 - NEVER say "What would you like to explore?" or "How can I help?"
 - NEVER use generic, vague responses
@@ -2000,7 +2041,7 @@ RESPONSE GUIDELINES
 - NEVER use generic coaching language - ALWAYS use the structured pivot format when identifying patterns
 - When you spot a pattern, you MUST use the structured pivot format - do NOT fall back to generic responses
 - If the user mentions something unclear (like "formula plase"), work with it structurally:
-  * Acknowledge what you heard: "When you say [what they said], that points to…" or "Got it — [what they said]."
+  * Reflect what you heard: "When you say [what they said], that points to…"
   * Map it to their structure: "That connects to [specific structural element from their report]"
   * Ask ONE specific, targeted question to clarify the structural meaning
   * Example: "When you say 'formula,' that connects to the structure we mapped in your report. What does that word point to in your body or experience right now?"
@@ -2427,7 +2468,7 @@ ${userSession?.transcript ? `\n🚨🚨🚨🚨🚨 IMMEDIATE ATTENTION: The use
 — Your tone must match Euphoriam discovery: **direct, structural, high—precision**.
 — Do NOT default to generic therapy/coaching language.
 — 🚫 ABSOLUTELY FORBIDDEN PHRASES / PATTERNS (do not use):
-  — "I understand" / "I hear you" / "I hear you, [name]" / "I hear you mentioning" — use natural alternatives instead: "Got it.", "That tracks.", "So [X] is showing up.", "When you say [X], that points to...", "Noted.", "Clear."
+  — "I understand" / "I hear you" / "I hear you, [name]" / "I hear you mentioning" — use direct alternatives instead: "So [X] is showing up." or "When you say [X], that points to..."
   — "it's a journey" / "self—awareness" / "build confidence" / "gradually"
   — "Let's make this practical" / "small daily action" / "daily reminder" / "actionable step"
   — "once we have this, I'll proceed" (sounds robotic)
@@ -3799,7 +3840,11 @@ const checkWantsNewDiagnostic = async (transcript, existingState) => {
   const previouslyRequestedNewDiagnostic =
     existingState.requestingNewDiagnostic === true;
   const intakeInProgress =
-    existingState.answeredCount > 0 && existingState.answeredCount < 12;
+    existingState.requestingNewDiagnostic === true ||
+    (existingState.mode === "diagnostic" &&
+      existingState.answeredCount > 0 &&
+      existingState.answeredCount < 25) ||
+    (existingState.answeredCount > 0 && existingState.answeredCount < 25);
 
   // If there are no user messages yet (first interaction), don't use the persisted flag
   // This allows showing existing report first on first interaction
@@ -4032,6 +4077,14 @@ const trackQuestionNumbers = (transcript) => {
 const isAiLikelyAnswer = async ({ question, reply }) => {
   const t = (reply || "").trim();
   if (!t) return false;
+  if (isQuestion(t)) return false;
+
+  // Accept compact choice-like answers early (e.g. "2 d", "a", "2,3", "b/c").
+  // These are common in intake flows and should not trigger a re-ask.
+  const compactChoiceLike = /^([a-f]|\d{1,2})(?:[\s,\/\-]+([a-f]|\d{1,2}))*$/i;
+  if (compactChoiceLike.test(t)) {
+    return true;
+  }
 
   const questionText = (question || "").trim();
   const questionForPrompt =
@@ -4045,21 +4098,22 @@ ${questionForPrompt || "N/A"}
 USER'S REPLY:
 ${reply}
 
-Interpret generously. The question may ask about focus, desired outcome, patterns, triggers, what happens first, body/thoughts/behavior, feelings, examples, who taught you, where a belief came from, etc. Any reply that substantively relates to what was asked is an answer.
+BE EXTREMELY LENIENT. Almost any reply that isn't a greeting or off-topic question should count as YES.
 
 Count as YES (valid answer) when the reply:
-- Describes what the person does, thinks, feels, or experiences (e.g. "I get a coffee and get stuck thinking I don't have time" → valid for "what's the first thing that changes").
-- Gives concrete content: situation, examples, roles, responsibilities, beliefs, actions, thoughts, or reflections that relate to the question.
-- For "who taught you / where did this rule come from / what influenced this belief": accept when the user describes their role (e.g. "I'm a father and have to provide"), their responsibilities, culture, or how they see things working (e.g. "for a business to work people have to live your product"). That is describing the origin of the rule.
-- Is short but on-topic ("money", "my family", "nothing", "idk" when that fits).
-- Has typos or informal wording but clearly attempts to answer — output yes.
+- Expresses ANY position, even if brief: "neither", "both", "not chosen", "the first one", "second", "none", "all of them", "not really", "sort of"
+- Expresses uncertainty: "not sure", "idk", "I don't know", "maybe", "hard to say", "can't decide" — these ARE valid answers (uncertainty is data)
+- Is short but represents a choice or stance: "money", "my family", "nothing", "work", "failure", "rejection"
+- Describes feelings, thoughts, experiences, or beliefs in any form
+- Has typos or informal wording but represents an attempt to respond
+- Refers to prior answers or context: "same as before", "like I said"
 
-Count as NO only when the reply is clearly:
-- A greeting or sign-off with no attempt to answer ("hi", "bye", "see you").
-- A question directed at the bot ("who are you", "how many questions left").
-- Pure filler with no content ("ok" or "cool" by itself with nothing about the question).
+Count as NO only when the reply is CLEARLY:
+- A greeting or sign-off with ZERO content about the question ("hi", "bye", "hello there")
+- A meta-question directed at the bot ("who are you", "how many questions left", "what do you mean")
+- Pure acknowledgment with no stance ("ok", "cool", "got it" by itself)
 
-When in doubt, or when the reply has real content that could reasonably answer the question, output yes.
+CRITICAL: If the user gives ANY substantive response that could represent their answer, position, or state of mind — even if unclear or incomplete — output YES. When in doubt, output YES.
 
 Reply with exactly one word: yes or no.`;
 
@@ -4513,12 +4567,19 @@ const getLatestPromptFromDb = async (type = "Diagnostic") => {
   }
 };
 
+/** Clears the in-memory prompt cache for `type` so the next fetch reads the DB (after prompt edits). */
+const invalidateLatestPromptCache = (type = "Diagnostic") => {
+  _promptCache.delete(type);
+};
+
 module.exports = {
   // DEEP_INTAKE_QUESTIONS,
   // buildIntakeQuestionResponse,
   buildFinalReportPrompt,
   DEFAULT_INTRO_PAGE_TEXT,
   getDiagnosticNewUserWelcomeMessage,
+  getDiagnosticRepeatIntakeWelcomeMessage,
+  diagnosticHasCompletedReport,
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   sanitizeReportText,
@@ -4546,6 +4607,7 @@ module.exports = {
   shouldAutoFinalize,
   saveChatState,
   getLatestPromptFromDb,
+  invalidateLatestPromptCache,
   safeFindDiagnostic,
   cleanTranscriptText,
   calculateDiagnosticConfidence,

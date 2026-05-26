@@ -68,6 +68,11 @@ router.get(
 // Stats
 router.get("/stats", asyncHandler(adminController.getStats));
 router.get("/getMonthlystats", asyncHandler(adminController.getMonthlystats));
+
+// Market Research
+router.get("/market-research", asyncHandler(adminController.getMarketResearch));
+router.get("/market-research/export", asyncHandler(adminController.exportMarketResearchCsv));
+router.post("/market-research/report", asyncHandler(adminController.generateMarketResearchReport));
 // User Session management
 router.post(
   "/user-sessions",

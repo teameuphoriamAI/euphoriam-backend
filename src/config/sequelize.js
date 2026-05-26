@@ -13,6 +13,15 @@ const isSupabaseOrNeon =
 
 const isUsingPooler = DATABASE_URL.includes("pooler");
 
+// Detect local database (localhost / 127.0.0.1 / ::1) — SSL not supported locally
+const isLocalDb =
+  DATABASE_URL.includes("localhost") ||
+  DATABASE_URL.includes("127.0.0.1") ||
+  DATABASE_URL.includes("::1");
+
+// Only require SSL for remote databases
+const useSSL = !isLocalDb;
+
 if (isSupabaseOrNeon && !isUsingPooler) {
   console.warn("\n⚠️  WARNING: Using direct connection to Supabase/Neon (Session mode)");
   console.warn("   Session mode has very strict connection limits (usually 1 connection)");
@@ -24,16 +33,18 @@ if (isSupabaseOrNeon && !isUsingPooler) {
 // Dynamic pool size: use larger pool when a connection pooler is available
 const poolMax = isUsingPooler ? 5 : (isSupabaseOrNeon ? 1 : 5);
 
-console.log(`[DB] Pool config: max=${poolMax}, pooler=${isUsingPooler}, supabase/neon=${isSupabaseOrNeon}`);
+console.log(`[DB] Pool config: max=${poolMax}, pooler=${isUsingPooler}, supabase/neon=${isSupabaseOrNeon}, ssl=${useSSL}`);
 
 const sequelize = new Sequelize(DATABASE_URL, {
   dialect: "postgres",
   logging: false,
   dialectOptions: {
+    ...(useSSL && {
     ssl: {
       require: true,
       rejectUnauthorized: false,
     },
+    }),
   },
   pool: {
     max: poolMax,
@@ -58,12 +69,7 @@ const sequelize = new Sequelize(DATABASE_URL, {
       /MaxClientsInSessionMode/,
     ],
   },
-  // Close all connections on process exit
-  hooks: {
-    beforeDisconnect: async () => {
-      console.log("Closing database connections...");
-    },
-  },
+  hooks: {},
 });
 
 // ── Query semaphore for low-pool scenarios ──────────────────────────────
@@ -1396,9 +1402,19 @@ RULES:
     console.log("Stage 1 extraction prompt seed:", err.message);
   }
 
-  // Backfill and enforce email uniqueness on diagnostics after tables exist
+  // Backfill and enforce email uniqueness on diagnostics after tables exist.
+  // Wrapped in try-catch so a fresh/empty DB doesn't crash the server.
+  try {
   await backfillDiagnosticEmails();
+  } catch (err) {
+    console.log("backfillDiagnosticEmails skipped:", err.message);
+  }
+
+  try {
   await ensureDiagnosticEmailUnique();
+  } catch (err) {
+    console.log("ensureDiagnosticEmailUnique skipped:", err.message);
+  }
 
   console.log("Database connected and synced");
   return models;

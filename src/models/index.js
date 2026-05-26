@@ -9,6 +9,7 @@ const { VoiceNote } = require("./voiceNoteModel");
 const { Document } = require("./documentModel");
 const { Prompt, PromptHistory } = require("./promptModel");
 const { UserSession } = require("./userSessionModel");
+const { FunnelAccess } = require("./funnelAccessModel");
 
 const applyAssociations = () => {
   User.hasMany(Purchase, { foreignKey: "userId" });
@@ -39,6 +40,10 @@ const applyAssociations = () => {
     onDelete: "CASCADE",
   });
   UserSession.belongsTo(User, { foreignKey: "userId", as: "user" });
+
+  // Funnel access associations — funnel diagnostics link back to their access record
+  FunnelAccess.hasMany(Diagnostic, { foreignKey: "funnel_access_id" });
+  Diagnostic.belongsTo(FunnelAccess, { foreignKey: "funnel_access_id", as: "funnelAccess" });
 };
 
 module.exports = {
@@ -54,6 +59,7 @@ module.exports = {
   Prompt,
   PromptHistory,
   UserSession,
+  FunnelAccess,
   applyAssociations,
 };
 

@@ -8,18 +8,21 @@ const {
   checkWantsEmail,
   calculateDiagnosticConfidence,
   getLatestPromptFromDb,
+  invalidateLatestPromptCache,
   buildChatPrompts,
   isAiLikelyAnswer,
+  isLikelyGibberishMessage,
 } = require("../helpers/euphoriamChatbot");
 const { loadLatestDiscoveryMetrics } = require("../helpers/euphoriamChatbot");
 const { PromptType } = require("../utils/types");
+const { IRL_REPORT_PUBLIC_TITLE } = require("../constants/irlBranding");
 
 const { retrieveSimilarChunks } = require("../helpers/rag");
 const {
   persistDiscoveryRecord,
   truncateForContext,
-  saveChatIncrementally,
 } = require("../controllers/diagnosticController");
+const { saveChatIncrementally } = require("../controllers/chatController");
 const openai = require("../config/openai");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
@@ -33,6 +36,17 @@ const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
 const { detectDiscoveryEndIntents } = require("../utils/validation");
+const { verifyFunnelSessionToken } = require("../utils/funnelToken");
+const {
+  stripFunnelCompleteTag,
+  normalizeFunnelTranscriptRowsFromChatData,
+  flattenTranscriptMessagesForPersist,
+  normalizeFunnelStoredContent,
+  normalizeFunnelStoredRole,
+} = require("../utils/funnelTranscriptNormalize");
+const { completeDiagnostic: completeFunnelDiagnostic } = require("../controllers/funnelController");
+const { guardMessage } = require("../helpers/promptInjectionGuard");
+const { isQuestionRateLimited } = require("../middleware/funnelRateLimit");
 
 const fs = require("fs");
 
@@ -50,7 +64,6 @@ const isAnswerLike = (text = "") => {
     "repeat",
     "don't understand",
     "do not understand",
-    "not sure",
     "what do you mean",
     "rephrase",
   ];
@@ -62,6 +75,303 @@ const isAnswerLike = (text = "") => {
 const extractQuestionNumber = (text = "") => {
   const match = (text || "").match(/Q\s*(\d{1,2})/i);
   return match ? Number(match[1]) : null;
+};
+
+const stripQuestionHeader = (text = "") =>
+  String(text || "")
+    .replace(/^\s*\*{0,2}Q\s*\d{1,2}\s*[—–\-.:]\s*/i, "")
+    .replace(/\*{1,2}/g, "")
+    .trim();
+
+const tokenSetForSimilarity = (text = "") => {
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "is",
+    "are",
+    "be",
+    "you",
+    "your",
+    "if",
+    "it",
+    "this",
+    "that",
+    "with",
+    "when",
+    "what",
+    "would",
+    "rather",
+    "than",
+    "but",
+    "not",
+  ]);
+  return new Set(
+    stripQuestionHeader(text)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w && w.length > 2 && !stop.has(w)),
+  );
+};
+
+const jaccardSimilarity = (a, b) => {
+  if (!a?.size || !b?.size) return 0;
+  let intersection = 0;
+  for (const t of a) {
+    if (b.has(t)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union > 0 ? intersection / union : 0;
+};
+
+/**
+ * Guards against asking semantically near-identical core questions with different Q numbers
+ * (e.g. Q20 and Q25 phrased the same).
+ */
+const detectDuplicateCoreQuestionAcrossNumbers = (transcript = [], candidateContent = "") => {
+  const candidateNum = extractQuestionNumber(candidateContent);
+  if (!candidateNum || candidateNum < 1 || candidateNum > 25) return null;
+  const candidateTokens = tokenSetForSimilarity(candidateContent);
+  if (!candidateTokens.size) return null;
+
+  let best = null;
+  for (const m of transcript || []) {
+    if (m?.role !== "assistant" || !m.content) continue;
+    const n = extractQuestionNumber(m.content);
+    if (!n || n === candidateNum || n < 1 || n > 25) continue;
+    const sim = jaccardSimilarity(candidateTokens, tokenSetForSimilarity(m.content));
+    if (!best || sim > best.similarity) {
+      best = { similarity: sim, priorNumber: n, priorContent: m.content };
+    }
+  }
+  return best && best.similarity >= 0.58 ? best : null;
+};
+
+const maxQuestionNumberInText = (text = "") => {
+  const s = String(text || "");
+  let max = 0;
+  const bump = (raw) => {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1 && n <= 99) max = Math.max(max, n);
+  };
+  let m;
+  const reQ = /Q\s*(\d{1,2})\b/gi;
+  while ((m = reQ.exec(s)) !== null) bump(m[1]);
+  const reQHash = /\bquestion\s*#?\s*(\d{1,2})\b/gi;
+  while ((m = reQHash.exec(s)) !== null) bump(m[1]);
+  const reQWord = /\bquestion\s+(\d{1,2})(?:\s*[—–\-:]|\/|\s+of)\b/gi;
+  while ((m = reQWord.exec(s)) !== null) bump(m[1]);
+  return max;
+};
+
+const maxCoreQuestionFromTranscript = (transcript, cap = 25) => {
+  let max = 0;
+  for (const m of transcript || []) {
+    if (m?.role !== "assistant" || !m.content) continue;
+    const n = maxQuestionNumberInText(m.content);
+    max = Math.max(max, Math.min(n, cap));
+  }
+  return max;
+};
+
+/** True if this assistant bubble references the numbered question `cap` (e.g. 25), any common formatting. */
+const assistantMessageMentionsQuestionCap = (content, cap) => {
+  const s = String(content || "");
+  if (new RegExp(`Q\\s*${cap}\\b`, "i").test(s)) return true;
+  if (new RegExp(`\\bquestion\\s*#?\\s*${cap}\\b`, "i").test(s)) return true;
+  if (new RegExp(`\\bquestion\\s+${cap}(?:\\s*[—–\\-:]|\\s+of)\\b`, "i").test(s)) return true;
+  return false;
+};
+
+const lastAssistantIndexMentioningQuestionCap = (transcript, cap) => {
+  const t = transcript || [];
+  for (let i = t.length - 1; i >= 0; i--) {
+    const row = t[i];
+    if (row?.role !== "assistant" || !row.content) continue;
+    if (assistantMessageMentionsQuestionCap(row.content, cap)) return i;
+  }
+  return -1;
+};
+
+/**
+ * Intake is complete only after a substantive user reply following the last assistant turn that mentions Q(cap).
+ * Prevents `answered >= cap` from passing early when an extra user message exists (intro, duplicate, etc.)
+ * while Q25 has just been asked and not yet answered.
+ */
+const funnelIntakeTranscriptComplete = (transcript, cap = 25) => {
+  const t = transcript || [];
+  let maxQ = maxCoreQuestionFromTranscript(t, cap);
+  const hasAssistant = t.some((m) => m.role === "assistant");
+  if (maxQ === 0 && hasAssistant) maxQ = 1;
+  const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  if (answered < cap || maxQ < cap) return false;
+  const capIdx = lastAssistantIndexMentioningQuestionCap(t, cap);
+  if (capIdx < 0) return answered >= cap && maxQ >= cap;
+  return t.slice(capIdx + 1).some((m) => m.role === "user" && isAnswerLike(m.content));
+};
+
+// Strict Q-cap gating only — legacy count-based fallback removed to prevent early completion.
+const funnelIntakeTranscriptCompleteOrLegacy = (transcript, cap = 25) =>
+  funnelIntakeTranscriptComplete(transcript, cap);
+
+const buildFunnelSystemPromptAppend = (targetCount) => `
+=== FUNNEL FREE DIAGNOSTIC — FLOW RULES (must follow) ===
+- Work through Q1 to Q${targetCount} in order. Do not skip or merge numbered questions.
+- Ask every Q in simple beginner language (short, everyday words, no jargon).
+- Keep each question to one clear ask; avoid complex multi-part phrasing.
+- Do NOT use internal terms the user may not understand (e.g. triangle/orbit/abduction/EO/lack channel/protector/signature/constraint).
+- Prefer plain replacements, e.g. "confident vs stuck" instead of "top vs bottom triangle".
+- Do NOT start responses with "Got it."; vary naturally or go straight to the next question.
+- If a reply is unclear, gibberish, or off-topic, re-ask the SAME Q number with fresh wording — never advance until you have a real answer.
+- Funnel mode does NOT use clarifier questions. Never ask CB1/CB2/etc and never ask extra confidence questions after Q${targetCount}.
+- As soon as the user gives a substantive answer to Q${targetCount}, end with one optional short acknowledgment (one sentence max), then a new line containing exactly: [FUNNEL_INTAKE_COMPLETE]
+- Do NOT output [FUNNEL_INTAKE_COMPLETE] before Q${targetCount} is fully answered.
+- Do NOT tell the user you will "generate", "email", or "create" their report in prose — the app does that automatically as soon as intake is complete. Never invite further chat after the tag.`;
+
+const buildFunnelProgressPayload = (session, latestAssistantContentRaw = "") => {
+  const t = session.transcript;
+  const cap = session.targetCount || 25;
+  let maxQ = maxCoreQuestionFromTranscript(t, cap);
+  const hasAssistant = t.some((m) => m.role === "assistant");
+  if (maxQ === 0 && hasAssistant) maxQ = 1;
+  const answered = t.filter((m) => m.role === "user" && isAnswerLike(m.content)).length;
+  // `asked` tracks the highest Q label seen in assistant text — it hits `cap` as soon as Q25 is *asked*,
+  // not when it is *answered*. Gate on substantive answers AND a reply after the last Q(cap) ask.
+  const intakeComplete = funnelIntakeTranscriptCompleteOrLegacy(t, cap);
+  // In funnel mode we finalize immediately after Q25 is answered (no CB clarifiers).
+  const readyToFinalize = intakeComplete;
+  return {
+    asked: maxQ,
+    answered,
+    total: cap,
+    readyToFinalize,
+    canGenerateReport: intakeComplete,
+  };
+};
+
+/**
+ * Force OpenAI-shaped messages into { role, content } strings so JSONB + flatten persist reliably.
+ */
+const coerceFunnelMessageForSession = (msg, defaultRole = "assistant") => {
+  if (!msg || typeof msg !== "object") return null;
+  let role = normalizeFunnelStoredRole(msg);
+  if (!role) {
+    const dr = String(defaultRole || "").toLowerCase();
+    if (dr === "user") role = "user";
+    else if (dr === "assistant") role = "assistant";
+  }
+  if (role !== "assistant" && role !== "user") return null;
+  let content = normalizeFunnelStoredContent(msg);
+  if (!content && typeof msg.refusal === "string") content = msg.refusal.trim();
+  if (!content) return null;
+  content = stripFunnelCompleteTag(content);
+  if (!content) return null;
+  return { role, content };
+};
+
+/** Persist funnel thread to Chat row (existingChatId = funnel chat id). Best-effort; does not throw. */
+const persistFunnelChatTranscript = async (session) => {
+  if (!session?.isFunnelMode || !session?.funnel_chat_id || !session?.email) return;
+  if (!Array.isArray(session.transcript) || session.transcript.length === 0) return;
+  const toSave = flattenTranscriptMessagesForPersist(session.transcript);
+  if (toSave.length === 0) {
+    console.warn(
+      "[funnel socket] persist skipped: flatten produced 0 rows (in-memory transcript length=%s)",
+      session.transcript.length,
+    );
+    return;
+  }
+  try {
+    const userName = session.email.split("@")[0] || "User";
+    let appUser = await User.findOne({ where: { email: session.email } });
+    if (!appUser) {
+      appUser = await User.create({ email: session.email, name: userName });
+    }
+    const chatType = session.mode === "discovery" ? "Discovery" : "Diagnostic";
+    const saved = await saveChatIncrementally({
+      userId: appUser.id,
+      diagnosticId: session.existingDiagnostic?.id || null,
+      discoveryId: null,
+      chatType,
+      transcript: toSave,
+      isChatEnded: false,
+      existingChatId: session.funnel_chat_id,
+    });
+
+    // Recovery path: if token points to a deleted/missing chat row, create a fresh funnel chat
+    // so refresh can restore instead of restarting from Q1 every time.
+    if (!saved) {
+      const oldChatId = session.funnel_chat_id;
+      const fallback = await Chat.create({
+        userId: appUser.id,
+        chatType: "Diagnostic",
+        isChatEnded: false,
+        data: {
+          transcript: toSave,
+          funnelMode: true,
+          funnel_access_id: session.funnel_access_id,
+          report_type: "invisible_red_line",
+          startedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        },
+      });
+      session.funnel_chat_id = fallback.id;
+      console.warn(
+        "[funnel socket] persist recovered by creating fallback chat",
+        { oldChatId, newChatId: fallback.id }
+      );
+    }
+  } catch (err) {
+    console.error("[funnel socket] persist transcript failed:", err);
+  }
+};
+
+/**
+ * Reload funnel Chat transcript into the socket session after refresh (same funnel_chat_id).
+ */
+const tryRestoreFunnelTranscript = async (socket, session) => {
+  if (!session.funnel_chat_id) return false;
+  try {
+    const chat = await Chat.findByPk(session.funnel_chat_id, {
+      attributes: ["id", "data", "userId"],
+    });
+    if (!chat) return false;
+    const accessId = chat.data?.funnel_access_id;
+    if (String(accessId ?? "") !== String(session.funnel_access_id ?? "")) {
+      console.warn("[funnel socket] restore skipped: funnel_access_id mismatch");
+      return false;
+    }
+    const owner = await User.findOne({ where: { email: session.email } });
+    if (!owner || chat.userId !== owner.id) {
+      console.warn("[funnel socket] restore skipped: chat owner mismatch");
+      return false;
+    }
+    const rows = normalizeFunnelTranscriptRowsFromChatData(chat?.data || {});
+    if (rows.length === 0) return false;
+    session.transcript = rows.map((r) => ({ role: r.role, content: r.content }));
+    const lastAssistant = [...rows].reverse().find((m) => m.role === "assistant");
+    const progress = buildFunnelProgressPayload(session, lastAssistant?.content || "");
+    socket.emit("session_restored", {
+      messages: rows.map((m, i) => ({
+        id: `r-${session.funnel_chat_id}-${i}`,
+        role: m.role,
+        content: m.content,
+      })),
+      progress,
+    });
+    return true;
+  } catch (err) {
+    console.error("[funnel socket] restore transcript failed:", err);
+    return false;
+  }
 };
 
 /* -------------------- Session Store -------------------- */
@@ -337,6 +647,278 @@ const endChatAsDiscovery = async (socket, session, { reason }) => {
   session.mode = "completed";
 };
 
+/* -------------------- Funnel First Question -------------------- */
+
+/**
+ * Loads User.name for funnel sessions so greetings use the real name when present.
+ * funnelDisplayName is null when no user row or name is empty (caller falls back to email local part).
+ */
+const hydrateFunnelSessionDisplayName = async (session) => {
+  session.funnelDisplayName = null;
+  if (!session?.email) return;
+  try {
+    const user = await User.findOne({
+      where: { email: session.email },
+      attributes: ["name"],
+    });
+    const n = user?.name != null ? String(user.name).trim() : "";
+    if (n) session.funnelDisplayName = n;
+  } catch (err) {
+    console.warn(
+      "[funnel socket] hydrateFunnelSessionDisplayName failed:",
+      err?.message || err,
+    );
+  }
+};
+
+/** Greeting / prompt name: User.name when set, else email local part, else "there". */
+const resolveFunnelGreetingName = (session) => {
+  const fromUser = (session?.funnelDisplayName || "").trim();
+  if (fromUser) return fromUser;
+  const fromEmail = (session?.email || "").split("@")[0]?.trim() || "";
+  if (fromEmail) return fromEmail;
+  return "there";
+};
+
+/**
+ * Static welcome prepended to the first assistant bubble (free funnel only).
+ * Explains the 25-question flow and the hidden structure map outcome.
+ */
+const buildFunnelWelcomeMarkdown = (session) => {
+  const count = session.targetCount || 25;
+  const firstName = resolveFunnelGreetingName(session);
+  return `Hi ${firstName},
+
+Welcome to this diagnostic. I'll ask **${count} focused questions**—one at a time—about how you move toward what you want, where you feel friction, and what tends to repeat when pressure shows up. Your answers stay in this thread only.
+
+When we finish, you'll get **${IRL_REPORT_PUBLIC_TITLE}**: a clear readout of the patterns we surfaced and what they imply for you—so you can see more clearly where you are now and how you actually want to operate.
+
+There are no trick questions. Short answers are fine; honest detail helps. Whenever you're ready, we'll start with the first question below.`;
+};
+
+/** Keep in sync with FUNNEL_QA_WELCOME_END_MARKER in euphoriamAi-website/lib/format-text.ts */
+const FUNNEL_QA_WELCOME_END_MARKER =
+  "Whenever you're ready, we'll start with the first question below.";
+
+/** Same trimming as frontend sanitizeFunnelQuestion for first bubble (welcome + junk + Q1). */
+const stripPreambleBetweenFunnelWelcomeAndQ1 = (text = "") => {
+  const t = String(text || "").trim();
+  const anchor = FUNNEL_QA_WELCOME_END_MARKER;
+  const anchorIdx = t.indexOf(anchor);
+  if (anchorIdx === -1) return t;
+  const head = t.slice(0, anchorIdx + anchor.length);
+  const after = t.slice(anchorIdx + anchor.length).trimStart();
+  const q1Pattern = /(\*{0,2}Q\s*1\s*[—–\-.:])/i;
+  const match = after.match(q1Pattern);
+  if (!match || match.index === undefined || match.index === 0) return t;
+  const fromQ1 = after.slice(match.index).trimStart();
+  return `${head}\n\n${fromQ1}`.replace(/\n{3,}/g, "\n\n").trim();
+};
+
+/**
+ * Generates and emits the very first diagnostic question for a funnel session.
+ * Called right after the "ready" event so the QA page doesn't stall waiting
+ * for a user message that never arrives.
+ */
+const sendFirstFunnelQuestion = async (socket, session) => {
+  try {
+    const name = resolveFunnelGreetingName(session);
+
+    // Retrieve a small set of RAG chunks for context (best-effort, non-fatal)
+    let retrieved = [];
+    try {
+      retrieved = await retrieveSimilarChunks({
+        query: "diagnostic intake first question",
+        topK: 2,
+      });
+    } catch {
+      // RAG is optional for the first question
+    }
+
+    const { systemPrompt, userPrompt: chatPrompt } = await buildChatPrompts({
+      isDiscoveryMode: false,
+      transcript: [],
+      targetCount: session.targetCount,
+      introText: null,
+      name,
+      retrieved,
+      priorReportSnippet: null,
+      lastTurnAssistant: false,
+      resumeNotice: null,
+      wantsNewDiagnostic: false,
+      intakeHasStarted: false,
+      distinctQuestionNumbers: [],
+      discoveryType: null,
+      latestDiscoveryMetrics: {},
+      reportDate: null,
+      latestUserSession: null,
+      confidenceResult: null,
+      aiAnswered: true,
+    });
+
+    if (!systemPrompt || !chatPrompt) {
+      socket.emit("error", {
+        message: "Failed to load diagnostic prompts. Please refresh and try again.",
+      });
+      return;
+    }
+
+    const systemWithFunnel = `${systemPrompt}\n\n${buildFunnelSystemPromptAppend(session.targetCount)}`;
+    const firstBubbleNote =
+      "\n\nFIRST ASSISTANT REPLY ONLY: Go directly to **Q1 — [title]** and the question. Do not add another long welcome or session overview—a fixed welcome is prepended to this reply for the user.";
+
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: `${systemWithFunnel}${firstBubbleNote}` },
+        { role: "user", content: chatPrompt },
+      ],
+      temperature: 0.3,
+      max_completion_tokens: 400,
+    });
+
+    const raw = aiResponse.choices[0]?.message;
+    const rawText =
+      typeof raw?.content === "string"
+        ? raw.content
+        : raw
+          ? normalizeFunnelStoredContent(raw) || ""
+          : "";
+    if (!rawText?.trim()) {
+      socket.emit("error", { message: "Failed to generate first question. Please refresh and try again." });
+      return;
+    }
+
+    const welcome = buildFunnelWelcomeMarkdown(session);
+    const combined = stripPreambleBetweenFunnelWelcomeAndQ1(
+      `${welcome}\n\n${rawText.trim()}`,
+    );
+
+    const coerced = coerceFunnelMessageForSession({ ...raw, content: combined }, "assistant");
+    if (!coerced) {
+      socket.emit("error", { message: "Failed to generate first question. Please refresh and try again." });
+      return;
+    }
+    session.transcript.push(coerced);
+
+    socket.emit("assistant_message", {
+      message: coerced,
+      progress: buildFunnelProgressPayload(session, combined),
+    });
+
+    await persistFunnelChatTranscript(session);
+  } catch (err) {
+    console.error("[funnel socket] sendFirstFunnelQuestion error:", err);
+    socket.emit("error", {
+      message: "Failed to start your diagnostic session. Please refresh and try again.",
+    });
+  }
+};
+
+/**
+ * Free funnel IRL: run Stage 1 report + persist diagnostic / PDF / email.
+ * Called from client "finalize" and automatically when Q1–Q25 intake is complete.
+ */
+const runFunnelIrFinalize = async (socket, session) => {
+  if (!session?.isFunnelMode || !session?.email) return false;
+  const cap = session.targetCount || 25;
+  if (!funnelIntakeTranscriptCompleteOrLegacy(session.transcript, cap)) {
+    const maxQ = maxCoreQuestionFromTranscript(session.transcript, cap);
+    const answered = session.transcript.filter(
+      (m) => m.role === "user" && isAnswerLike(m.content),
+    ).length;
+    socket.emit("error", {
+      message: `Please complete all ${cap} diagnostic questions before generating your report. (Progress: ${answered} answers, through Q${maxQ} of ${cap}.)`,
+    });
+    return false;
+  }
+  if (session.funnelFinalizeDone) {
+    return true;
+  }
+  if (session.funnelFinalizeInProgress) {
+    return false;
+  }
+
+  session.funnelFinalizeInProgress = true;
+  clearInactivity(session);
+
+  socket.emit("status", {
+    stage: "generating_report",
+    message: "Generating your hidden structure map...",
+  });
+
+  try {
+    const metrics = {};
+    invalidateLatestPromptCache("Diagnostic");
+    const [retrieved, prompt] = await Promise.all([
+      retrieveSimilarChunks({ query: session.transcript.at(-1)?.content || "", topK: 3 }),
+      getLatestPromptFromDb(),
+    ]);
+
+    const promptContent =
+      typeof prompt === "string" ? prompt : prompt?.fullPrompt || prompt?.content || "";
+
+    const userPromptContent = buildFinalReportPrompt({
+      customerContext: null,
+      intakeAnswers: session.transcript,
+      introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
+      retrieved,
+      previousReport: null,
+    });
+
+    const stage1Response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: promptContent },
+        { role: "user", content: userPromptContent },
+      ],
+      temperature: 0.15,
+      max_completion_tokens: 4500,
+    });
+
+    const stage1ReportText = sanitizeReportText(
+      stage1Response?.choices?.[0]?.message?.content?.trim() || "",
+      metrics,
+    );
+
+    socket.emit("status", {
+      stage: "compiling_report",
+      message: "Compiling your personalised report...",
+    });
+
+    const result = await completeFunnelDiagnostic({
+      funnel_access_id: session.funnel_access_id,
+      email: session.email,
+      transcript: session.transcript,
+      reportText: stage1ReportText,
+      metrics,
+      chat_id: session.funnel_chat_id,
+    });
+
+    session.funnelFinalizeDone = true;
+
+    socket.emit("done", {
+      isFunnelMode: true,
+      diagnosticId: result.diagnostic_id,
+      pdfUrl: result.pdf_url,
+      reportText: result.report_text,
+      status: "completed",
+      statusMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed.`,
+      userMessage: `${IRL_REPORT_PUBLIC_TITLE} has been generated and emailed to ${session.email}. Please check your inbox.`,
+      emailed: true,
+    });
+    return true;
+  } catch (err) {
+    console.error("[socket funnel] Finalize failed:", err);
+    socket.emit("error", {
+      message: "Failed to generate your report. Please try again.",
+    });
+    return false;
+  } finally {
+    session.funnelFinalizeInProgress = false;
+  }
+};
+
 /* -------------------- Socket Wiring -------------------- */
 
 const wireChatbotFreeform = (io) => {
@@ -354,6 +936,11 @@ const wireChatbotFreeform = (io) => {
       idleTimer: null,
       initialized: false,
       mode: "diagnostic",
+      // Funnel-mode fields (set when payload.funnel_session_token is present)
+      isFunnelMode: false,
+      funnel_access_id: null,
+      funnel_chat_id: null,
+      funnelDisplayName: null,
     });
 
     socket.emit("connected", { sessionId: socket.id });
@@ -380,6 +967,42 @@ const wireChatbotFreeform = (io) => {
       session.introPageText = payload.introPageText || session.introPageText;
       session.assessmentIds = payload.assessmentIds || [];
 
+      // ── Funnel mode: activated by a funnel_session_token from startDiagnostic ──
+      if (payload.funnel_session_token) {
+        const decoded = verifyFunnelSessionToken(payload.funnel_session_token);
+        if (!decoded) {
+          socket.emit("error", { message: "Invalid or expired funnel session token. Please restart your diagnostic." });
+          return;
+        }
+        session.isFunnelMode = true;
+        session.email = decoded.email;
+        session.funnel_access_id = decoded.funnel_access_id;
+        const parsedChatId =
+          decoded.chat_id != null ? parseInt(String(decoded.chat_id), 10) : NaN;
+        if (!Number.isFinite(parsedChatId)) {
+          socket.emit("error", {
+            message: "Invalid funnel session (missing chat). Please go back and open your session again.",
+          });
+          return;
+        }
+        session.funnel_chat_id = parsedChatId;
+        session.mode = "diagnostic"; // always diagnostic, never discovery
+        await hydrateFunnelSessionDisplayName(session);
+        const restored = await tryRestoreFunnelTranscript(socket, session);
+        socket.emit("ready", {
+          sessionId: socket.id,
+          hasExistingReport: false,
+          mode: "diagnostic",
+          isFunnelMode: true,
+          restored,
+        });
+        if (!restored) {
+          await sendFirstFunnelQuestion(socket, session);
+        }
+        return;
+      }
+
+      // ── Standard (paid user) mode ─────────────────────────────────────────
       let hasExistingReport = false;
 
       if (session.email) {
@@ -436,6 +1059,80 @@ const wireChatbotFreeform = (io) => {
     socket.on("user_message", async ({ content }) => {
       const session = sessions.get(socket.id);
       if (!session || !content) return;
+
+      // Funnel sessions: security guards + mode lock
+      if (session.isFunnelMode) {
+        // 1. Question-submission rate limit (per socket IP)
+        const clientIp = socket.handshake?.headers?.["x-forwarded-for"]?.split(",")[0]?.trim()
+          || socket.handshake?.address
+          || "unknown";
+        if (isQuestionRateLimited(clientIp)) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content: "You're submitting answers too quickly. Please slow down and take your time.",
+            },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+
+        // 2. Prompt injection detection
+        const injectionCheck = guardMessage(content);
+        if (injectionCheck.blocked) {
+          socket.emit("assistant_message", {
+            message: { role: "assistant", content: injectionCheck.response },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+
+        // 3. Lock to diagnostic mode — no discovery or open chat
+        if (session.mode === "discovery") {
+          session.mode = "diagnostic";
+        }
+        const lc = content.toLowerCase();
+        const wantsDiscovery = /discovery|follow.?up|ongoing|chat|coaching|advice|consult/i.test(lc);
+        if (wantsDiscovery) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content: "Your free access is for the initial diagnostic only. To continue your journey and get ongoing coaching support, the next step is Unlimited Creator.",
+            },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+
+        const funnelCap = session.targetCount || 25;
+        if (session.funnelFinalizeInProgress) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content: "I'm generating your report now — please stay on this page for a moment.",
+            },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+        if (session.funnelFinalizeDone) {
+          socket.emit("assistant_message", {
+            message: {
+              role: "assistant",
+              content:
+                "Your report has already been generated. Check your email or the reports section for this diagnostic.",
+            },
+            progress: buildFunnelProgressPayload(session, ""),
+          });
+          return;
+        }
+        if (funnelIntakeTranscriptCompleteOrLegacy(session.transcript, funnelCap)) {
+          session.transcript.push({ role: "user", content });
+          await persistFunnelChatTranscript(session);
+          await runFunnelIrFinalize(socket, session);
+          return;
+        }
+      }
 
       socket.emit("status", {
         stage: "chatting",
@@ -538,10 +1235,22 @@ const wireChatbotFreeform = (io) => {
           .reverse()
           .find((m) => m?.role === "assistant");
         if (lastAssistant?.content) {
-          aiAnswered = await isAiLikelyAnswer({
-            question: lastAssistant.content,
-            reply: content,
-          });
+          let funnelGibberish = false;
+          if (session.isFunnelMode) {
+            try {
+              funnelGibberish = await isLikelyGibberishMessage(content);
+            } catch (_) {
+              funnelGibberish = false;
+            }
+          }
+          if (funnelGibberish) {
+            aiAnswered = false;
+          } else {
+            aiAnswered = await isAiLikelyAnswer({
+              question: lastAssistant.content,
+              reply: content,
+            });
+          }
           if (!aiAnswered) lastQuestionNumForEnforcement = extractQuestionNumber(lastAssistant.content);
         }
       }
@@ -552,7 +1261,9 @@ const wireChatbotFreeform = (io) => {
         transcript: session.transcript,
         targetCount: session.targetCount,
         introText: session.introPageText,
-        name: session.email?.split("@")[0] || "there",
+        name: session.isFunnelMode
+          ? resolveFunnelGreetingName(session)
+          : session.email?.split("@")[0] || "there",
         retrieved,
         priorReportSnippet: session.priorReportSnippet,
         lastTurnAssistant: assistantQuestions > 0,
@@ -640,10 +1351,14 @@ const wireChatbotFreeform = (io) => {
         return;
       }
 
+      const finalSystemPrompt = session.isFunnelMode
+        ? `${safeSystemPrompt}\n\n${buildFunnelSystemPromptAppend(session.targetCount)}`
+        : safeSystemPrompt;
+
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: safeSystemPrompt },
+          { role: "system", content: finalSystemPrompt },
           ...validTranscriptMessages,
           {
             role: "user",
@@ -708,12 +1423,114 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
           .trim();
       }
 
+      let rawAssistantContent = "";
+      if (session.isFunnelMode) {
+        rawAssistantContent =
+          typeof msg?.content === "string"
+            ? msg.content
+            : normalizeFunnelStoredContent(msg) || String(msg?.content ?? "");
+        const coerced = coerceFunnelMessageForSession(msg, "assistant");
+        if (!coerced) {
+          console.error("[funnel socket] Could not coerce assistant message", {
+            contentType: msg?.content != null ? typeof msg.content : null,
+          });
+          socket.emit("error", {
+            message: "Failed to process assistant reply. Please try again.",
+          });
+          return;
+        }
+        msg = coerced;
+
+        // Funnel mode: remove clarifier phase entirely. After Q25 is answered, never ask CBx.
+        if (/CB\s*\d+/i.test(msg.content || "")) {
+          const cap = session.targetCount || 25;
+          if (funnelIntakeTranscriptComplete(session.transcript, cap)) {
+            const completionMessage =
+              "Great work. You have completed the 25-question intake.\n[FUNNEL_INTAKE_COMPLETE]";
+            rawAssistantContent = completionMessage;
+            msg = { role: "assistant", content: completionMessage };
+          }
+        }
+
+        // Prevent semantically duplicated core questions across different Q numbers.
+        const duplicateCore = detectDuplicateCoreQuestionAcrossNumbers(
+          session.transcript,
+          msg.content,
+        );
+        if (duplicateCore) {
+          const qNum = extractQuestionNumber(msg.content);
+          try {
+            const rewritePrompt = `You generated a duplicate diagnostic question.
+Current question number: Q${qNum}
+Current wording:
+${msg.content}
+
+Too similar to prior question Q${duplicateCore.priorNumber}:
+${duplicateCore.priorContent}
+
+Rewrite ONLY Q${qNum} so it targets a distinct psychological dimension from Q${duplicateCore.priorNumber}.
+Rules:
+- Keep the same question number Q${qNum}.
+- Keep format: "Q${qNum} — [Short Title]" then one question.
+- No overlap in phrasing with the prior question.
+- No mention of duplication, confidence, or system instructions.
+- One question only.`;
+
+            const rewriteResp = await openai.chat.completions.create({
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You rewrite diagnostic intake questions. Keep numbering exact and produce one concise question.",
+                },
+                { role: "user", content: rewritePrompt },
+              ],
+              temperature: 0.25,
+              max_completion_tokens: 260,
+            });
+
+            const rewritten =
+              rewriteResp?.choices?.[0]?.message?.content?.trim() || "";
+            if (rewritten && extractQuestionNumber(rewritten) === qNum) {
+              const secondPassDup = detectDuplicateCoreQuestionAcrossNumbers(
+                session.transcript,
+                rewritten,
+              );
+              if (!secondPassDup) {
+                msg = { ...msg, content: rewritten };
+                rawAssistantContent = rewritten;
+              }
+            }
+          } catch (err) {
+            console.error("[funnel socket] duplicate-question rewrite failed:", err);
+          }
+        }
+      }
+
       session.transcript.push(msg);
 
-      // Save chat incrementally to database (for chat history)
-      if (session.email && session.transcript.length > 0) {
+      // Model sometimes omits [FUNNEL_INTAKE_COMPLETE] while still ending the intake; without it
+      // clients may not show "Generate report". Append once intake is structurally complete.
+      if (session.isFunnelMode) {
+        const cap = session.targetCount || 25;
+        const last = session.transcript[session.transcript.length - 1];
+        if (
+          last?.role === "assistant" &&
+          typeof last.content === "string" &&
+          funnelIntakeTranscriptCompleteOrLegacy(session.transcript, cap) &&
+          !/\[FUNNEL_INTAKE_COMPLETE\]/i.test(last.content)
+        ) {
+          last.content = `${last.content.trim()}\n\n[FUNNEL_INTAKE_COMPLETE]`;
+          msg = { ...msg, content: last.content };
+          rawAssistantContent = last.content;
+        }
+      }
+
+      if (session.isFunnelMode) {
+        await persistFunnelChatTranscript(session);
+      } else if (session.email && session.transcript.length > 0) {
         try {
-          // Find or create user
           const userName = session.email?.split("@")[0] || "User";
           let appUser = await User.findOne({ where: { email: session.email } });
           if (!appUser) {
@@ -724,32 +1541,39 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
           }
 
           const chatType =
-            session.mode === "discovery" ? "discovery" : "dignostic";
+            session.mode === "discovery" ? "Discovery" : "Diagnostic";
           await saveChatIncrementally({
             userId: appUser.id,
             diagnosticId: session.existingDiagnostic?.id || null,
             discoveryId: null,
-            chatType: chatType,
+            chatType,
             transcript: session.transcript,
             isChatEnded: false,
+            existingChatId: null,
           });
         } catch (err) {
           console.error("[socket] Error saving chat incrementally:", err);
-          // Don't break the flow if saving fails
         }
       }
 
+      const progressPayload = session.isFunnelMode
+        ? buildFunnelProgressPayload(session, rawAssistantContent)
+        : {
+            asked: session.transcript.filter((m) => m.role === "assistant").length,
+            answered: session.transcript.filter(
+              (m) => m.role === "user" && isAnswerLike(m.content),
+            ).length,
+            total: session.targetCount,
+          };
+
       socket.emit("assistant_message", {
         message: msg,
-        progress: {
-          asked: session.transcript.filter((m) => m.role === "assistant")
-            .length,
-          answered: session.transcript.filter(
-            (m) => m.role === "user" && isAnswerLike(m.content),
-          ).length,
-          total: session.targetCount,
-        },
+        progress: progressPayload,
       });
+
+      if (session.isFunnelMode && progressPayload.readyToFinalize) {
+        await runFunnelIrFinalize(socket, session);
+      }
     });
 
     /* -------------------- FINALIZE -------------------- */
@@ -759,6 +1583,12 @@ Previous question text for reference: ${qText.slice(0, 400)}`;
       if (!session?.email) return;
 
       clearInactivity(session);
+
+      // ── FUNNEL FINALIZE (IRL Report flow) ──────────────────────────────────
+      if (session.isFunnelMode) {
+        await runFunnelIrFinalize(socket, session);
+        return;
+      }
 
       // DISCOVERY FINALIZE
       if (session.mode === "discovery") {

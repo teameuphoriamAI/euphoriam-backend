@@ -220,8 +220,20 @@ const loadStage1ForUser = async (user) => {
       ? meta.walkthroughCompletedAt.toISOString()
       : null,
     proof_logs: Array.isArray(meta.proofLogs) ? meta.proofLogs : [],
+    coach_session_log: Array.isArray(meta.coachSessionLog) ? meta.coachSessionLog : [],
     domain_maps: goals.map(rowToDomainMap),
   };
+
+  const legacyCoachLog = legacy?.coach_session_log;
+  const legacyCoachTurns = legacy?.coach_sessions;
+  if (!stage1.coach_session_log.length) {
+    if (Array.isArray(legacyCoachLog) && legacyCoachLog.length) {
+      stage1.coach_session_log = legacyCoachLog;
+    } else if (Array.isArray(legacyCoachTurns) && legacyCoachTurns.length) {
+      const { migrateLegacyCoachSessions } = require("./stage1CoachHistory");
+      stage1.coach_session_log = migrateLegacyCoachSessions(legacyCoachTurns);
+    }
+  }
 
   const resolvedPrimary = resolvePrimaryDomain(stage1);
   const needsMetaRepair =
@@ -261,6 +273,9 @@ const persistStage1ForUser = async (userId, stage1) => {
           ? new Date(stage1.walkthrough_completed_at)
           : null,
         proofLogs: Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [],
+        coachSessionLog: Array.isArray(stage1.coach_session_log)
+          ? stage1.coach_session_log
+          : [],
       },
       { where: { userId } },
     );

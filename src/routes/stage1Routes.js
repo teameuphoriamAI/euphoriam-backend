@@ -35,6 +35,11 @@ router.post(
   ...stage1Auth,
   asyncHandler(stage1Controller.finalizeMapResistance),
 );
+router.post(
+  "/domains/:domain/map-resistance/re-extract",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.reExtractMapResistance),
+);
 router.get(
   "/map-resistance/history",
   ...stage1Auth,
@@ -49,6 +54,7 @@ router.get(
 router.post("/coach/checkin", ...stage1Auth, asyncHandler(stage1CoachController.coachCheckin));
 router.get("/coach/history", ...stage1Auth, asyncHandler(stage1CoachController.getCoachHistory));
 router.get("/coach/resume", ...stage1Auth, asyncHandler(stage1CoachController.getCoachResume));
+router.post("/coach/end", ...stage1Auth, asyncHandler(stage1CoachController.endCoachChat));
 router.post("/friction", ...stage1Auth, asyncHandler(stage1CoachController.frictionRescue));
 
 router.post("/proof", ...stage1Auth, asyncHandler(stage1ProofController.postProof));

@@ -726,11 +726,14 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
         walkthrough_completed BOOLEAN NOT NULL DEFAULT false,
         walkthrough_completed_at TIMESTAMPTZ,
         proof_logs JSONB NOT NULL DEFAULT '[]',
+        coach_session_log JSONB NOT NULL DEFAULT '[]',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE user_stage1_meta
         ADD COLUMN IF NOT EXISTS proof_logs JSONB NOT NULL DEFAULT '[]';
+      ALTER TABLE user_stage1_meta
+        ADD COLUMN IF NOT EXISTS coach_session_log JSONB NOT NULL DEFAULT '[]';
     `);
     console.log("Stage 1 domain_goals + user_stage1_meta migration completed");
   } catch (err) {

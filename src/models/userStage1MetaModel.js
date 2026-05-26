@@ -44,6 +44,12 @@ const UserStage1Meta = sequelize.define(
       defaultValue: [],
       field: "proof_logs",
     },
+    coachSessionLog: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
+      field: "coach_session_log",
+    },
   },
   {
     tableName: "user_stage1_meta",

@@ -3,6 +3,10 @@ const { Prompt } = require("../models/promptModel");
 const { withDbSlot } = require("../config/sequelize");
 const { extractStructuredPacket } = require("./structuredPacketExtractor");
 const { normalizeSuccessStrategy } = require("./stage1SuccessStrategy");
+const {
+  structureHasMinimalContent,
+  heuristicStructureFromTranscript,
+} = require("./stage1MapStructure");
 const aiService = require("../clients/aiService");
 const { loadMapResistancePromptBundle } = require("./stage1Prompts");
 
@@ -105,6 +109,17 @@ const finalizeStructureFromPython = async ({
   return merged;
 };
 
+const finishStructure = (structure) => {
+  const merged = {
+    ...(structure && typeof structure === "object" ? structure : {}),
+    map_resistance_complete: true,
+  };
+  merged.success_strategy = normalizeSuccessStrategy(merged);
+  const { enrichProgressMetricsFromMap } = require("./stage1ProgressMetrics");
+  merged.progress_metrics = enrichProgressMetricsFromMap(merged, merged.progress_metrics);
+  return merged;
+};
+
 const extractGoalStructureFromTranscript = async ({
   transcript = [],
   activeGoalContext = {},
@@ -112,11 +127,17 @@ const extractGoalStructureFromTranscript = async ({
 }) => {
   if (aiService.flags.mapResistance && aiService.isEnabled()) {
     try {
-      return await finalizeStructureFromPython({
+      const fromPython = await finalizeStructureFromPython({
         transcript,
         activeGoalContext,
         domain,
       });
+      if (structureHasMinimalContent(fromPython)) {
+        return fromPython;
+      }
+      console.warn(
+        "[stage1MapResistanceExtract] Python finalize returned sparse structure; trying fallbacks",
+      );
     } catch (err) {
       console.warn("[stage1MapResistanceExtract] Python finalize failed:", err.message);
     }
@@ -131,8 +152,8 @@ const extractGoalStructureFromTranscript = async ({
       transcript,
     });
     const mapped = packetToDomainStructure(packet);
-    if (mapped.failure_strategy || mapped.daily_rep || mapped.signature_id) {
-      return mapped;
+    if (structureHasMinimalContent(mapped)) {
+      return finishStructure(mapped);
     }
   } catch (err) {
     console.warn("[stage1MapResistanceExtract] structuredPacket path failed:", err.message);
@@ -141,37 +162,44 @@ const extractGoalStructureFromTranscript = async ({
   const mapPrompt = await getPromptByType("stage1_map_resistance");
   const systemContent = mapPrompt?.content || FALLBACK_GOAL_EXTRACT_PROMPT;
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [
-      { role: "system", content: systemContent },
-      {
-        role: "user",
-        content: `ACTIVE_GOAL_CONTEXT:\n${contextText}\n\nTRANSCRIPT:\n${transcriptText}`,
-      },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.1,
-    max_completion_tokens: 2000,
-  });
-
-  const raw = response?.choices?.[0]?.message?.content || "{}";
-  let parsed;
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    parsed = {};
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemContent },
+        {
+          role: "user",
+          content: `ACTIVE_GOAL_CONTEXT:\n${contextText}\n\nTRANSCRIPT:\n${transcriptText}`,
+        },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      max_completion_tokens: 2000,
+    });
+
+    const raw = response?.choices?.[0]?.message?.content || "{}";
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = {};
+    }
+
+    const merged = finishStructure({
+      ...parsed,
+      ...packetToDomainStructure({ diagnostic_packet: parsed, constraint_packet: parsed }),
+    });
+    if (structureHasMinimalContent(merged)) {
+      return merged;
+    }
+  } catch (err) {
+    console.warn("[stage1MapResistanceExtract] OpenAI extract failed:", err.message);
   }
 
-  const merged = {
-    ...parsed,
-    ...packetToDomainStructure({ diagnostic_packet: parsed, constraint_packet: parsed }),
-    map_resistance_complete: true,
-  };
-  merged.success_strategy = normalizeSuccessStrategy(merged);
-  const { enrichProgressMetricsFromMap } = require("./stage1ProgressMetrics");
-  merged.progress_metrics = enrichProgressMetricsFromMap(merged, merged.progress_metrics);
-  return merged;
+  console.warn("[stage1MapResistanceExtract] Using heuristic structure from transcript");
+  return finishStructure(
+    heuristicStructureFromTranscript(transcript, activeGoalContext),
+  );
 };
 
 module.exports = {

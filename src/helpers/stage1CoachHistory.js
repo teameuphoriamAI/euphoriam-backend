@@ -5,8 +5,18 @@ const SESSION_GAP_MS = 4 * 60 * 60 * 1000;
 const newSessionId = () =>
   `coach-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
+const isSessionOpen = (session) => Boolean(session && !session.ended_at);
+
+const findOpenSessionForDomain = (sessions, domain) => {
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    const s = sessions[i];
+    if (s.domain === domain && isSessionOpen(s)) return s;
+  }
+  return null;
+};
+
 /**
- * Append a coach check-in to structured session log (grouped by domain + 4h window).
+ * Append a coach check-in to structured session log (grouped by domain while session is open).
  */
 const recordCoachCheckin = (stage1, payload) => {
   const {
@@ -23,13 +33,10 @@ const recordCoachCheckin = (stage1, payload) => {
     ? [...stage1.coach_session_log]
     : [];
   const now = new Date().toISOString();
-  const nowMs = Date.now();
 
-  let current = sessions.length ? sessions[sessions.length - 1] : null;
-  const lastMs = current?.updated_at ? new Date(current.updated_at).getTime() : 0;
-  const gap = nowMs - lastMs;
+  let current = findOpenSessionForDomain(sessions, domain);
 
-  if (!current || current.domain !== domain || gap > SESSION_GAP_MS) {
+  if (!current) {
     current = {
       id: newSessionId(),
       domain,
@@ -37,6 +44,7 @@ const recordCoachCheckin = (stage1, payload) => {
       state_last: state,
       started_at: now,
       updated_at: now,
+      ended_at: null,
       gravity_rating_last: gravity_rating ?? null,
       messages: [],
       turn_count: 0,
@@ -52,11 +60,13 @@ const recordCoachCheckin = (stage1, payload) => {
     if (user_message?.trim()) {
       current.messages.push({ role: "user", content: user_message.trim() });
     }
-    if (assistant_message?.trim()) {
-      current.messages.push({
-        role: "assistant",
-        content: assistant_message.trim(),
-      });
+  }
+
+  if (assistant_message?.trim()) {
+    const trimmed = assistant_message.trim();
+    const last = current.messages[current.messages.length - 1];
+    if (!last || last.role !== "assistant" || last.content !== trimmed) {
+      current.messages.push({ role: "assistant", content: trimmed });
     }
   }
 
@@ -102,6 +112,8 @@ const listCoachHistory = (stage1, { domain = null } = {}) => {
         state_last: s.state_last,
         started_at: s.started_at,
         updated_at: s.updated_at,
+        ended_at: s.ended_at || null,
+        in_progress: !s.ended_at,
         turn_count: s.turn_count || msgs.filter((m) => m.role === "user").length,
         message_count: msgs.length,
         messages: msgs,
@@ -152,22 +164,43 @@ const migrateLegacyCoachSessions = (turns) => {
   );
 };
 
-/** Resume messages from the latest open session for a domain (within gap). */
+/** Resume messages from the latest open session for a domain. */
 const getResumableCoachMessages = (stage1, domain) => {
   const sessions = Array.isArray(stage1.coach_session_log)
     ? stage1.coach_session_log
     : [];
-  if (!sessions.length) return [];
-  const last = sessions[sessions.length - 1];
-  if (last.domain !== domain) return [];
-  const gap = Date.now() - new Date(last.updated_at || last.started_at).getTime();
-  if (gap > SESSION_GAP_MS) return [];
-  return Array.isArray(last.messages) ? last.messages : [];
+  const open = findOpenSessionForDomain(sessions, domain);
+  if (!open) return [];
+  return Array.isArray(open.messages) ? open.messages : [];
+};
+
+/** Mark the open session for a domain as ended. */
+const endCoachSession = (stage1, domain) => {
+  const sessions = Array.isArray(stage1.coach_session_log)
+    ? [...stage1.coach_session_log]
+    : [];
+  const open = findOpenSessionForDomain(sessions, domain);
+  if (!open) {
+    return { stage1, ended: false, session_id: null };
+  }
+  const now = new Date().toISOString();
+  open.ended_at = now;
+  open.updated_at = now;
+  return {
+    stage1: {
+      ...stage1,
+      coach_session_log: sessions,
+    },
+    ended: true,
+    session_id: open.id,
+  };
 };
 
 module.exports = {
   recordCoachCheckin,
   listCoachHistory,
   getResumableCoachMessages,
+  endCoachSession,
+  migrateLegacyCoachSessions,
   SESSION_GAP_MS,
 };

@@ -171,22 +171,26 @@ const buildHomeDashboard = (stage1) => {
   if (!ready) return null;
 
   const { enrichProgressMetricsFromMap } = require("./stage1ProgressMetrics");
-  let progress_metrics = enrichProgressMetricsFromMap(map, map.progress_metrics);
+  const { applyProofMetricsToMap, listProofLogs } = require("./stage1Proof");
+  const proof_logs_all = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+
+  // Always recompute from proof logs (stored map.progress_metrics can be stale).
+  let mapWithMetrics = applyProofMetricsToMap({ ...map }, proof_logs_all);
+  let progress_metrics = mapWithMetrics.progress_metrics || map.progress_metrics;
+
   if (map.map_resistance_complete) {
     progress_metrics = { ...progress_metrics };
     if (!progress_metrics.milestones_completed) progress_metrics.milestones_completed = 1;
-    if (!progress_metrics.rep_completion_rate) progress_metrics.rep_completion_rate = 0.05;
     progress_metrics = enrichProgressMetricsFromMap(map, progress_metrics);
   }
 
   const visibleAction = map.today_visible_action?.trim() || null;
-  const daily_rep =
-    map.daily_rep ||
-    (visibleAction
-      ? { name: visibleAction, steps: [], win_condition: map.win_condition || null }
-      : null);
-
-  const { listProofLogs } = require("./stage1Proof");
+  const {
+    resolveFailureStrategyForMap,
+    resolveSuccessStrategyForMap,
+    resolveDailyRepForMap,
+  } = require("./stage1MapStructure");
+  const daily_rep = resolveDailyRepForMap(map);
 
   return {
     active_domain: primary,
@@ -196,13 +200,27 @@ const buildHomeDashboard = (stage1) => {
     proof_of_success: map.proof_of_success,
     milestones: map.milestones,
     today_visible_action: map.today_visible_action,
-    failure_strategy_likely_today: map.failure_strategy || null,
-    success_strategy_to_install: normalizeSuccessStrategy(map) || map.success_strategy || null,
+    failure_strategy_likely_today: resolveFailureStrategyForMap(map),
+    success_strategy_to_install:
+      resolveSuccessStrategyForMap(map) ||
+      normalizeSuccessStrategy(map) ||
+      map.success_strategy ||
+      null,
     daily_rep,
-    win_condition: map.win_condition || null,
+    win_condition:
+      (daily_rep && typeof daily_rep === "object" ? daily_rep.win_condition : null) ||
+      map.win_condition ||
+      map.proof_of_success ||
+      null,
     map_resistance_complete: map.map_resistance_complete,
     progress_metrics,
     proof_logs: listProofLogs(stage1, { domain: primary, limit: 15 }),
+    /** Rep completion % for domain ring (0–100). */
+    progress_percent: Math.round(
+      (Number(progress_metrics.rep_completion_rate) <= 1
+        ? Number(progress_metrics.rep_completion_rate) * 100
+        : Number(progress_metrics.rep_completion_rate)) || 0,
+    ),
     top_3_avoidance_behaviours: map.top_3_avoidance_behaviours || [],
     orbit_pattern: map.orbit_pattern || null,
     lack_channel: map.lack_channel || null,

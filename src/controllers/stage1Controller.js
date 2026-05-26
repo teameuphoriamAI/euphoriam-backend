@@ -153,11 +153,17 @@ const getDomain = async (req, res) => {
     }
 
     const isActive = (stage1.active_domains || []).includes(domain);
+    const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
+    const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+    const mapWithMetrics = applyProofMetricsToMap({ ...map }, proof_logs);
+    const { enrichMapForClient } = require("../helpers/stage1MapStructure");
+    const mapForClient = enrichMapForClient(mapWithMetrics);
+
     return successResponse(res, "Domain detail", {
       domain,
       label: DOMAIN_LABELS[domain],
       status: isActive ? "active" : map.status === "stored" ? "stored" : "draft",
-      map,
+      map: mapForClient,
       is_primary: stage1.primary_domain === domain,
       onboarding_status: computeOnboardingStatus(stage1),
     });
@@ -360,15 +366,36 @@ const finalizeMapResistance = async (req, res) => {
     const domain = normalizeDomain(req.params.domain);
     if (!domain) return errorResponse(res, "Invalid domain", 400);
 
-    const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-    if (messages.length < 4) {
-      return errorResponse(res, "Transcript too short to finalize Map Resistance.", 400);
-    }
+    let messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
 
     let stage1 = await loadStage1ForUser(user);
     const map = (stage1.domain_maps || []).find((m) => m.domain === domain);
     if (!map) {
       return errorResponse(res, "Domain not found. Save goals first.", 404);
+    }
+
+    if (messages.length < 4) {
+      const saved = map.map_resistance_transcript;
+      if (Array.isArray(saved) && saved.length >= 4) {
+        messages = saved;
+      }
+    }
+    if (messages.length < 4) {
+      return errorResponse(res, "Transcript too short to finalize Map Resistance.", 400);
+    }
+
+    const { resolveFailureStrategyForMap } = require("../helpers/stage1MapStructure");
+    const reextract = Boolean(req.body?.reextract);
+    if (
+      map.map_resistance_complete &&
+      resolveFailureStrategyForMap(map) &&
+      !reextract
+    ) {
+      return errorResponse(
+        res,
+        "Map Resistance is already complete. Send reextract: true to refresh your structure.",
+        400,
+      );
     }
 
     const activeGoalContext = buildActiveGoalContext(map, domain);
@@ -431,6 +458,12 @@ const finalizeMapResistance = async (req, res) => {
     console.error("[finalizeMapResistance]", err);
     return errorResponse(res, err.message || "Failed to finalize map resistance", err.status || 500);
   }
+};
+
+/** POST /api/stage1/domains/:domain/map-resistance/re-extract — rebuild structure from saved transcript */
+const reExtractMapResistance = async (req, res) => {
+  req.body = { ...(req.body || {}), reextract: true };
+  return finalizeMapResistance(req, res);
 };
 
 /** GET /api/stage1/map-resistance/history — all completed mappings for this user */
@@ -499,6 +532,7 @@ module.exports = {
   completeWalkthrough,
   mapResistanceChat,
   finalizeMapResistance,
+  reExtractMapResistance,
   getMapResistanceHistory,
   getDomainMapResistanceHistory,
   buildHomePayload,

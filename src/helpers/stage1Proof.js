@@ -168,17 +168,15 @@ const recordProof = (stage1, payload) => {
 const buildProgressPayload = (stage1, domain) => {
   const d = normalizeDomain(domain) || resolvePrimaryDomain(stage1);
   const map = (stage1.domain_maps || []).find((m) => m.domain === d);
+  const allLogs = stage1.proof_logs || [];
   const proof_logs = listProofLogs(stage1, { domain: d, limit: 30 });
-  const weekly_rep_completion = buildWeeklyRepCompletion(
-    stage1.proof_logs || [],
-    d,
-  );
+  const weekly_rep_completion = buildWeeklyRepCompletion(allLogs, d);
+
+  const mapWithMetrics = map ? applyProofMetricsToMap({ ...map }, allLogs) : null;
 
   return {
     domain: d,
-    progress_metrics: map
-      ? enrichProgressMetricsFromMap(map, map.progress_metrics)
-      : null,
+    progress_metrics: mapWithMetrics?.progress_metrics || null,
     proof_logs,
     weekly_rep_completion,
     daily_rep: map?.daily_rep || null,

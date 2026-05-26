@@ -1,0 +1,121 @@
+const { DOMAIN_LABELS } = require("../constants/domains");
+const { buildActiveGoalContext } = require("./stage1GoalContext");
+const { listCoachHistory } = require("./stage1CoachHistory");
+const { listProofLogs } = require("./stage1Proof");
+const { getAllUserSessions } = require("./euphoriamChatbot");
+
+const MAX_TRANSCRIPT_MESSAGES = 16;
+const MAX_MESSAGE_CHARS = 900;
+
+const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) => {
+  if (!Array.isArray(transcript)) return [];
+  return transcript.slice(-maxMessages).map((m) => ({
+    role: m?.role,
+    content: String(m?.content || "").slice(0, MAX_MESSAGE_CHARS),
+  }));
+};
+
+const serializeUserSessions = (sessions) =>
+  (sessions || []).slice(0, 6).map((s) => ({
+    id: s.id,
+    session_date: s.sessionDate || s.createdAt,
+    summary: s.summery || null,
+    transcript_excerpt: excerptTranscript(s.transcript, 12),
+    metadata:
+      s.metadata && typeof s.metadata === "object" && Object.keys(s.metadata).length
+        ? s.metadata
+        : null,
+  }));
+
+const serializeCoachHistory = (stage1, domain) =>
+  listCoachHistory(stage1, { domain })
+    .slice(0, 6)
+    .map((sess) => ({
+      id: sess.id,
+      started_at: sess.started_at,
+      ended_at: sess.ended_at,
+      in_progress: sess.in_progress,
+      state: sess.state_last,
+      preview: sess.preview,
+      green_rep_last: sess.green_rep_last?.name || null,
+      messages_excerpt: excerptTranscript(sess.messages, 10),
+    }));
+
+const serializeMapResistance = (map) => {
+  if (!map) return null;
+  const failure = map.failure_strategy;
+  const success = map.success_strategy;
+  return {
+    completed_at: map.map_resistance_completed_at || null,
+    signature_id: map.signature_id || null,
+    EO: map.EO || null,
+    lack_channel: map.lack_channel || null,
+    avoid_type: map.avoid_type || null,
+    orbit_pattern: map.orbit_pattern || null,
+    protector_rule: map.protector_rule || null,
+    failure_strategy: failure || null,
+    success_strategy: success || null,
+    top_3_avoidance_behaviours: map.top_3_avoidance_behaviours || [],
+    daily_rep: map.daily_rep || null,
+    win_condition: map.win_condition || null,
+    transcript_excerpt: excerptTranscript(map.map_resistance_transcript, 20),
+  };
+};
+
+const serializeOtherDomains = (stage1, currentDomain) =>
+  (stage1.domain_maps || [])
+    .filter(
+      (m) =>
+        m.domain !== currentDomain &&
+        (m.goals_complete || m.goal_title?.trim() || m.map_resistance_complete),
+    )
+    .map((m) => ({
+      domain: m.domain,
+      domain_label: DOMAIN_LABELS[m.domain] || m.domain,
+      status: m.status,
+      goal_title: m.goal_title,
+      desired_outcome: m.desired_outcome,
+      map_resistance_complete: Boolean(m.map_resistance_complete),
+    }));
+
+/**
+ * Full user context for Stage 1 daily coach — name, goals, map resistance,
+ * proof logs, in-app coach history, and 1:1 UserSession records.
+ */
+const buildCoachUserContext = async (user, stage1, map, domain) => {
+  const userSessions = await getAllUserSessions(user.id, user.email);
+
+  const proofLogs = listProofLogs(stage1, { domain, limit: 12 });
+  const coachHistory = serializeCoachHistory(stage1, domain);
+
+  return {
+    user_profile: {
+      id: user.id,
+      name: user.name?.trim() || "Member",
+      email: user.email || null,
+      first_name: (user.name?.trim() || "Member").split(/\s+/)[0],
+    },
+    active_domain: domain,
+    active_domain_label: DOMAIN_LABELS[domain] || domain,
+    active_goal_context: buildActiveGoalContext(map, domain),
+    map_resistance: serializeMapResistance(map),
+    progress_metrics: map.progress_metrics || null,
+    recent_proof_logs: proofLogs.map((p) => ({
+      action: p.action,
+      type: p.type,
+      created_at: p.created_at,
+      green_rep_name: p.green_rep_name || null,
+    })),
+    stage1_coach_sessions: coachHistory,
+    user_sessions_1on1: serializeUserSessions(userSessions),
+    other_domain_goals: serializeOtherDomains(stage1, domain),
+  };
+};
+
+module.exports = {
+  buildCoachUserContext,
+  excerptTranscript,
+  serializeUserSessions,
+  serializeCoachHistory,
+  serializeMapResistance,
+};

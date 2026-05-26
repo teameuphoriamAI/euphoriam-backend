@@ -7,10 +7,12 @@ const { normalizeDomain } = require("../constants/domains");
 const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { loadCoachPromptBundle } = require("../helpers/stage1Prompts");
+const { buildCoachUserContext } = require("../helpers/stage1CoachContext");
 const {
   recordCoachCheckin,
   listCoachHistory,
   getResumableCoachMessages,
+  endCoachSession,
 } = require("../helpers/stage1CoachHistory");
 const { DOMAIN_LABELS } = require("../constants/domains");
 
@@ -70,10 +72,12 @@ const coachCheckin = async (req, res) => {
 
     const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
     const prompts = await loadCoachPromptBundle();
+    const user_coach_context = await buildCoachUserContext(user, stage1, map, domain);
     const result = await aiService.coachReply({
       user_id: user.id,
       domain_map: map,
       active_goal_context: buildActiveGoalContext(map, domain),
+      user_coach_context,
       checkin,
       messages,
       user_message: req.body?.message || null,
@@ -123,8 +127,11 @@ const frictionRescue = async (req, res) => {
     if (!map) return errorResponse(res, "Domain map not found", 404);
 
     const prompts = await loadCoachPromptBundle();
+    const user_coach_context = await buildCoachUserContext(user, stage1, map, domain);
     const result = await aiService.frictionRescue({
       domain_map: map,
+      active_goal_context: buildActiveGoalContext(map, domain),
+      user_coach_context,
       checkin: {
         current_state: req.body?.state || "high_gravity",
         gravity_rating: req.body?.gravity_rating,
@@ -165,7 +172,7 @@ const getCoachHistory = async (req, res) => {
   }
 };
 
-/** GET /api/stage1/coach/resume — messages for in-progress session (same domain, within 4h) */
+/** GET /api/stage1/coach/resume — messages for in-progress session (same domain, not ended) */
 const getCoachResume = async (req, res) => {
   try {
     const user = await resolveUser(req);
@@ -182,9 +189,35 @@ const getCoachResume = async (req, res) => {
   }
 };
 
+/** POST /api/stage1/coach/end — mark current open session as ended */
+const endCoachChat = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const stage1 = await loadStage1ForUser(user);
+    const domain =
+      normalizeDomain(req.body?.domain) || resolvePrimaryDomain(stage1);
+    if (!domain) {
+      return errorResponse(res, "No active domain", 400);
+    }
+    const { stage1: nextStage1, ended, session_id } = endCoachSession(stage1, domain);
+    if (ended) {
+      await persistStage1ForUser(user.id, nextStage1);
+    }
+    return successResponse(res, ended ? "Coach session ended" : "No open session", {
+      domain,
+      ended,
+      session_id,
+    });
+  } catch (err) {
+    console.error("[endCoachChat]", err);
+    return errorResponse(res, err.message || "Failed to end coach session", err.status || 500);
+  }
+};
+
 module.exports = {
   coachCheckin,
   frictionRescue,
   getCoachHistory,
   getCoachResume,
+  endCoachChat,
 };

@@ -52,6 +52,12 @@ const {
   searchAllHistory,
   getRelevantContext,
 } = require("../services/vectorStoreService");
+const {
+  deleteOngoingChatsForUser,
+  clearIntakeStateOnDiagnostic,
+  buildWelcomeAfterReset,
+} = require("../helpers/chatSessionReset");
+const { diagnosticHasCompletedReport } = require("../helpers/euphoriamChatbot");
 
 const saveChatIncrementally = async ({
   userId,
@@ -82,12 +88,20 @@ const saveChatIncrementally = async ({
     let chat = null;
     if (existingChatId) {
       chat = await Chat.findByPk(existingChatId);
-      if (chat && chat.userId !== userId) {
+      // Compare numerically — PG/Sequelize may return userId as string in some drivers.
+      if (chat && Number(chat.userId) !== Number(userId)) {
         console.warn("[saveChatIncrementally] existingChatId does not belong to userId, ignoring");
         chat = null;
       }
       if (chat) {
         console.log(`[saveChatIncrementally] Updating existing chat ${chat.id} (switch to ${chatType}), transcript length=${transcript.length}`);
+      }
+      // Funnel (and explicit id updates): never fall through to "another recent chat" — avoids saving to the wrong row.
+      if (!chat) {
+        console.error(
+          `[saveChatIncrementally] existingChatId ${existingChatId} not found or not owned; refusing save (transcriptLength=${transcript.length})`,
+        );
+        return null;
       }
     }
 
@@ -486,6 +500,143 @@ const getContextForChatbot = async (userId, userMessage) => {
 };
 
 /**
+ * POST /api/chat/reset
+ * Reset an in-progress diagnostic Q&A or discovery chat:
+ * - Deletes the ongoing chat row and ChromaDB chunks
+ * - Clears diagnostic intakeState (keeps completed report)
+ * - Returns a fresh welcome message (diagnostic Q1 or discovery welcome)
+ *
+ * Body: { mode: "diagnostic" | "discovery", chatId?: number }
+ */
+const resetChatSession = async (req, res) => {
+  try {
+    const { email, name } = req.user || {};
+    const { mode = "diagnostic", chatId: rawChatId } = req.body || {};
+
+    if (!email) {
+      return errorResponse(res, "Email is required", 400);
+    }
+
+    const normalizedMode =
+      typeof mode === "string" ? mode.trim().toLowerCase() : "";
+    if (normalizedMode !== "diagnostic" && normalizedMode !== "discovery") {
+      return errorResponse(
+        res,
+        'mode must be "diagnostic" (Q&A intake) or "discovery" (post-report chat)',
+        400,
+      );
+    }
+
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return errorResponse(res, "User not found", 404);
+    }
+
+    const chatId =
+      rawChatId != null && rawChatId !== ""
+        ? parseInt(String(rawChatId), 10)
+        : undefined;
+
+    let deletedChatIds = [];
+    try {
+      deletedChatIds = await deleteOngoingChatsForUser({
+        userId: user.id,
+        mode: normalizedMode,
+        chatId: Number.isFinite(chatId) ? chatId : undefined,
+      });
+    } catch (err) {
+      const status = err.statusCode || 500;
+      return errorResponse(res, err.message || "Failed to delete chat", status);
+    }
+
+    const diagnostic = await Diagnostic.findOne({
+      where: { email },
+      order: [["updatedAt", "DESC"]],
+    });
+
+    if (diagnostic) {
+      await clearIntakeStateOnDiagnostic(diagnostic, normalizedMode);
+    }
+
+    const welcome = await buildWelcomeAfterReset({
+      name,
+      email,
+      mode: normalizedMode,
+      diagnostic,
+    });
+
+    const responseMode = welcome.mode || normalizedMode;
+    const welcomeMessage = { role: "assistant", content: welcome.content };
+    const welcomeTranscript = [welcomeMessage];
+    const chatType = responseMode === "discovery" ? "discovery" : "dignostic";
+
+    await saveChatIncrementally({
+      userId: user.id,
+      diagnosticId: diagnostic?.id || null,
+      chatType,
+      transcript: welcomeTranscript,
+      isChatEnded: false,
+      forceNewChat: true,
+    });
+
+    if (diagnostic) {
+      const priorIntake = diagnostic.data?.intakeState || {};
+      await diagnostic.update({
+        data: {
+          ...(diagnostic.data || {}),
+          intakeState: {
+            transcript: welcomeTranscript,
+            mode: responseMode,
+            acceptedAnswers: [],
+            answeredCount: 0,
+            lastQuestionNumber: 0,
+            pendingQuestion: true,
+            updatedAt: new Date().toISOString(),
+            ...(responseMode === "diagnostic"
+              ? { requestingNewDiagnostic: true }
+              : {}),
+            // Do not carry discoveryType / completedAt — they route the next turn to discovery chat.
+            ...(responseMode === "discovery"
+              ? { completedAt: priorIntake.completedAt || new Date().toISOString() }
+              : {}),
+          },
+        },
+      });
+    }
+
+    const hasExistingReport = diagnosticHasCompletedReport(diagnostic);
+
+    return successResponse(res, "Chat reset", {
+      reset: true,
+      mode: responseMode,
+      deletedChatIds,
+      hasExistingReport,
+      nextMessage: welcomeMessage,
+      transcript: welcomeTranscript,
+      intakeState: {
+        transcript: welcomeTranscript,
+        mode: responseMode,
+        acceptedAnswers: [],
+        answeredCount: 0,
+        pendingQuestion: true,
+        ...(responseMode === "diagnostic"
+          ? { requestingNewDiagnostic: true }
+          : {}),
+      },
+      status:
+        responseMode === "discovery" ? "discovery_ready" : "diagnostic_ready",
+      statusMessage:
+        responseMode === "discovery"
+          ? "Discovery chat reset. Starting from welcome message."
+          : "Diagnostic Q&A reset. Starting from Question 1.",
+    });
+  } catch (error) {
+    console.error("[resetChatSession] Error:", error);
+    return errorResponse(res, "Failed to reset chat session", 500);
+  }
+};
+
+/**
  * Search across all history (chats and sessions)
  */
 const searchAllChatAndSessionHistory = async (req, res) => {
@@ -539,4 +690,6 @@ module.exports = {
   searchChatHistorySemantic,
   searchAllChatAndSessionHistory,
   getContextForChatbot,
+  resetChatSession,
+  deleteOngoingChatsForUser,
 };

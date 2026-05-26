@@ -5,6 +5,13 @@ const auth = require("../middleware/auth");
 const requireRole = require("../middleware/requireRole");
 const router = express.Router();
 
+// Reset in-progress diagnostic Q&A or discovery chat (DB + vector + fresh welcome)
+router.post(
+  "/reset",
+  auth,
+  asyncHandler(chatController.resetChatSession)
+);
+
 // Get chat history (traditional list)
 router.post(
   "/getHistory",

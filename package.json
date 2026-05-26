@@ -4,7 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest --testPathPatterns=src/tests --forceExit",
+    "test:watch": "jest --testPathPatterns=src/tests --watch",
+    "preflight": "node src/scripts/preFlightCheck.js",
+    "apply:irl-prompt-v22": "node src/scripts/applyIrlPromptV22.js",
+    "verify:irl-prompt": "node src/scripts/verifyActiveIrlPrompt.js",
+    "test:irl-pdf": "node src/scripts/testIrlRedlinePdf.js",
+    "delete:ongoing-chat": "node src/scripts/deleteOngoingChatSession.js",
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
@@ -41,6 +47,7 @@
     "csv-parse": "^6.1.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.3.2",
     "joi": "^17.13.3",
     "jsbarcode": "^3.12.3",
     "jsonwebtoken": "^9.0.3",
@@ -58,6 +65,7 @@
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
+    "jest": "^30.3.0",
     "nodemon": "^3.1.11"
   }
 }

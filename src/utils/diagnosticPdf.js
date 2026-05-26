@@ -3,6 +3,7 @@ const path = require("path");
 const PDFDocument = require("pdfkit");
 require("dotenv").config();
 const axios = require("axios");
+const { generateIrlReportPdf } = require("./irlPdf");
 
 const logoImage = process.env.LOGO_URL;
 
@@ -1661,6 +1662,18 @@ const renderUnlimitedCreatedRecommendations = (doc, recommendations) => {
 const generateDiagnosticPdf = (diagnostic) =>
   new Promise(async (resolve, reject) => {
     try {
+      // ── Route: IRL report uses its own premium template ───────────────────
+      const reportType =
+        diagnostic.report_type ||
+        diagnostic.data?.report_type ||
+        diagnostic.data?.structuredPacket?.report_type ||
+        "full";
+
+      if (reportType === "invisible_red_line") {
+        return resolve(await generateIrlReportPdf(diagnostic));
+      }
+
+      // ── Default full-report path below ────────────────────────────────────
       const outputDir = path.join(
         __dirname,
         "..",
@@ -2145,4 +2158,4 @@ const generateDiagnosticPdf = (diagnostic) =>
     }
   });
 
-module.exports = { generateDiagnosticPdf };
+module.exports = { generateDiagnosticPdf, generateIrlReportPdf };

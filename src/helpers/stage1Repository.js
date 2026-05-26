@@ -39,8 +39,13 @@ const STRUCTURE_KEYS = [
 const rowToDomainMap = (row) => {
   if (!row) return null;
   const structure = row.structureJson && typeof row.structureJson === "object"
-    ? row.structureJson
+    ? { ...row.structureJson }
     : {};
+  // Column wins over structureJson — older rows stored map_resistance_complete: false in JSON.
+  const mapResistanceComplete = Boolean(
+    row.mapResistanceComplete ?? structure.map_resistance_complete,
+  );
+  delete structure.map_resistance_complete;
   return {
     domain: row.domain,
     status: row.status,
@@ -55,8 +60,8 @@ const rowToDomainMap = (row) => {
     },
     today_visible_action: row.todayVisibleAction,
     goals_complete: row.goalsComplete,
-    map_resistance_complete: row.mapResistanceComplete,
     ...structure,
+    map_resistance_complete: mapResistanceComplete,
     success_strategy:
       normalizeSuccessStrategy(structure) ?? structure.success_strategy ?? null,
     progress_metrics: enrichProgressMetricsFromMap(
@@ -77,6 +82,7 @@ const domainMapToRowFields = (map) => {
   for (const key of STRUCTURE_KEYS) {
     if (map[key] !== undefined) structure[key] = map[key];
   }
+  delete structure.map_resistance_complete;
   const normalizedSuccess = normalizeSuccessStrategy(structure);
   if (normalizedSuccess) structure.success_strategy = normalizedSuccess;
   return {

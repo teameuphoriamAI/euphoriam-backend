@@ -30,10 +30,16 @@ const normalizeSuccessStrategy = (source = {}) => {
     }
   }
 
+  const resource = source.recommended_resource
+    ? String(source.recommended_resource).trim()
+    : "";
+  const resourceAsBehaviour =
+    resource && !/^UC Module|^https?:\/\//i.test(resource) ? resource : null;
+
   const behaviour =
     source.opposite_behaviour ||
     source.opposite_behavior ||
-    source.recommended_resource ||
+    resourceAsBehaviour ||
     null;
   const belief = source.opposite_belief || null;
   const successRule = source.success_rule || null;

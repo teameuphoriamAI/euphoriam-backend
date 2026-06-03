@@ -1,4 +1,5 @@
 const { DOMAIN_LABELS } = require("../constants/domains");
+const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
 
 /**
  * ACTIVE_GOAL_CONTEXT for goal-scoped map resistance Q&A (Stage 1).
@@ -13,7 +14,8 @@ const buildActiveGoalContext = (map, domain) => {
     specific_goal: map?.goal_title || null,
     measurable_outcome: map?.desired_outcome || null,
     target_date: map?.target_date || null,
-    why_it_matters: null,
+    why_it_matters: map?.notes?.trim() || null,
+    notes: map?.notes?.trim() || null,
     current_reality: map?.today_visible_action || null,
     current_milestone: milestones?.day_7 || milestones?.day_30 || null,
     milestones: {
@@ -22,13 +24,14 @@ const buildActiveGoalContext = (map, domain) => {
       day_90: milestones?.day_90 ?? null,
     },
     proof_of_success: map?.proof_of_success || null,
-    required_role: null,
-    required_behaviours: [],
+    required_role: map?.required_role || null,
+    required_behaviours: Array.isArray(map?.required_behaviours) ? map.required_behaviours : [],
     known_avoidance: Array.isArray(map?.top_3_avoidance_behaviours)
       ? map.top_3_avoidance_behaviours
       : [],
-    perceived_risk: null,
-    past_pattern: null,
+    perceived_risk: map?.perceived_risk || null,
+    past_pattern: map?.past_pattern || null,
+    core_fear: map?.core_fear || null,
     visible_next_action: map?.today_visible_action || null,
   };
 };
@@ -48,7 +51,8 @@ Rules:
 - Do NOT ask which life area to focus on — the domain is already "${ctx.domain_label || ctx.active_domain}".
 - Do NOT run the 25-Question Deep Intake Engine or generic life-direction Q1.
 - Do not produce a full diagnostic report in chat; intake only.
-- Target ~12 focused questions before completion.`;
+- Target ~${MAP_RESISTANCE_TARGET_QUESTIONS} focused questions before completion.
+- Match diagnostic intake style: always acknowledge the user's last message briefly, then ask the question (or re-ask if invalid).`;
 };
 
 /**
@@ -70,7 +74,7 @@ const getStage1MapResistanceWelcomeMessage = (userName, goalContext = {}) => {
     `**Your goal:** ${goal}`,
     `**90-day outcome:** ${outcome}`,
     "",
-    "About 12 focused questions (not 25) — your goal and milestones are already set, so we isolate resistance around this outcome only.",
+    `About ${MAP_RESISTANCE_TARGET_QUESTIONS} focused questions — your goal and milestones are already set, so we isolate resistance around this outcome only.`,
     "",
     "One question at a time. Every question stays anchored to this goal.",
     "",
@@ -87,7 +91,7 @@ const buildMapResistanceIntakePrompt = async ({
   userName,
   resumeNotice,
   activeGoalContext = {},
-  targetCount = 12,
+  targetCount = MAP_RESISTANCE_TARGET_QUESTIONS,
   aiAnswered = true,
   lastUserContent = "",
   isGibberish = false,
@@ -132,10 +136,17 @@ const buildMapResistanceIntakePrompt = async ({
 
   const gibberishBlock =
     isGibberish && lastUserContent
-      ? `The user's last message was unclear or gibberish ("${String(lastUserContent).slice(0, 80)}"). You MUST re-ask **Q${stayOnQ}** in simpler words with one short example. Do NOT advance to Q${stayOnQ + 1}. Do NOT count their last message as an answer.\n\n`
+      ? `The user's last message was unclear or gibberish ("${String(lastUserContent).slice(0, 80)}"). Output: (1) A brief warm response — e.g. "Hmm, that doesn't look like a response I can work with — no worries." (2) Then re-ask **Q${stayOnQ}** in simpler words with one short example. Do NOT advance to Q${stayOnQ + 1}. Do NOT count their last message as an answer.\n\n`
       : !aiAnswered && lastUserContent
-        ? `The user's last message did not answer the question. Stay on **Q${stayOnQ}** and rephrase once.\n\n`
-        : "";
+        ? `The user's last message did not answer the question ("${String(lastUserContent).slice(0, 80)}"). Output: (1) Brief acknowledgment — e.g. "I'm not sure that answers the question — let me rephrase." (2) Stay on **Q${stayOnQ}** and rephrase in new words.\n\n`
+        : lastUserContent
+          ? `The user gave a valid answer ("${String(lastUserContent).slice(0, 120)}"). Output: (1) Brief acknowledgment that reflects what they shared (e.g. "Got it — I hear that."). (2) Then ask the next question.\n\n`
+          : "";
+
+  const questionBlock =
+    lastAnsweredQ >= targetCount && aiAnswered
+      ? `All ${targetCount} questions are done. Acknowledge completion warmly and tell them they can press "Complete mapping" — do not ask another intake question.`
+      : `Ask exactly ONE question labeled **Q${nextQ}** about resistance, avoidance, protector behaviour, fear, or cost tied to achieving "${goal}" in the ${label} domain. Include your brief acknowledgment BEFORE the **Q${nextQ}** line.`;
 
   return `${resumeNotice ? `${resumeNotice}\n\n` : ""}You are conducting MAP RESISTANCE for domain "${label}" only.
 
@@ -149,9 +160,9 @@ Goal: "${goal}"
 Transcript so far:
 ${JSON.stringify(transcript, null, 2)}
 
-${gibberishBlock}${lastAnsweredQ >= targetCount && aiAnswered ? `All ${targetCount} questions are done. Acknowledge completion briefly and tell them they can press "Complete mapping" — do not ask another intake question.` : `Ask exactly ONE next question labeled **Q${nextQ}** about resistance, avoidance, protector behaviour, fear, or cost tied to achieving "${goal}" in the ${label} domain.`}
+${gibberishBlock}${questionBlock}
 
-Reply as the assistant only. One question at a time.`;
+Reply as the assistant only. One acknowledgment + one question per message.`;
 };
 
 module.exports = {

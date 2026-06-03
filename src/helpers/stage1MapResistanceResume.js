@@ -7,16 +7,50 @@ function extractQuestionNumber(content) {
   return match ? Number(match[1]) : 0;
 }
 
-/** Progress fields aligned with Python map_resistance _pack_turn + frontend progressFromApi. */
-function progressFromTranscript(transcript, targetCount) {
-  const answered = transcript.filter((m) => m?.role === "user").length;
-  const last = transcript[transcript.length - 1];
-  const pendingQuestion = last?.role === "assistant";
+/** Highest Q with at least one user reply before the next assistant question. */
+function countAnsweredQuestions(rows) {
+  let highestCompleted = 0;
+  let pendingQ = 0;
+  let seenUserForPending = false;
+
+  for (const m of rows) {
+    if (m?.role === "assistant") {
+      const q = extractQuestionNumber(m.content);
+      if (q > 0) {
+        if (seenUserForPending && pendingQ > 0) {
+          highestCompleted = Math.max(highestCompleted, pendingQ);
+        }
+        pendingQ = q;
+        seenUserForPending = false;
+      }
+    } else if (m?.role === "user") {
+      seenUserForPending = true;
+    }
+  }
+
+  if (seenUserForPending && pendingQ > 0) {
+    highestCompleted = Math.max(highestCompleted, pendingQ);
+  }
+
+  return highestCompleted;
+}
+
+/**
+ * Progress from transcript — counts completed questions, not raw user messages.
+ * Re-asks and gibberish attempts on the same Q do not inflate answeredCount.
+ */
+function progressFromTranscript(transcript, targetCount, options = {}) {
+  const { lastAnswerValid = true } = options;
+  const rows = Array.isArray(transcript) ? transcript : [];
+  const last = rows[rows.length - 1];
+  const lastAssistantHasQuestion =
+    last?.role === "assistant" && extractQuestionNumber(last.content) > 0;
+  const pendingQuestion = Boolean(lastAssistantHasQuestion);
 
   let lastQuestionNumber = 0;
-  for (let i = transcript.length - 1; i >= 0; i--) {
-    if (transcript[i]?.role !== "assistant") continue;
-    const n = extractQuestionNumber(transcript[i].content);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i]?.role !== "assistant") continue;
+    const n = extractQuestionNumber(rows[i].content);
     if (n > 0) {
       lastQuestionNumber = n;
       break;
@@ -24,6 +58,11 @@ function progressFromTranscript(transcript, targetCount) {
   }
 
   const currentQuestion = lastQuestionNumber || (pendingQuestion ? 1 : 0);
+  let answered = countAnsweredQuestions(rows);
+
+  if (!lastAnswerValid && pendingQuestion) {
+    answered = Math.max(0, currentQuestion - 1);
+  }
 
   return {
     answered,
@@ -32,7 +71,7 @@ function progressFromTranscript(transcript, targetCount) {
     lastQuestionNumber: currentQuestion,
     pendingQuestion,
     total: targetCount,
-    finalizeReady: answered >= targetCount && !pendingQuestion,
+    finalizeReady: answered >= targetCount,
   };
 }
 
@@ -41,15 +80,18 @@ function progressFromTranscript(transcript, targetCount) {
  * Returns API payload or null if nothing to resume.
  */
 async function buildMapResistanceResumePayload(userId, domain, targetCount) {
-  const mrChat = await Chat.findOne({
+  const openChats = await Chat.findAll({
     where: { userId, isChatEnded: false },
     order: [["updatedAt", "DESC"]],
   });
 
-  if (
-    !mrChat?.data?.stage1MapResistance ||
-    mrChat.data.stage1MapResistanceDomain !== domain
-  ) {
+  const mrChat = openChats.find(
+    (c) =>
+      c?.data?.stage1MapResistance &&
+      c.data.stage1MapResistanceDomain === domain,
+  );
+
+  if (!mrChat) {
     return null;
   }
 
@@ -91,7 +133,29 @@ async function buildMapResistanceResumePayload(userId, domain, targetCount) {
   };
 }
 
+function normalizeTranscriptForCompare(transcript) {
+  if (!Array.isArray(transcript)) return [];
+  return transcript
+    .filter((m) => m?.role && m?.content != null)
+    .map((m) => ({
+      role: String(m.role),
+      content: String(m.content).trim(),
+    }));
+}
+
+/** True when client transcript differs from saved map transcript (new remapping session). */
+function transcriptsDiffer(incoming, saved) {
+  const a = normalizeTranscriptForCompare(incoming);
+  const b = normalizeTranscriptForCompare(saved);
+  if (a.length < 4) return false;
+  if (b.length === 0) return true;
+  if (a.length !== b.length) return true;
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
 module.exports = {
   buildMapResistanceResumePayload,
   progressFromTranscript,
+  countAnsweredQuestions,
+  transcriptsDiffer,
 };

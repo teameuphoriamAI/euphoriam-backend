@@ -2,6 +2,7 @@ const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { successResponse, errorResponse } = require("../utils/response");
 const { normalizeDomain, DOMAIN_LABELS } = require("../constants/domains");
+const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
 const {
   getTier,
   canAddStoredGoal,
@@ -14,6 +15,8 @@ const {
   buildHomeDashboard,
   upsertDomainMap,
   setActiveDomain,
+  setPrimaryDomain,
+  deactivateDomain,
   pickAllowedGoalFields,
   countStoredMaps,
   resolvePrimaryDomain,
@@ -29,6 +32,7 @@ const {
   buildMapResistanceIntroText,
 } = require("../helpers/stage1GoalContext");
 const { extractGoalStructureFromTranscript } = require("../helpers/stage1MapResistanceExtract");
+const { transcriptsDiffer } = require("../helpers/stage1MapResistanceResume");
 const { listMapResistanceHistory } = require("../helpers/stage1MapResistanceHistory");
 const { mapResistanceChatViaPython } = require("../helpers/stage1MapResistanceViaAi");
 const aiService = require("../clients/aiService");
@@ -266,18 +270,26 @@ const activateDomain = async (req, res) => {
       const tier = getTier(user);
       const limits = getTierLimits(tier);
       if (limits.maxActiveDomains === 1) {
-        const result = setActiveDomain(stage1, domain, limits);
+        const result = setActiveDomain(stage1, domain, limits, { setPrimary: true });
         if (!result.ok) return errorResponse(res, result.error, 400);
         stage1 = result.stage1;
       } else {
         return errorResponse(
           res,
-          `Your plan allows ${limits.maxActiveDomains} active domain(s).`,
+          `Your plan allows ${limits.maxActiveDomains} active domain(s). Deactivate another domain first.`,
           403,
         );
       }
     } else {
-      const result = setActiveDomain(stage1, domain, getTierLimits(getTier(user)));
+      const setPrimary =
+        req.body?.set_primary === false
+          ? false
+          : req.body?.set_primary === true
+            ? true
+            : undefined;
+      const result = setActiveDomain(stage1, domain, getTierLimits(getTier(user)), {
+        setPrimary,
+      });
       if (!result.ok) return errorResponse(res, result.error, 400);
       stage1 = result.stage1;
     }
@@ -290,6 +302,48 @@ const activateDomain = async (req, res) => {
     });
   } catch (err) {
     return errorResponse(res, err.message || "Failed to activate domain", err.status || 500);
+  }
+};
+
+/** PATCH /api/stage1/domains/:domain/primary — set Daily Coach focus (must be active) */
+const setDomainPrimary = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const domain = normalizeDomain(req.params.domain);
+    if (!domain) return errorResponse(res, "Invalid domain", 400);
+
+    let stage1 = await loadStage1ForUser(user);
+    const result = setPrimaryDomain(stage1, domain);
+    if (!result.ok) return errorResponse(res, result.error, 400);
+
+    stage1 = await persistStage1ForUser(user.id, stage1);
+    return successResponse(res, "Primary domain updated", {
+      domain,
+      ...buildHomePayload(user, stage1),
+    });
+  } catch (err) {
+    return errorResponse(res, err.message || "Failed to set primary domain", err.status || 500);
+  }
+};
+
+/** PATCH /api/stage1/domains/:domain/deactivate — move active domain to stored */
+const deactivateDomainHandler = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const domain = normalizeDomain(req.params.domain);
+    if (!domain) return errorResponse(res, "Invalid domain", 400);
+
+    let stage1 = await loadStage1ForUser(user);
+    const result = deactivateDomain(stage1, domain);
+    if (!result.ok) return errorResponse(res, result.error, 400);
+
+    stage1 = await persistStage1ForUser(user.id, stage1);
+    return successResponse(res, "Domain deactivated", {
+      domain,
+      ...buildHomePayload(user, stage1),
+    });
+  } catch (err) {
+    return errorResponse(res, err.message || "Failed to deactivate domain", err.status || 500);
   }
 };
 
@@ -345,7 +399,7 @@ const mapResistanceChat = async (req, res) => {
     req.body.stage1MapResistance = true;
     req.body.activeDomain = domain;
     req.body.activeGoalContext = activeGoalContext;
-    req.body.targetCount = req.body.targetCount || 12;
+    req.body.targetCount = req.body.targetCount || MAP_RESISTANCE_TARGET_QUESTIONS;
     req.body.introPageText =
       req.body.introPageText || buildMapResistanceIntroText(activeGoalContext);
 
@@ -385,11 +439,14 @@ const finalizeMapResistance = async (req, res) => {
     }
 
     const { resolveFailureStrategyForMap } = require("../helpers/stage1MapStructure");
-    const reextract = Boolean(req.body?.reextract);
+    const savedTranscript = map.map_resistance_transcript;
+    const remappingTranscript = transcriptsDiffer(messages, savedTranscript);
+    const shouldReextract =
+      Boolean(req.body?.reextract) || remappingTranscript;
     if (
       map.map_resistance_complete &&
       resolveFailureStrategyForMap(map) &&
-      !reextract
+      !shouldReextract
     ) {
       return errorResponse(
         res,
@@ -446,12 +503,18 @@ const finalizeMapResistance = async (req, res) => {
       console.warn("[finalizeMapResistance] Could not close chat:", chatErr.message);
     }
 
-    const updatedMap = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const updatedMapRaw = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
+    const { enrichMapForClient } = require("../helpers/stage1MapStructure");
+    const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+    const updatedMap = enrichMapForClient(
+      applyProofMetricsToMap({ ...updatedMapRaw }, proof_logs),
+    );
 
     return successResponse(res, "Map resistance complete", {
       domain,
       map: updatedMap,
-      active_goal_context: activeGoalContext,
+      active_goal_context: buildActiveGoalContext(updatedMap, domain),
       ...buildHomePayload(user, stage1),
     });
   } catch (err) {
@@ -464,6 +527,59 @@ const finalizeMapResistance = async (req, res) => {
 const reExtractMapResistance = async (req, res) => {
   req.body = { ...(req.body || {}), reextract: true };
   return finalizeMapResistance(req, res);
+};
+
+/** POST /api/stage1/domains/:domain/map-resistance/restart — begin a new mapping session */
+const restartMapResistance = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const domain = normalizeDomain(req.params.domain);
+    if (!domain) return errorResponse(res, "Invalid domain", 400);
+
+    let stage1 = await loadStage1ForUser(user);
+    const map = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    if (!map) {
+      return errorResponse(res, "Domain not found. Save goals first.", 404);
+    }
+    if (!map.goals_complete && !String(map.goal_title || "").trim()) {
+      return errorResponse(res, "Save your goal before starting Map Resistance.", 400);
+    }
+
+    try {
+      const openChats = await Chat.findAll({
+        where: { userId: user.id, isChatEnded: false },
+        order: [["updatedAt", "DESC"]],
+      });
+      for (const chat of openChats) {
+        const data = chat.data || {};
+        if (data.stage1MapResistance && data.stage1MapResistanceDomain === domain) {
+          await chat.update({
+            isChatEnded: true,
+            data: {
+              ...data,
+              endedReason: "remapping_restart",
+            },
+          });
+        }
+      }
+    } catch (chatErr) {
+      console.warn("[restartMapResistance] Could not close open chat:", chatErr.message);
+    }
+
+    stage1 = {
+      ...stage1,
+      map_resistance_in_progress: true,
+    };
+    stage1 = await persistStage1ForUser(user.id, stage1);
+
+    return successResponse(res, "Map resistance restarted", {
+      domain,
+      remapping: Boolean(map.map_resistance_complete),
+      map_resistance_in_progress: true,
+    });
+  } catch (err) {
+    return errorResponse(res, err.message || "Failed to restart map resistance", err.status || 500);
+  }
 };
 
 /** GET /api/stage1/map-resistance/history — all completed mappings for this user */
@@ -528,11 +644,14 @@ module.exports = {
   createOrUpdateDomain,
   patchDomain,
   activateDomain,
+  setDomainPrimary,
+  deactivateDomainHandler,
   getOnboardingStatus,
   completeWalkthrough,
   mapResistanceChat,
   finalizeMapResistance,
   reExtractMapResistance,
+  restartMapResistance,
   getMapResistanceHistory,
   getDomainMapResistanceHistory,
   buildHomePayload,

@@ -4271,6 +4271,7 @@ Use this context to provide continuity and personalized responses when the user 
   if (stage1MapResistance) {
     const { PromptType } = require("../utils/types");
     const { buildMapResistanceIntakePrompt } = require("./stage1GoalContext");
+    const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
     const [brainPromptObj] = await Promise.all([
       getLatestPromptFromDb(PromptType.BRAINPROMPT),
     ]);
@@ -4295,7 +4296,7 @@ Use this context to provide continuity and personalized responses when the user 
       userName: name,
       resumeNotice,
       activeGoalContext: activeGoalContext || {},
-      targetCount: targetCount || 12,
+      targetCount: targetCount || MAP_RESISTANCE_TARGET_QUESTIONS,
       aiAnswered: mapGibberish ? false : aiAnswered,
       lastUserContent: lastUserMsg?.content || "",
       isGibberish: mapGibberish,

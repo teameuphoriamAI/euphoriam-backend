@@ -25,6 +25,16 @@ router.patch(
   ...stage1Auth,
   asyncHandler(stage1Controller.activateDomain),
 );
+router.patch(
+  "/domains/:domain/primary",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.setDomainPrimary),
+);
+router.patch(
+  "/domains/:domain/deactivate",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.deactivateDomainHandler),
+);
 router.post(
   "/domains/:domain/map-resistance/chat",
   ...stage1Auth,
@@ -39,6 +49,11 @@ router.post(
   "/domains/:domain/map-resistance/re-extract",
   ...stage1Auth,
   asyncHandler(stage1Controller.reExtractMapResistance),
+);
+router.post(
+  "/domains/:domain/map-resistance/restart",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.restartMapResistance),
 );
 router.get(
   "/map-resistance/history",

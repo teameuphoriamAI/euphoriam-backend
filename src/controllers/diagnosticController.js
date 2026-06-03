@@ -12,6 +12,7 @@ const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
 const { saveChatIncrementally } = require("./chatController");
+const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
 const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
 const {
   buildFinalReportPrompt,
@@ -5180,7 +5181,7 @@ const chatbotDiagnosticFreeform = async (req, res) => {
   if (hasNoMessages && !finalize && stage1MapResistance) {
     const goalCtx = req.body?.activeGoalContext || {};
     const domain = stage1ActiveDomain || goalCtx.active_domain;
-    const target = req.body?.targetCount || 12;
+    const target = req.body?.targetCount || MAP_RESISTANCE_TARGET_QUESTIONS;
     const { getStage1MapResistanceWelcomeMessage } = require("../helpers/stage1GoalContext");
     const { Chat } = require("../models/chatModel");
 
@@ -5911,7 +5912,7 @@ Take your time and share what feels true for you.`;
   if (stage1MapResistance && req.body?.activeGoalContext) {
     introText = introPageText || introText;
   }
-  targetCountForRun = stage1MapResistance ? targetCount || 12 : targetCount;
+  targetCountForRun = stage1MapResistance ? targetCount || MAP_RESISTANCE_TARGET_QUESTIONS : targetCount;
 
   // Check if this is the first user interaction (no user messages in transcript)
   const isFirstUserInteraction =

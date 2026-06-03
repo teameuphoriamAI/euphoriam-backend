@@ -39,6 +39,7 @@ const defaultDomainMap = (domain) => ({
     day_90: null,
   },
   today_visible_action: null,
+  notes: null,
   signature_id: null,
   EO: null,
   lack_channel: null,
@@ -212,6 +213,7 @@ const buildHomeDashboard = (stage1) => {
       map.win_condition ||
       map.proof_of_success ||
       null,
+    goals_complete: map.goals_complete,
     map_resistance_complete: map.map_resistance_complete,
     progress_metrics,
     proof_logs: listProofLogs(stage1, { domain: primary, limit: 15 }),
@@ -224,6 +226,9 @@ const buildHomeDashboard = (stage1) => {
     top_3_avoidance_behaviours: map.top_3_avoidance_behaviours || [],
     orbit_pattern: map.orbit_pattern || null,
     lack_channel: map.lack_channel || null,
+    EO: map.EO || null,
+    avoid_type: map.avoid_type || null,
+    signature_id: map.signature_id || null,
     recovery_speed: map.recovery_speed || progress_metrics.recovery_speed || null,
   };
 };
@@ -266,7 +271,14 @@ const upsertDomainMap = (stage1, domain, patch) => {
   return { ...stage1, domain_maps: maps };
 };
 
-const setActiveDomain = (stage1, domain, tierLimits) => {
+const orderActiveDomains = (primary, activeList) => {
+  const list = Array.isArray(activeList) ? activeList.filter(Boolean) : [];
+  if (!primary || !list.includes(primary)) return list;
+  return [primary, ...list.filter((x) => x !== primary)];
+};
+
+const setActiveDomain = (stage1, domain, tierLimits, options = {}) => {
+  const setPrimary = options.setPrimary;
   const d = normalizeDomain(domain);
   const maxActive = tierLimits.maxActiveDomains;
   let maps = (stage1.domain_maps || []).map((m) => ({ ...m }));
@@ -277,12 +289,12 @@ const setActiveDomain = (stage1, domain, tierLimits) => {
     return { ok: false, error: "Complete all goal fields before activating this domain." };
   }
 
-  const activeDomains = maps
+  const activeBefore = maps
     .filter((m) => m.status === DOMAIN_MAP_STATUS.ACTIVE)
     .map((m) => m.domain);
-  const alreadyActive = activeDomains.includes(d);
+  const alreadyActive = activeBefore.includes(d);
 
-  if (!alreadyActive && activeDomains.length >= maxActive) {
+  if (!alreadyActive && activeBefore.length >= maxActive) {
     if (maxActive === 1) {
       maps = maps.map((m) =>
         m.domain === d
@@ -297,13 +309,27 @@ const setActiveDomain = (stage1, domain, tierLimits) => {
         error: `Your plan allows ${maxActive} active domain(s). Deactivate another domain first.`,
       };
     }
-  } else {
+  } else if (!alreadyActive) {
     maps[targetIdx] = { ...maps[targetIdx], status: DOMAIN_MAP_STATUS.ACTIVE };
   }
 
-  const active_domains = maps
+  const activeList = maps
     .filter((m) => m.status === DOMAIN_MAP_STATUS.ACTIVE)
     .map((m) => m.domain);
+
+  const wasFirstActive = !alreadyActive && activeBefore.length === 0;
+  const bronzeSwap = maxActive === 1 && !alreadyActive;
+
+  let nextPrimary = stage1.primary_domain || null;
+  if (setPrimary === true) {
+    nextPrimary = d;
+  } else if (setPrimary === false) {
+    if (!nextPrimary || wasFirstActive) nextPrimary = d;
+  } else if (wasFirstActive || bronzeSwap || !nextPrimary || alreadyActive) {
+    if (wasFirstActive || bronzeSwap || !nextPrimary) nextPrimary = d;
+  }
+
+  const active_domains = orderActiveDomains(nextPrimary, activeList);
 
   return {
     ok: true,
@@ -311,7 +337,66 @@ const setActiveDomain = (stage1, domain, tierLimits) => {
       ...stage1,
       domain_maps: maps,
       active_domains,
+      primary_domain: nextPrimary,
+    },
+  };
+};
+
+/** Set coached focus without changing active slots (domain must already be active). */
+const setPrimaryDomain = (stage1, domain) => {
+  const d = normalizeDomain(domain);
+  if (!d) return { ok: false, error: "Invalid domain" };
+
+  const map = (stage1.domain_maps || []).find((m) => m.domain === d);
+  if (!map) return { ok: false, error: "Domain not found. Save goals first." };
+  if (map.status !== DOMAIN_MAP_STATUS.ACTIVE) {
+    return { ok: false, error: "Activate this domain before setting it as primary." };
+  }
+
+  const activeList = (stage1.domain_maps || [])
+    .filter((m) => m.status === DOMAIN_MAP_STATUS.ACTIVE)
+    .map((m) => m.domain);
+
+  return {
+    ok: true,
+    stage1: {
+      ...stage1,
       primary_domain: d,
+      active_domains: orderActiveDomains(d, activeList),
+    },
+  };
+};
+
+/** Move an active domain back to stored (not coached until re-activated). */
+const deactivateDomain = (stage1, domain) => {
+  const d = normalizeDomain(domain);
+  if (!d) return { ok: false, error: "Invalid domain" };
+
+  let maps = (stage1.domain_maps || []).map((m) => ({ ...m }));
+  const idx = maps.findIndex((m) => m.domain === d);
+  if (idx < 0) return { ok: false, error: "Domain not found." };
+  if (maps[idx].status !== DOMAIN_MAP_STATUS.ACTIVE) {
+    return { ok: false, error: "This domain is not active." };
+  }
+
+  maps[idx] = { ...maps[idx], status: DOMAIN_MAP_STATUS.STORED };
+
+  const activeList = maps
+    .filter((m) => m.status === DOMAIN_MAP_STATUS.ACTIVE)
+    .map((m) => m.domain);
+
+  let nextPrimary = stage1.primary_domain;
+  if (nextPrimary === d) {
+    nextPrimary = activeList[0] || null;
+  }
+
+  return {
+    ok: true,
+    stage1: {
+      ...stage1,
+      domain_maps: maps,
+      primary_domain: nextPrimary,
+      active_domains: orderActiveDomains(nextPrimary, activeList),
     },
   };
 };
@@ -324,6 +409,7 @@ const pickAllowedGoalFields = (body) => {
     "proof_of_success",
     "milestones",
     "today_visible_action",
+    "notes",
     "begin_map_resistance",
     "map_resistance_in_progress",
   ];
@@ -373,6 +459,9 @@ module.exports = {
   mergeDomainMapPatch,
   upsertDomainMap,
   setActiveDomain,
+  setPrimaryDomain,
+  deactivateDomain,
+  orderActiveDomains,
   pickAllowedGoalFields,
   countStoredMaps,
 };

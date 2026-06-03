@@ -3,6 +3,8 @@ const {
   computeOnboardingStatus,
   upsertDomainMap,
   setActiveDomain,
+  setPrimaryDomain,
+  deactivateDomain,
   emptyStage1State,
 } = require("../helpers/stage1State");
 const { getTier, getTierLimits, canActivateDomain } = require("../helpers/membershipDomains");
@@ -78,5 +80,52 @@ describe("stage1State", () => {
     expect(r2.ok).toBe(true);
     expect(r2.stage1.active_domains).toEqual(["health"]);
     expect(r2.stage1.domain_maps.find((m) => m.domain === "income").status).toBe("stored");
+  });
+
+  test("silver second activation keeps primary unless set_primary", () => {
+    const alignmentGoal = { ...fullGoal, domain: "alignment", goal_title: "Align daily" };
+    let stage1 = upsertDomainMap(emptyStage1State(), "income", fullGoal);
+    stage1 = upsertDomainMap(stage1, "alignment", alignmentGoal);
+    const r1 = setActiveDomain(stage1, "income", getTierLimits("silver"), { setPrimary: true });
+    expect(r1.ok).toBe(true);
+    expect(r1.stage1.primary_domain).toBe("income");
+
+    const r2 = setActiveDomain(r1.stage1, "alignment", getTierLimits("silver"), {
+      setPrimary: false,
+    });
+    expect(r2.ok).toBe(true);
+    expect(r2.stage1.primary_domain).toBe("income");
+    expect(r2.stage1.active_domains).toEqual(["income", "alignment"]);
+  });
+
+  test("setPrimaryDomain reorders active_domains", () => {
+    const alignmentGoal = { ...fullGoal, domain: "alignment", goal_title: "Align daily" };
+    let stage1 = upsertDomainMap(emptyStage1State(), "income", fullGoal);
+    stage1 = upsertDomainMap(stage1, "alignment", alignmentGoal);
+    stage1 = setActiveDomain(stage1, "income", getTierLimits("silver")).stage1;
+    stage1 = setActiveDomain(stage1, "alignment", getTierLimits("silver"), {
+      setPrimary: false,
+    }).stage1;
+
+    const r = setPrimaryDomain(stage1, "alignment");
+    expect(r.ok).toBe(true);
+    expect(r.stage1.primary_domain).toBe("alignment");
+    expect(r.stage1.active_domains[0]).toBe("alignment");
+  });
+
+  test("deactivateDomain clears primary and promotes next active", () => {
+    const alignmentGoal = { ...fullGoal, domain: "alignment", goal_title: "Align daily" };
+    let stage1 = upsertDomainMap(emptyStage1State(), "income", fullGoal);
+    stage1 = upsertDomainMap(stage1, "alignment", alignmentGoal);
+    stage1 = setActiveDomain(stage1, "income", getTierLimits("silver")).stage1;
+    stage1 = setActiveDomain(stage1, "alignment", getTierLimits("silver"), {
+      setPrimary: false,
+    }).stage1;
+
+    const r = deactivateDomain(stage1, "income");
+    expect(r.ok).toBe(true);
+    expect(r.stage1.primary_domain).toBe("alignment");
+    expect(r.stage1.active_domains).toEqual(["alignment"]);
+    expect(r.stage1.domain_maps.find((m) => m.domain === "income").status).toBe("stored");
   });
 });

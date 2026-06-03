@@ -24,13 +24,20 @@ const enrichProgressMetricsFromMap = (map, progressMetrics) => {
     metrics.avoidance_caught_count = mappedCount;
   }
 
-  const recoveryRaw =
-    metrics.recovery_speed ||
-    map?.recovery_speed ||
-    null;
+  if (map?.map_resistance_complete && !metrics.milestones_completed) {
+    metrics.milestones_completed = 1;
+  }
 
-  if (recoveryRaw != null && String(recoveryRaw).trim()) {
-    metrics.recovery_speed = formatRecoverySpeed(recoveryRaw);
+  const labelledRecovery = [map?.recovery_speed, metrics.recovery_speed].find(
+    (value) => value != null && /^(fast|moderate|slow)$/i.test(String(value).trim()),
+  );
+
+  if (labelledRecovery != null) {
+    metrics.recovery_speed = formatRecoverySpeed(labelledRecovery);
+  } else if (metrics.recovery_speed != null && String(metrics.recovery_speed).trim()) {
+    metrics.recovery_speed = formatRecoverySpeed(metrics.recovery_speed);
+  } else if (map?.recovery_speed != null && String(map.recovery_speed).trim()) {
+    metrics.recovery_speed = formatRecoverySpeed(map.recovery_speed);
   } else if (map?.orbit_pattern?.trim()) {
     metrics.recovery_speed = formatRecoverySpeed(map.orbit_pattern.trim());
   } else if (map?.lack_channel?.trim()) {

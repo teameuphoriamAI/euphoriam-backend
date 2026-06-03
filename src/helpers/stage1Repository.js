@@ -22,6 +22,10 @@ const STRUCTURE_KEYS = [
   "orbit_pattern",
   "recovery_speed",
   "protector_rule",
+  "core_fear",
+  "perceived_risk",
+  "past_pattern",
+  "required_role",
   "failure_strategy",
   "top_3_avoidance_behaviours",
   "success_strategy",
@@ -34,6 +38,7 @@ const STRUCTURE_KEYS = [
   "progress_metrics",
   "map_resistance_transcript",
   "map_resistance_completed_at",
+  "notes",
 ];
 
 const rowToDomainMap = (row) => {

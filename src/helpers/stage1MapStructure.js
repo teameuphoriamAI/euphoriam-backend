@@ -533,7 +533,7 @@ const normalizeExtractedStructure = (structure, options = {}) => {
 };
 
 /** Attach resolved strategy/rep blocks for API clients (raw DB may have null objects). */
-const enrichMapForClient = (map) => {
+const enrichMapForClient = (map, opts = {}) => {
   if (!map || typeof map !== "object") return map;
   const normalized = normalizeExtractedStructure(map, {
     transcript: map.map_resistance_transcript,
@@ -541,10 +541,19 @@ const enrichMapForClient = (map) => {
   const failure_strategy = resolveFailureStrategyForMap(normalized);
   const success_strategy = resolveSuccessStrategyForMap(normalized);
   const daily_rep = resolveDailyRepForMap(normalized);
-  const progress_metrics = enrichProgressMetricsFromMap(
+  const {
+    buildCoachingHomeOverlay,
+    applyCoachingToProgressMetrics,
+  } = require("./stage1CoachingHomeOverlay");
+  const coaching_progress = buildCoachingHomeOverlay(normalized, {
+    proof_logs: opts.proof_logs,
+    coach_session_log: opts.coach_session_log,
+  });
+  let progress_metrics = enrichProgressMetricsFromMap(
     { ...normalized, failure_strategy, top_3_avoidance_behaviours: normalized.top_3_avoidance_behaviours },
     normalized.progress_metrics,
   );
+  progress_metrics = applyCoachingToProgressMetrics(progress_metrics, coaching_progress);
   return {
     ...normalized,
     failure_strategy: failure_strategy || normalized.failure_strategy,
@@ -552,6 +561,7 @@ const enrichMapForClient = (map) => {
     daily_rep: daily_rep || normalized.daily_rep,
     recovery_speed: normalized.recovery_speed || progress_metrics.recovery_speed || null,
     progress_metrics,
+    coaching_progress,
     win_condition:
       (daily_rep && typeof daily_rep === "object" ? daily_rep.win_condition : null) ||
       normalized.win_condition ||

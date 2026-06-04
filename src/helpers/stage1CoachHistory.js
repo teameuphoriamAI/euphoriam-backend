@@ -40,6 +40,7 @@ const recordCoachCheckin = (stage1, payload) => {
     current = {
       id: newSessionId(),
       domain,
+      phase: payload.phase || "check_in",
       state_at_start: state,
       state_last: state,
       started_at: now,
@@ -48,14 +49,29 @@ const recordCoachCheckin = (stage1, payload) => {
       gravity_rating_last: gravity_rating ?? null,
       messages: [],
       turn_count: 0,
+      opening_checkin: Boolean(payload.opening_checkin),
+      check_in_progress: payload.check_in_progress || null,
     };
     sessions.push(current);
   }
 
+  if (payload.phase) current.phase = payload.phase;
+  if (payload.opening_checkin) current.opening_checkin = true;
+  if (payload.check_in_progress) {
+    current.check_in_progress = payload.check_in_progress;
+  }
+  if (payload.progress_integration) {
+    current.progress_integration = payload.progress_integration;
+  }
+  if (payload.coach_state) current.coach_state_last = payload.coach_state;
+
   if (Array.isArray(messages) && messages.length > 0) {
-    current.messages = messages
+    const incoming = messages
       .filter((m) => m?.role && m?.content)
       .map((m) => ({ role: m.role, content: String(m.content) }));
+    if (incoming.length > 0) {
+      current.messages = incoming;
+    }
   } else {
     if (user_message?.trim()) {
       current.messages.push({ role: "user", content: user_message.trim() });
@@ -77,8 +93,11 @@ const recordCoachCheckin = (stage1, payload) => {
   if (gravity_rating != null) current.gravity_rating_last = gravity_rating;
 
   return {
-    ...stage1,
-    coach_session_log: sessions.slice(-40),
+    stage1: {
+      ...stage1,
+      coach_session_log: sessions.slice(-40),
+    },
+    session_id: current.id,
   };
 };
 
@@ -196,11 +215,84 @@ const endCoachSession = (stage1, domain) => {
   };
 };
 
+/** Open session metadata for coach UI. */
+const getOpenCoachSession = (stage1, domain) => {
+  const sessions = Array.isArray(stage1.coach_session_log) ? stage1.coach_session_log : [];
+  const open = findOpenSessionForDomain(sessions, domain);
+  if (!open) return null;
+  const msgs = Array.isArray(open.messages) ? open.messages : [];
+  const hasUser = msgs.some((m) => m.role === "user" && String(m.content || "").trim());
+  const {
+    getSessionPhaseFromProgress,
+    isCheckInActive,
+    inferCheckInProgressFromMessages,
+    normalizeProgress,
+  } = require("./stage1CoachCheckInFlow");
+  let progress = open.check_in_progress
+    ? normalizeProgress(open.check_in_progress)
+    : null;
+  if (!progress && msgs.length) {
+    progress = inferCheckInProgressFromMessages(msgs);
+  }
+  const {
+    isProgressIntegrationActive,
+    isPostProofDevaluationActive,
+    isWoundFlipActive,
+  } = require("./stage1CoachProgress");
+  const devaluationActive = isPostProofDevaluationActive(open.progress_integration);
+  const woundFlipActive = isWoundFlipActive(open.progress_integration);
+  const progressActive =
+    isProgressIntegrationActive(open.progress_integration) ||
+    devaluationActive ||
+    woundFlipActive;
+  const checkInActive =
+    !progressActive && (progress ? isCheckInActive(progress) : !hasUser);
+  const integration = open.progress_integration;
+  const woundStep = integration?.step;
+  const coachState =
+    open.coach_state_last ||
+    (woundFlipActive && woundStep === "flip_leverage"
+      ? "flip_install"
+      : woundFlipActive
+        ? "wound_edge"
+        : devaluationActive
+          ? "post_proof_devaluation"
+          : progressActive
+            ? "progress"
+            : checkInActive
+              ? "check_in"
+              : "coaching");
+  const phase = woundFlipActive
+    ? woundStep === "flip_leverage"
+      ? "flip_leverage"
+      : "wound_edge"
+    : devaluationActive
+      ? "post_proof_devaluation"
+      : progressActive
+        ? "proof_integration"
+        : checkInActive
+          ? "check_in"
+          : open.phase || (hasUser ? "coaching" : "check_in");
+
+  return {
+    id: open.id,
+    phase,
+    awaiting_user:
+      (checkInActive || progressActive) && msgs.some((m) => m.role === "assistant"),
+    check_in_progress: progress || null,
+    progress_integration: open.progress_integration || null,
+    coach_state: coachState,
+    messages: msgs,
+  };
+};
+
 module.exports = {
   recordCoachCheckin,
   listCoachHistory,
   getResumableCoachMessages,
+  getOpenCoachSession,
   endCoachSession,
+  findOpenSessionForDomain,
   migrateLegacyCoachSessions,
   SESSION_GAP_MS,
 };

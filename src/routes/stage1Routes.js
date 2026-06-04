@@ -66,6 +66,7 @@ router.get(
   asyncHandler(stage1Controller.getDomainMapResistanceHistory),
 );
 
+router.get("/coach/open", ...stage1Auth, asyncHandler(stage1CoachController.coachOpen));
 router.post("/coach/checkin", ...stage1Auth, asyncHandler(stage1CoachController.coachCheckin));
 router.get("/coach/history", ...stage1Auth, asyncHandler(stage1CoachController.getCoachHistory));
 router.get("/coach/resume", ...stage1Auth, asyncHandler(stage1CoachController.getCoachResume));

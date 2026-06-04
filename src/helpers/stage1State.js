@@ -192,6 +192,15 @@ const buildHomeDashboard = (stage1) => {
     resolveDailyRepForMap,
   } = require("./stage1MapStructure");
   const daily_rep = resolveDailyRepForMap(map);
+  const {
+    buildCoachingHomeOverlay,
+    applyCoachingToProgressMetrics,
+  } = require("./stage1CoachingHomeOverlay");
+  const coaching_progress = buildCoachingHomeOverlay(mapWithMetrics, {
+    proof_logs: proof_logs_all,
+    coach_session_log: stage1.coach_session_log || [],
+  });
+  progress_metrics = applyCoachingToProgressMetrics(progress_metrics, coaching_progress);
 
   return {
     active_domain: primary,
@@ -230,6 +239,15 @@ const buildHomeDashboard = (stage1) => {
     avoid_type: map.avoid_type || null,
     signature_id: map.signature_id || null,
     recovery_speed: map.recovery_speed || progress_metrics.recovery_speed || null,
+    coaching_progress,
+    initial_diagnostic_snapshot: map.coaching_memory?.initial_diagnostic
+      ? {
+          captured_at: map.coaching_memory.initial_diagnostic.captured_at,
+          failure_strategy: map.coaching_memory.initial_diagnostic.failure_strategy,
+          success_strategy: map.coaching_memory.initial_diagnostic.success_strategy,
+          daily_rep: map.coaching_memory.initial_diagnostic.daily_rep,
+        }
+      : null,
   };
 };
 

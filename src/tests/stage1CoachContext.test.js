@@ -60,6 +60,10 @@ describe("stage1CoachContext", () => {
     expect(ctx.user_profile.first_name).toBe("Alex");
     expect(ctx.active_goal_context.goal_name).toBe("Send emails daily");
     expect(ctx.map_resistance.failure_strategy.rule).toBe("Hide the ask");
+    expect(ctx.coaching_memory.initial_diagnostic.failure_strategy.rule).toBe(
+      "Hide the ask",
+    );
+    expect(ctx.coaching_memory.initial_diagnostic).toBeTruthy();
     expect(ctx.recent_proof_logs).toHaveLength(1);
     expect(ctx.stage1_coach_sessions).toHaveLength(1);
     expect(ctx.user_sessions_1on1).toHaveLength(1);

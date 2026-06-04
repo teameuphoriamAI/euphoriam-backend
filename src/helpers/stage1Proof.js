@@ -1,6 +1,10 @@
 const { normalizeDomain } = require("../constants/domains");
 const { DEFAULT_PROGRESS_METRICS, resolvePrimaryDomain } = require("./stage1State");
 const { enrichProgressMetricsFromMap } = require("./stage1ProgressMetrics");
+const {
+  appendProofToCoachingMemory,
+  appendProgressLog,
+} = require("./stage1CoachingMemory");
 
 const PROOF_TYPES = new Set(["action", "resistance", "recovery"]);
 const MAX_PROOF_LOGS = 200;
@@ -149,7 +153,16 @@ const recordProof = (stage1, payload) => {
   const proof_logs = logs.slice(0, MAX_PROOF_LOGS);
 
   const nextMaps = [...maps];
-  nextMaps[mapIdx] = applyProofMetricsToMap(map, proof_logs);
+  let updatedMap = applyProofMetricsToMap(map, proof_logs);
+  updatedMap = appendProofToCoachingMemory(updatedMap, entry);
+  updatedMap = appendProgressLog(updatedMap, {
+    id: `prog-proof-${entry.id}`,
+    type: "proof_logged",
+    note: entry.action,
+    proof_id: entry.id,
+    green_rep_name: entry.green_rep_name,
+  });
+  nextMaps[mapIdx] = updatedMap;
 
   const nextStage1 = {
     ...stage1,

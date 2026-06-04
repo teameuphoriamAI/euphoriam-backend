@@ -159,9 +159,26 @@ const getDomain = async (req, res) => {
     const isActive = (stage1.active_domains || []).includes(domain);
     const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
     const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
-    const mapWithMetrics = applyProofMetricsToMap({ ...map }, proof_logs);
     const { enrichMapForClient } = require("../helpers/stage1MapStructure");
-    const mapForClient = enrichMapForClient(mapWithMetrics);
+    const { ensureInitialDiagnosticOnStage1 } = require("../helpers/stage1CoachingMemory");
+
+    let stage1ForResponse = stage1;
+    const { stage1: withDiagnostic, changed } = ensureInitialDiagnosticOnStage1(
+      stage1,
+      domain,
+    );
+    if (changed) {
+      stage1ForResponse = await persistStage1ForUser(user.id, withDiagnostic);
+    }
+
+    const mapRow = (stage1ForResponse.domain_maps || []).find((m) => m.domain === domain);
+    const mapForClient = enrichMapForClient(
+      applyProofMetricsToMap({ ...mapRow }, proof_logs),
+      {
+        proof_logs,
+        coach_session_log: stage1ForResponse.coach_session_log || [],
+      },
+    );
 
     return successResponse(res, "Domain detail", {
       domain,
@@ -463,12 +480,29 @@ const finalizeMapResistance = async (req, res) => {
     });
 
     const completedAt = new Date().toISOString();
+    const existingMap = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const preservedMemory = existingMap?.coaching_memory;
+
     stage1 = upsertDomainMap(stage1, domain, {
       ...structure,
       map_resistance_complete: true,
       map_resistance_transcript: messages,
       map_resistance_completed_at: completedAt,
+      ...(preservedMemory ? { coaching_memory: preservedMemory } : {}),
     });
+
+    const { captureInitialDiagnosticIfNeeded } = require("../helpers/stage1CoachingMemory");
+    const mapAfterMerge = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const mapWithSnapshot = captureInitialDiagnosticIfNeeded(
+      mapAfterMerge,
+      activeGoalContext,
+      domain,
+    );
+    if (mapWithSnapshot !== mapAfterMerge) {
+      stage1 = upsertDomainMap(stage1, domain, {
+        coaching_memory: mapWithSnapshot.coaching_memory,
+      });
+    }
     stage1 = {
       ...stage1,
       map_resistance_in_progress: false,
@@ -509,6 +543,7 @@ const finalizeMapResistance = async (req, res) => {
     const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
     const updatedMap = enrichMapForClient(
       applyProofMetricsToMap({ ...updatedMapRaw }, proof_logs),
+      { proof_logs },
     );
 
     return successResponse(res, "Map resistance complete", {

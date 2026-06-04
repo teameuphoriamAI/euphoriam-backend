@@ -3,6 +3,7 @@ const { buildActiveGoalContext } = require("./stage1GoalContext");
 const { listCoachHistory } = require("./stage1CoachHistory");
 const { listProofLogs } = require("./stage1Proof");
 const { getAllUserSessions } = require("./euphoriamChatbot");
+const { serializeCoachingMemoryForCoach } = require("./stage1CoachingMemory");
 
 const MAX_TRANSCRIPT_MESSAGES = 16;
 const MAX_MESSAGE_CHARS = 900;
@@ -41,6 +42,7 @@ const serializeCoachHistory = (stage1, domain) =>
       messages_excerpt: excerptTranscript(sess.messages, 10),
     }));
 
+/** Live map resistance fields (may evolve); original 25Q snapshot is in coaching_memory.initial_diagnostic. */
 const serializeMapResistance = (map) => {
   if (!map) return null;
   const failure = map.failure_strategy;
@@ -53,12 +55,14 @@ const serializeMapResistance = (map) => {
     avoid_type: map.avoid_type || null,
     orbit_pattern: map.orbit_pattern || null,
     protector_rule: map.protector_rule || null,
+    core_fear: map.core_fear || null,
     failure_strategy: failure || null,
     success_strategy: success || null,
     top_3_avoidance_behaviours: map.top_3_avoidance_behaviours || [],
     daily_rep: map.daily_rep || null,
     win_condition: map.win_condition || null,
     transcript_excerpt: excerptTranscript(map.map_resistance_transcript, 20),
+    note: "For the frozen 25Q diagnostic snapshot, use coaching_memory.initial_diagnostic — do not treat this block as the original diagnostic if coaching has refined understanding.",
   };
 };
 
@@ -87,6 +91,7 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
 
   const proofLogs = listProofLogs(stage1, { domain, limit: 12 });
   const coachHistory = serializeCoachHistory(stage1, domain);
+  const coaching_memory = serializeCoachingMemoryForCoach(map, stage1, domain);
 
   return {
     user_profile: {
@@ -99,6 +104,7 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
     active_domain_label: DOMAIN_LABELS[domain] || domain,
     active_goal_context: buildActiveGoalContext(map, domain),
     map_resistance: serializeMapResistance(map),
+    coaching_memory,
     progress_metrics: map.progress_metrics || null,
     recent_proof_logs: proofLogs.map((p) => ({
       action: p.action,
@@ -109,6 +115,16 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
     stage1_coach_sessions: coachHistory,
     user_sessions_1on1: serializeUserSessions(userSessions),
     other_domain_goals: serializeOtherDomains(stage1, domain),
+    coach_load_order: [
+      "active_goal_context (current goal + milestone)",
+      "coaching_memory.initial_diagnostic (frozen 25Q Map Resistance — never overwrite)",
+      "coaching_memory.coaching_history (prior sessions)",
+      "coaching_memory.proof_logs",
+      "coaching_memory.progress_logs",
+      "coaching_memory.diagnostic_observations",
+      "recent_proof_logs",
+      "stage1_coach_sessions",
+    ],
   };
 };
 

@@ -38,6 +38,7 @@ const STRUCTURE_KEYS = [
   "progress_metrics",
   "map_resistance_transcript",
   "map_resistance_completed_at",
+  "coaching_memory",
   "notes",
 ];
 

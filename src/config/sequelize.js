@@ -774,6 +774,10 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
     const newEnumValues = [
       "Coach Brain Prompt",
       "stage1_map_resistance",
+      "stage1_map_resistance_extract",
+      "stage1_map_resistance_welcome",
+      "stage1_map_advance_fallbacks",
+      "stage1_coach_opening",
       "stage1_daily_coach",
       "stage1_friction_rescue",
       "stage1_goal_intake",

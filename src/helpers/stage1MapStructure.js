@@ -554,6 +554,15 @@ const enrichMapForClient = (map, opts = {}) => {
     normalized.progress_metrics,
   );
   progress_metrics = applyCoachingToProgressMetrics(progress_metrics, coaching_progress);
+  const { buildStructuralMapForClient } = require("./stage1StructuralMap");
+  const structural_map = buildStructuralMapForClient(
+    { ...normalized, domain: normalized.domain || map.domain, progress_metrics },
+    opts,
+  );
+  const structural_map_baseline =
+    map.structural_map_baseline ||
+    structural_map?.baseline ||
+    null;
   return {
     ...normalized,
     failure_strategy: failure_strategy || normalized.failure_strategy,
@@ -562,6 +571,8 @@ const enrichMapForClient = (map, opts = {}) => {
     recovery_speed: normalized.recovery_speed || progress_metrics.recovery_speed || null,
     progress_metrics,
     coaching_progress,
+    structural_map,
+    structural_map_baseline,
     win_condition:
       (daily_rep && typeof daily_rep === "object" ? daily_rep.win_condition : null) ||
       normalized.win_condition ||

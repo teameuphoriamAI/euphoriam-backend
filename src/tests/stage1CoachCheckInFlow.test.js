@@ -6,7 +6,7 @@ const {
 } = require("../helpers/stage1CoachCheckInFlow");
 
 describe("stage1CoachCheckInFlow", () => {
-  test("opening has recap and exactly one question", () => {
+  test("opening has human greeting and exactly one question", () => {
     const msg = buildCoachOpeningCheckin({
       firstName: "Yashal",
       activeGoalContext: {
@@ -20,47 +20,50 @@ describe("stage1CoachCheckInFlow", () => {
       coachContext: {},
     });
 
-    expect(msg).toContain("Welcome back Yashal");
+    expect(msg).toMatch(/Hey Yashal/i);
     expect(msg).toContain("Generate $12/hour");
+    expect(msg).not.toContain("Current Goal:");
     expect(msg).not.toContain("Outreach Practice");
-    expect(msg).toContain("What happened since our last session?");
+    expect(msg).toMatch(/How are things going today/i);
+    expect(msg).toMatch(/Remember we're working on/i);
     expect(msg).not.toContain("Did you complete");
-    expect(msg).not.toContain("1.");
   });
 
-  test("advances one question at a time then coaching", () => {
+  test("substantive first answer skips rigid checklist", () => {
     let p = initCheckInProgress();
+    const r = advanceCheckInConversation(p, "I generated $12/hour this week", {
+      lastRepName: "Outreach Practice",
+    });
+    expect(r.ready_for_coaching).toBe(true);
+    expect(r.assistant_message).toBeNull();
+    expect(r.progress.answers.since_last_session).toContain("12/hour");
+  });
 
-    let r = advanceCheckInConversation(p, "I avoided outreach all week", {
+  test("brief first answer gets one adaptive follow-up only", () => {
+    let p = initCheckInProgress();
+    let r = advanceCheckInConversation(p, "Busy week", {
       lastRepName: "Outreach Practice",
     });
     expect(r.session_phase).toBe("check_in");
-    expect(r.assistant_message).toContain("Did you complete");
-    expect(r.assistant_message).not.toContain("What feels hardest");
+    expect(r.assistant_message).toContain("Outreach Practice");
+    expect(r.assistant_message).not.toMatch(/What feels hardest|Did you complete.*\?.*What/);
 
     p = r.progress;
-    r = advanceCheckInConversation(p, "No not yet", { lastRepName: "Outreach Practice" });
-    expect(r.session_phase).toBe("check_in");
-    expect(r.assistant_message).toContain("What stopped you");
-
-    p = r.progress;
-    r = advanceCheckInConversation(p, "Fear of rejection on calls", {
+    r = advanceCheckInConversation(p, "Not yet — kept putting it off", {
       lastRepName: "Outreach Practice",
     });
     expect(r.ready_for_coaching).toBe(true);
     expect(r.session_phase).toBe("coaching");
-    expect(r.assistant_message).toBeNull();
-    expect(r.progress.answers.current_blocker).toContain("rejection");
   });
 
   test("infers progress from legacy transcript", () => {
     const p = inferCheckInProgressFromMessages([
-      { role: "assistant", content: "Welcome" },
+      { role: "assistant", content: "Hey — how have things been?" },
       { role: "user", content: "Busy week" },
-      { role: "assistant", content: "Green rep?" },
+      { role: "assistant", content: "How did outreach go?" },
       { role: "user", content: "yes done" },
     ]);
-    expect(p.step).toBe("current_blocker");
+    expect(p.step).toBe("follow_up");
     expect(p.answers.since_last_session).toBe("Busy week");
   });
 });

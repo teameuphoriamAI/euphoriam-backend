@@ -148,19 +148,25 @@ const pickMetric = (map, keys) => {
 /**
  * Frozen snapshot from Map Resistance finalize — never overwritten by coaching or re-extract.
  */
-const buildInitialDiagnosticSnapshot = (map, activeGoalContext, domain) => ({
-  captured_at: new Date().toISOString(),
-  domain,
-  source: "map_resistance_25q",
-  active_goal_context: activeGoalContext || null,
-  EO: map?.EO ?? null,
-  lack_channel: map?.lack_channel ?? null,
-  avoid_type: map?.avoid_type ?? null,
-  signature_id: map?.signature_id ?? null,
-  orbit_pattern: map?.orbit_pattern ?? null,
-  QGC: pickMetric(map, ["QGC", "qgc_activation", "qgcActivation"]),
-  CL: pickMetric(map, ["CL", "consciousness_level", "consciousnessLevel"]),
-  gravity: pickMetric(map, ["gravity", "gravity_depth", "gravityDepth"]),
+const buildInitialDiagnosticSnapshot = (map, activeGoalContext, domain) => {
+  const { baselineMetricsForDiagnostic } = require("./stage1StructuralMap");
+  const metrics = baselineMetricsForDiagnostic(map) || {};
+  return {
+    captured_at: new Date().toISOString(),
+    domain,
+    source: "map_resistance_25q",
+    active_goal_context: activeGoalContext || null,
+    EO: map?.EO ?? null,
+    lack_channel: map?.lack_channel ?? null,
+    avoid_type: map?.avoid_type ?? null,
+    signature_id: map?.signature_id ?? null,
+    orbit_pattern: map?.orbit_pattern ?? null,
+    QGC: metrics.QGC ?? pickMetric(map, ["QGC", "qgc_activation", "qgcActivation"]),
+    CL: metrics.CL ?? pickMetric(map, ["CL", "consciousness_level", "consciousnessLevel"]),
+    CL_estimate: metrics.CL_estimate ?? pickMetric(map, ["CL_estimate", "cl_estimate"]),
+    gravity: metrics.gravity ?? pickMetric(map, ["gravity", "gravity_depth", "gravityDepth"]),
+    gravity_depth: metrics.gravity_depth ?? pickMetric(map, ["gravity_depth", "gravityDepth"]),
+    gravity_load: metrics.gravity_load ?? pickMetric(map, ["gravity_load", "gravityLoad"]),
   failure_strategy:
     map?.failure_strategy || resolveFailureStrategyForMap(map) || null,
   success_strategy:
@@ -174,9 +180,10 @@ const buildInitialDiagnosticSnapshot = (map, activeGoalContext, domain) => ({
   past_pattern: map?.past_pattern ?? null,
   required_role: map?.required_role ?? null,
   recovery_speed: map?.recovery_speed ?? null,
-  daily_rep: map?.daily_rep ?? null,
-  win_condition: map?.win_condition ?? null,
-});
+    daily_rep: map?.daily_rep ?? null,
+    win_condition: map?.win_condition ?? null,
+  };
+};
 
 /** Set initial_diagnostic once when Map Resistance completes (or backfill if missing). */
 const captureInitialDiagnosticIfNeeded = (map, activeGoalContext, domain) => {
@@ -238,6 +245,15 @@ const excerptMessages = (messages, max = 24) => {
 /**
  * Record one coach turn into coaching_history (linked to coach_session_log session_id).
  */
+const _appendStructuralSnapshot = (map, opts = {}) => {
+  try {
+    const { appendStructuralMapSnapshot } = require("./stage1StructuralMap");
+    return appendStructuralMapSnapshot(map, opts);
+  } catch {
+    return map;
+  }
+};
+
 const recordCoachingMemoryTurn = (
   map,
   {
@@ -349,7 +365,23 @@ const recordCoachingMemoryTurn = (
       ...new Set([...(entry.coaching_insights || []), ...insights.map(String)]),
     ].slice(-12);
   }
+  if (hints.emotional_themes) {
+    const themes = Array.isArray(hints.emotional_themes)
+      ? hints.emotional_themes
+      : [hints.emotional_themes];
+    entry.emotional_themes = [
+      ...new Set([...(entry.emotional_themes || []), ...themes.map(String)]),
+    ].slice(-10);
+  }
+  if (hints.coach_notes) {
+    const notes = Array.isArray(hints.coach_notes) ? hints.coach_notes : [hints.coach_notes];
+    entry.coach_notes = [...(entry.coach_notes || []), ...notes.map(String)].slice(-20);
+  }
   if (hints.cl_estimate != null) entry.cl_estimate = hints.cl_estimate;
+  if (hints.gravity_rating != null) {
+    const g = Number(hints.gravity_rating);
+    if (Number.isFinite(g)) entry.gravity_rating_last = g;
+  }
   if (hints.milestone_focus || hints.milestone_update) {
     entry.milestone_focus = String(hints.milestone_focus || hints.milestone_update);
   }
@@ -450,10 +482,25 @@ const recordCoachingMemoryTurn = (
     };
   }
 
-  return {
+  let nextMap = {
     ...map,
     coaching_memory: nextMemory,
   };
+
+  if (map?.map_resistance_complete) {
+    nextMap = _appendStructuralSnapshot(nextMap, {});
+  }
+
+  return nextMap;
+};
+
+const _finalizeStructuralSnapshot = (map, opts = {}) => {
+  try {
+    const { appendStructuralMapSnapshot } = require("./stage1StructuralMap");
+    return appendStructuralMapSnapshot(map, opts);
+  } catch {
+    return map;
+  }
 };
 
 /** Close a coaching_history entry when the in-app coach session ends. */
@@ -486,7 +533,7 @@ const finalizeCoachingMemorySession = (map, { domain, session_id, session_summar
       ].slice(-40),
     };
   }
-  return { ...map, coaching_memory: nextMemory };
+  return _finalizeStructuralSnapshot({ ...map, coaching_memory: nextMemory });
 };
 
 /** Mirror stage1 proof_logs into domain coaching_memory.proof_logs. */
@@ -610,6 +657,8 @@ const serializeCoachingMemoryForCoach = (map, stage1, domain) => {
       green_rep_assigned: s.green_rep_assigned,
       green_rep_completed: s.green_rep_completed,
       coaching_insights: s.coaching_insights || [],
+      emotional_themes: s.emotional_themes || [],
+      coach_notes: s.coach_notes || [],
       cl_estimate: s.cl_estimate,
       milestone_focus: s.milestone_focus,
       turn_count: s.turn_count,

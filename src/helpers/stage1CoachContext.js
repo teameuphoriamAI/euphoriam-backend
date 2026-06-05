@@ -4,6 +4,7 @@ const { listCoachHistory } = require("./stage1CoachHistory");
 const { listProofLogs } = require("./stage1Proof");
 const { getAllUserSessions } = require("./euphoriamChatbot");
 const { serializeCoachingMemoryForCoach } = require("./stage1CoachingMemory");
+const { buildResistanceEvolutionNarrative } = require("./stage1CoachNaturalLanguage");
 
 const MAX_TRANSCRIPT_MESSAGES = 16;
 const MAX_MESSAGE_CHARS = 900;
@@ -93,6 +94,10 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
   const coachHistory = serializeCoachHistory(stage1, domain);
   const coaching_memory = serializeCoachingMemoryForCoach(map, stage1, domain);
 
+  const edgeNarrative = buildResistanceEvolutionNarrative(
+    coaching_memory.resistance_evolution || [],
+  );
+
   return {
     user_profile: {
       id: user.id,
@@ -105,6 +110,9 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
     active_goal_context: buildActiveGoalContext(map, domain),
     map_resistance: serializeMapResistance(map),
     coaching_memory,
+    current_edge_narrative: edgeNarrative,
+    coaching_instructions:
+      "Obey COACH_CHECKIN.coaching_mode. When stop_discovery is true: coach directly — pattern, cost, failure/success strategy, one Green Rep, proof. No reflective questions.",
     progress_metrics: map.progress_metrics || null,
     recent_proof_logs: proofLogs.map((p) => ({
       action: p.action,

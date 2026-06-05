@@ -8,6 +8,7 @@ const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { loadCoachPromptBundle } = require("../helpers/stage1Prompts");
 const { buildCoachUserContext } = require("../helpers/stage1CoachContext");
+const { buildCoachMemoryContext } = require("../helpers/stage1CoachMemoryContext");
 const {
   recordCoachCheckin,
   listCoachHistory,
@@ -18,24 +19,9 @@ const {
 const { gatherCoachOpenPayload, resolveLastGreenRep } = require("../helpers/stage1CoachOpen");
 const { buildSessionSummaryFromCoachLog } = require("../helpers/stage1CoachSessionContinuity");
 const {
-  initCheckInProgress,
-  normalizeProgress,
-} = require("../helpers/stage1CoachCheckInFlow");
-const {
-  resolveCoachTurn,
-  COACH_STATE,
-  sanitizeCoachGreenRep,
-  buildProgressCoachingInstructions,
+  detectProgressSignals,
   maybeAutoLogProof,
-} = require("../helpers/stage1CoachStateMachine");
-const { buildProgressIntegrationFromContinuity } = require("../helpers/stage1CoachProgress");
-const { deriveCoachingWritebackFromProgress } = require("../helpers/stage1CoachWriteback");
-const {
-  isProgressIntegrationActive,
-  isPostProofDevaluationActive,
-  isWoundFlipActive,
-  buildProgressClosing,
-  buildPostProofDevaluationMessage,
+  sanitizeCoachGreenRep,
 } = require("../helpers/stage1CoachProgress");
 const {
   recordCoachingMemoryTurn,
@@ -45,7 +31,13 @@ const {
   serializeCoachingMemoryForCoach,
   syncProofLogsToCoachingMemory,
 } = require("../helpers/stage1CoachingMemory");
+const { indexCoachSession } = require("../helpers/stage1CoachVectorMemory");
 const { DOMAIN_LABELS } = require("../constants/domains");
+const { sanitizeCoachUserFacingText } = require("../helpers/stage1CoachNaturalLanguage");
+const { resolveCoachingTransition } = require("../helpers/stage1CoachTransition");
+const { inferGravityFromCoachState } = require("../helpers/stage1StructuralMap");
+
+const COACH_STATE = Object.freeze({ COACHING: "coaching" });
 
 const resolveUser = async (req) => {
   const id = req.user?.sub || req.user?.userId;
@@ -65,7 +57,7 @@ const resolveUser = async (req) => {
   return user;
 };
 
-const persistProgressTurn = ({
+const persistCoachTurn = ({
   stage1,
   map,
   domain,
@@ -75,48 +67,36 @@ const persistProgressTurn = ({
   userMessage,
   assistantMessage,
   sessionId: existingSessionId,
-  checkInProgress,
-  progressIntegration,
-  coachState,
-  phase,
-  writebackHints = {},
   greenRep = null,
+  writebackHints = {},
 }) => {
   const { stage1: afterTurn, session_id } = recordCoachCheckin(stage1, {
     domain,
-    state: coachState || checkinState,
+    state: checkinState,
     gravity_rating: gravityRating,
     messages,
     user_message: userMessage,
     assistant_message: assistantMessage,
     green_rep: greenRep,
-    phase,
-    check_in_progress: checkInProgress,
-    progress_integration: progressIntegration,
-    coach_state: coachState,
+    phase: "coaching",
+    coach_state: COACH_STATE.COACHING,
   });
 
   const mapIdx = (afterTurn.domain_maps || []).findIndex((m) => m.domain === domain);
   let nextStage1 = afterTurn;
   if (mapIdx >= 0) {
     const maps = [...afterTurn.domain_maps];
-    const mergedWriteback = deriveCoachingWritebackFromProgress(progressIntegration, {
-      ...writebackHints,
-      green_rep_completed: progressIntegration?.signals?.repCompleted || undefined,
-      progress_note: userMessage,
-    });
     maps[mapIdx] = recordCoachingMemoryTurn(maps[mapIdx], {
       session_id: session_id || existingSessionId,
       domain,
-      state: coachState || checkinState,
+      state: checkinState,
       messages,
       user_message: userMessage,
       assistant_message: assistantMessage,
       green_rep: greenRep,
       gravity_rating: gravityRating,
-      writeback_hints: mergedWriteback,
+      writeback_hints: writebackHints,
       active_goal_context: buildActiveGoalContext(map, domain),
-      opening_checkin: phase === "check_in",
     });
     maps[mapIdx] = syncProofLogsToCoachingMemory(maps[mapIdx], afterTurn.proof_logs || []);
     nextStage1 = { ...afterTurn, domain_maps: maps };
@@ -124,7 +104,7 @@ const persistProgressTurn = ({
   return { nextStage1, session_id: session_id || existingSessionId };
 };
 
-/** GET /api/stage1/coach/open — load memory + deterministic welcome check-in (no AI diagnosis). */
+/** GET /api/stage1/coach/open — structured memory + conversational opening (no scripted Q&A). */
 const coachOpen = async (req, res) => {
   try {
     const user = await resolveUser(req);
@@ -150,41 +130,37 @@ const coachOpen = async (req, res) => {
 
     const open = getOpenCoachSession(stage1, domain);
     if (open?.messages?.length) {
-      const phase = open.phase || "coaching";
       return successResponse(res, "Coach session resumed", {
         domain,
-        session_phase: phase,
-        coach_state: open.coach_state || null,
+        session_phase: "coaching",
+        coach_state: COACH_STATE.COACHING,
         awaiting_user: open.awaiting_user,
         resumed: true,
         assistant_message: null,
         messages: open.messages,
         session_id: open.id,
-        check_in_progress: open.check_in_progress || null,
-        progress_integration: open.progress_integration || null,
       });
     }
 
-    const { map: enrichedMap, opening_message, coachContext, activeGoalContext, continuity } =
+    const { opening_message, coachContext, activeGoalContext, continuity } =
       gatherCoachOpenPayload(user, stage1, map, domain);
 
-    const checkin = {
-      current_state: req.query?.state || "clear",
-      gravity_rating: null,
-    };
+    const coachMemoryContext = await buildCoachMemoryContext({
+      user,
+      stage1,
+      map,
+      domain,
+    });
 
-    const checkInProgress = initCheckInProgress(continuity);
-    const seededProgress = buildProgressIntegrationFromContinuity(continuity);
+    const checkinState = req.query?.state || "clear";
 
     const { stage1: afterOpen, session_id } = recordCoachCheckin(stage1, {
       domain,
-      state: checkin.current_state,
+      state: checkinState,
       assistant_message: opening_message,
-      phase: seededProgress ? "proof_integration" : "check_in",
+      phase: "coaching",
       opening_checkin: true,
-      check_in_progress: checkInProgress,
-      progress_integration: seededProgress,
-      coach_state: seededProgress ? COACH_STATE.PROGRESS : undefined,
+      coach_state: COACH_STATE.COACHING,
     });
 
     const mapIdx = (afterOpen.domain_maps || []).findIndex((m) => m.domain === domain);
@@ -194,35 +170,42 @@ const coachOpen = async (req, res) => {
       maps[mapIdx] = recordCoachingMemoryTurn(maps[mapIdx], {
         session_id,
         domain,
-        state: checkin.current_state,
+        state: checkinState,
         assistant_message: opening_message,
         active_goal_context: activeGoalContext,
         opening_checkin: true,
+        writeback_hints: {
+          current_failure_strategy:
+            map.protector_rule ||
+            map.failure_strategy?.rule ||
+            null,
+          current_success_strategy: map.success_strategy?.behaviour || null,
+          milestone_focus: activeGoalContext?.current_milestone || null,
+        },
       });
       nextStage1 = { ...afterOpen, domain_maps: maps };
     }
 
     await persistStage1ForUser(user.id, nextStage1);
 
+    const safeOpening = sanitizeCoachUserFacingText(opening_message);
+
     return successResponse(res, "Coach check-in", {
       domain,
-      session_phase: "check_in",
+      session_phase: "coaching",
       awaiting_user: true,
       resumed: false,
-      assistant_message: opening_message,
-      messages: [{ role: "assistant", content: opening_message }],
+      assistant_message: safeOpening,
+      messages: [{ role: "assistant", content: safeOpening }],
       session_id,
-      check_in_progress: checkInProgress,
+      COACH_MEMORY_CONTEXT: coachMemoryContext,
       context_loaded: {
         goal: activeGoalContext.goal_name,
         milestone: activeGoalContext.current_milestone,
-        has_initial_diagnostic: Boolean(coachContext.initial_diagnostic),
         prior_sessions: (coachContext.coaching_sessions || []).length,
-        proof_logs: (coachContext.proof_logs || []).length,
-        recent_patterns: coachContext.recent_patterns || [],
+        proof_logs: (coachMemoryContext.recent_proofs || []).length,
         session_continuity: continuity || null,
       },
-      session_continuity: continuity || null,
     });
   } catch (err) {
     console.error("[coachOpen]", err);
@@ -230,7 +213,7 @@ const coachOpen = async (req, res) => {
   }
 };
 
-/** POST /api/stage1/coach/checkin */
+/** POST /api/stage1/coach/checkin — LLM controls conversation (memory loaded every turn). */
 const coachCheckin = async (req, res) => {
   try {
     if (!aiService.flags.coach) {
@@ -253,9 +236,7 @@ const coachCheckin = async (req, res) => {
     }
 
     let map = (stage1.domain_maps || []).find((m) => m.domain === domain);
-    if (!map) {
-      return errorResponse(res, "Domain map not found", 404);
-    }
+    if (!map) return errorResponse(res, "Domain map not found", 404);
     if (!map.map_resistance_complete) {
       return errorResponse(res, "Complete Map Resistance before daily coaching.", 400);
     }
@@ -274,137 +255,69 @@ const coachCheckin = async (req, res) => {
 
     const checkinState = req.body?.state || req.body?.current_state || "clear";
     const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-    const openSession = getOpenCoachSession(stage1, domain);
-    let checkInProgress = normalizeProgress(
-      openSession?.check_in_progress || req.body?.check_in_progress,
-    );
+    const gravityRating = req.body?.gravity_rating ?? null;
 
-    const turn = resolveCoachTurn({
-      userMessage,
-      messages,
-      openSession,
-      checkInProgress,
-      stage1,
-      domain,
-      map,
-      userSelectedState: checkinState,
-    });
-
-    stage1 = turn.stage1 || stage1;
-    const coachState = turn.coach_state;
+    const memoryCtx = serializeCoachingMemoryForCoach(map, stage1, domain);
     const lastRep = resolveLastGreenRep(
-      { ...ensureCoachingMemory(map), ...serializeCoachingMemoryForCoach(map, stage1, domain) },
+      { ...ensureCoachingMemory(map), ...memoryCtx },
       map,
     );
+    const proofSignals = detectProgressSignals(userMessage, { lastRepName: lastRep?.name });
 
-    let assistantMessage = String(turn.assistant_message || "").trim() || null;
-    if (!assistantMessage) {
-      const ctx = { lastRepName: lastRep?.name, map, patterns: map?.top_3_avoidance_behaviours || [] };
-      assistantMessage = isPostProofDevaluationActive(turn.progress_integration)
-        ? buildPostProofDevaluationMessage(turn.progress_integration, turn.proof_signals || {}, ctx)
-        : buildProgressClosing(turn.proof_signals || {}, ctx);
-      assistantMessage =
-        assistantMessage || "What you did counts — take a moment and let that land.";
-    }
-
-    const deterministicReply =
-      !turn.ready_for_coaching ||
-      coachState !== COACH_STATE.COACHING ||
-      coachState === COACH_STATE.POST_PROOF_DEVALUATION ||
-      coachState === COACH_STATE.WOUND_EDGE ||
-      coachState === COACH_STATE.FLIP_INSTALL ||
-      isPostProofDevaluationActive(turn.progress_integration) ||
-      isWoundFlipActive(turn.progress_integration) ||
-      Boolean(turn.progress_integration) ||
-      Boolean(turn.check_in_progress?.continuity?.had_proof);
-
-    if (deterministicReply) {
-      const phase =
-        coachState === COACH_STATE.WOUND_EDGE
-          ? "wound_edge"
-          : coachState === COACH_STATE.FLIP_INSTALL
-            ? turn.session_phase === "flip_leverage"
-              ? "flip_leverage"
-              : "flip_install"
-            : coachState === COACH_STATE.POST_PROOF_DEVALUATION
-              ? turn.session_phase === "post_proof_devaluation_loop"
-                ? "post_proof_devaluation_loop"
-                : "post_proof_devaluation"
-              : coachState === COACH_STATE.PROGRESS
-                ? turn.session_phase || "proof_integration"
-                : coachState === COACH_STATE.CHECK_IN
-                  ? "check_in"
-                  : turn.session_phase || "coaching";
-      const { nextStage1 } = persistProgressTurn({
+    if (proofSignals.hasProof) {
+      const logged = maybeAutoLogProof(
         stage1,
-        map,
         domain,
-        checkinState: coachState,
-        gravityRating: req.body?.gravity_rating ?? null,
-        messages,
         userMessage,
-        assistantMessage,
-        checkInProgress: turn.check_in_progress,
-        progressIntegration: turn.progress_integration,
-        coachState,
-        phase:
-          phase === "proof_integration_complete"
-            ? "proof_integration"
-            : phase === "wound_flip_complete"
-              ? "wound_flip_complete"
-              : phase === "wound_edge" || phase === "flip_leverage" || phase === "flip_install"
-                ? phase
-                : phase === "coaching"
-                  ? "coaching"
-                  : coachState === COACH_STATE.PROGRESS
-                    ? "proof_integration"
-                    : "check_in",
-        writebackHints: {
-          proof_logged: turn.progress_integration?.proof_logged,
-          proof_priority: coachState === COACH_STATE.PROGRESS,
-          diagnostic_observation: turn.diagnostic_observation || undefined,
-        },
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: phase,
-        coach_state: coachState,
-        assistant_message: assistantMessage,
-        green_rep: null,
-        detected_failure_strategy: null,
-        writeback_hints: {
-          proof_logged: turn.progress_integration?.proof_logged,
-          diagnostic_observation: turn.diagnostic_observation || undefined,
-        },
-        progress_integration: turn.progress_integration,
-        check_in_progress: turn.check_in_progress,
-        checkin: {
-          current_state: coachState,
-          gravity_rating: req.body?.gravity_rating ?? null,
-          message: userMessage,
-        },
-      });
+        proofSignals,
+        lastRep?.name,
+      );
+      stage1 = logged.stage1;
     }
 
-    checkInProgress = turn.check_in_progress;
-
-    const checkin = {
-      current_state: coachState,
-      gravity_rating: req.body?.gravity_rating ?? null,
-      message: userMessage,
-      session_phase: "coaching",
-      check_in_answers: turn.check_in_progress?.answers,
-      progress_integration: turn.progress_integration,
-      user_reported_proof: false,
-    };
+    const coachMemoryContext = await buildCoachMemoryContext({
+      user,
+      stage1,
+      map,
+      domain,
+      semanticQuery: userMessage,
+    });
 
     const prompts = await loadCoachPromptBundle();
     const user_coach_context = await buildCoachUserContext(user, stage1, map, domain);
-    user_coach_context.check_in_answers = turn.check_in_progress?.answers;
-    user_coach_context.progress_signals = turn.proof_signals || {};
-    user_coach_context.coaching_instructions =
-      "Check-in and proof integration are complete. Assign ONE Green Rep only if clearly needed — not the rep they just completed.";
+    user_coach_context.COACH_MEMORY_CONTEXT = coachMemoryContext;
+
+    const transition = resolveCoachingTransition({
+      messages,
+      userMessage,
+      map,
+      coachMemoryContext,
+    });
+
+    coachMemoryContext.coaching_transition = {
+      coaching_phase: transition.coaching_phase,
+      coaching_mode: transition.coaching_mode,
+      discovery_complete: transition.discovery_complete,
+      stop_discovery: transition.stop_discovery,
+      reasons: transition.reasons,
+    };
+    if (transition.coaching_brief) {
+      coachMemoryContext.coaching_brief = transition.coaching_brief;
+    }
+
+    const checkin = {
+      current_state: checkinState,
+      gravity_rating: gravityRating,
+      message: userMessage,
+      session_phase: "coaching",
+      coaching_phase: transition.coaching_phase,
+      coaching_mode: transition.coaching_mode,
+      discovery_complete: transition.discovery_complete,
+      stop_discovery: transition.stop_discovery,
+      coaching_brief: transition.coaching_brief,
+      user_reported_proof: Boolean(proofSignals.hasProof),
+      turn_count: messages.filter((m) => m?.role === "user").length + 1,
+    };
 
     const result = await aiService.coachReply({
       user_id: user.id,
@@ -417,47 +330,49 @@ const coachCheckin = async (req, res) => {
       prompts,
     });
 
-    const safeGreenRep = sanitizeCoachGreenRep(result.green_rep, {
-      progressMode: coachState === COACH_STATE.PROGRESS,
-      proofIntegrationActive: isProgressIntegrationActive(turn.progress_integration),
-      postProofDevaluation: isPostProofDevaluationActive(turn.progress_integration),
-      lastRepName: lastRep?.name,
-      allowNewRep: Boolean(result.writeback_hints?.assign_new_green_rep),
-      userReportedProof: checkin.user_reported_proof,
+    const assistantReply = sanitizeCoachUserFacingText(result.assistant_message, {
+      stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
     });
 
-    if (coachState === COACH_STATE.PROGRESS && !turn.progress_integration?.proof_logged) {
-      const logged = maybeAutoLogProof(
-        stage1,
-        domain,
-        userMessage,
-        turn.proof_signals || {},
-        lastRep?.name,
-      );
-      stage1 = logged.stage1;
+    const safeGreenRep = sanitizeCoachGreenRep(result.green_rep, {
+      lastRepName: lastRep?.name,
+      allowNewRep: Boolean(result.writeback_hints?.assign_new_green_rep),
+    });
+
+    const writebackHints = { ...(result.writeback_hints || {}) };
+    const resolvedGravity =
+      gravityRating ??
+      (writebackHints.gravity_rating != null
+        ? Number(writebackHints.gravity_rating)
+        : null) ??
+      inferGravityFromCoachState(checkinState);
+    if (resolvedGravity != null && Number.isFinite(resolvedGravity)) {
+      writebackHints.gravity_rating = resolvedGravity;
+    }
+    if (!writebackHints.current_failure_strategy && !writebackHints.current_resistance) {
+      writebackHints.current_failure_strategy =
+        map.protector_rule || map.failure_strategy?.rule || null;
+    }
+    if (!writebackHints.current_success_strategy) {
+      writebackHints.current_success_strategy =
+        map.success_strategy?.behaviour || null;
+    }
+    if (!writebackHints.cl_estimate && map.recovery_speed) {
+      const recovery = String(map.recovery_speed).toLowerCase();
+      if (recovery.includes("slow")) writebackHints.cl_estimate = 2;
+      else if (recovery.includes("fast")) writebackHints.cl_estimate = 3.5;
     }
 
-    const progressIntegrationDone = turn.progress_integration
-      ? { ...turn.progress_integration, step: "complete" }
-      : null;
-
-    const { nextStage1, session_id } = persistProgressTurn({
+    const { nextStage1 } = persistCoachTurn({
       stage1,
       map,
       domain,
-      checkinState: coachState,
-      gravityRating: checkin.gravity_rating,
+      checkinState: COACH_STATE.COACHING,
+      gravityRating: resolvedGravity,
       messages,
       userMessage,
-      assistantMessage: result.assistant_message,
-      checkInProgress: turn.check_in_progress,
-      progressIntegration: progressIntegrationDone,
-      coachState,
-      phase: coachState === COACH_STATE.PROGRESS ? "proof_integration" : "coaching",
-      writebackHints: {
-        ...(result.writeback_hints || {}),
-        green_rep_completed: turn.proof_signals?.repCompleted,
-      },
+      assistantMessage: assistantReply,
+      writebackHints,
       greenRep: safeGreenRep,
     });
 
@@ -465,13 +380,13 @@ const coachCheckin = async (req, res) => {
 
     return successResponse(res, "Coach reply", {
       domain,
-      session_phase:
-        coachState === COACH_STATE.PROGRESS ? "proof_integration_complete" : "coaching",
-      coach_state: coachState,
-      assistant_message: result.assistant_message,
+      session_phase: "coaching",
+      coach_state: COACH_STATE.COACHING,
+      assistant_message: assistantReply,
       green_rep: safeGreenRep,
       detected_failure_strategy: result.detected_failure_strategy || null,
-      writeback_hints: result.writeback_hints || {},
+      writeback_hints: writebackHints,
+      COACH_MEMORY_CONTEXT: coachMemoryContext,
       checkin,
     });
   } catch (err) {
@@ -499,6 +414,14 @@ const frictionRescue = async (req, res) => {
 
     const prompts = await loadCoachPromptBundle();
     const user_coach_context = await buildCoachUserContext(user, stage1, map, domain);
+    user_coach_context.COACH_MEMORY_CONTEXT = await buildCoachMemoryContext({
+      user,
+      stage1,
+      map,
+      domain,
+      semanticQuery: req.body?.message,
+    });
+
     const result = await aiService.frictionRescue({
       domain_map: map,
       active_goal_context: buildActiveGoalContext(map, domain),
@@ -513,7 +436,7 @@ const frictionRescue = async (req, res) => {
     });
 
     return successResponse(res, "Friction rescue", {
-      assistant_message: result.assistant_message,
+      assistant_message: sanitizeCoachUserFacingText(result.assistant_message),
       green_rep: result.green_rep || null,
     });
   } catch (err) {
@@ -522,7 +445,6 @@ const frictionRescue = async (req, res) => {
   }
 };
 
-/** GET /api/stage1/coach/history */
 const getCoachHistory = async (req, res) => {
   try {
     const user = await resolveUser(req);
@@ -543,7 +465,6 @@ const getCoachHistory = async (req, res) => {
   }
 };
 
-/** GET /api/stage1/coach/resume — messages for in-progress session (same domain, not ended) */
 const getCoachResume = async (req, res) => {
   try {
     const user = await resolveUser(req);
@@ -557,14 +478,11 @@ const getCoachResume = async (req, res) => {
     const messages = open?.messages?.length
       ? open.messages
       : getResumableCoachMessages(stage1, domain);
-    const phase = open?.phase || "coaching";
     return successResponse(res, "Coach resume", {
       domain,
       messages,
-      session_phase: phase,
-      coach_state: open?.coach_state || null,
-      check_in_progress: open?.check_in_progress || null,
-      progress_integration: open?.progress_integration || null,
+      session_phase: "coaching",
+      coach_state: COACH_STATE.COACHING,
       awaiting_user: open?.awaiting_user ?? false,
     });
   } catch (err) {
@@ -572,7 +490,6 @@ const getCoachResume = async (req, res) => {
   }
 };
 
-/** POST /api/stage1/coach/end — mark current open session as ended */
 const endCoachChat = async (req, res) => {
   try {
     const user = await resolveUser(req);
@@ -586,23 +503,39 @@ const endCoachChat = async (req, res) => {
     const { stage1: afterEnd, ended, session_id } = endCoachSession(stage1, domain);
     let nextStage1 = afterEnd;
     if (ended && session_id) {
-      const mapIdx = (afterEnd.domain_maps || []).findIndex((m) => m.domain === domain);
+      const autoSummary = buildSessionSummaryFromCoachLog(openBeforeEnd);
+      if (autoSummary) {
+        const sessions = [...(nextStage1.coach_session_log || [])];
+        const idx = sessions.findIndex((s) => s.id === session_id);
+        if (idx >= 0) {
+          sessions[idx] = { ...sessions[idx], session_summary: autoSummary };
+          nextStage1 = { ...nextStage1, coach_session_log: sessions };
+        }
+      }
+
+      const mapIdx = (nextStage1.domain_maps || []).findIndex((m) => m.domain === domain);
       if (mapIdx >= 0) {
-        const maps = [...afterEnd.domain_maps];
-        const openEntry = (maps[mapIdx].coaching_memory?.coaching_history || [])
-          .slice()
-          .reverse()
-          .find((e) => e.session_id === session_id);
-        const autoSummary = buildSessionSummaryFromCoachLog(openBeforeEnd);
+        const maps = [...nextStage1.domain_maps];
         maps[mapIdx] = finalizeCoachingMemorySession(maps[mapIdx], {
           domain,
           session_id,
-          session_summary: openEntry?.session_summary || autoSummary || null,
+          session_summary: autoSummary || null,
         });
-        maps[mapIdx] = syncProofLogsToCoachingMemory(maps[mapIdx], afterEnd.proof_logs || []);
-        nextStage1 = { ...afterEnd, domain_maps: maps };
+        maps[mapIdx] = syncProofLogsToCoachingMemory(maps[mapIdx], nextStage1.proof_logs || []);
+        nextStage1 = { ...nextStage1, domain_maps: maps };
       }
       await persistStage1ForUser(user.id, nextStage1);
+
+      if (openBeforeEnd?.messages?.length) {
+        indexCoachSession({
+          sessionId: session_id,
+          userId: user.id,
+          email: user.email,
+          domain,
+          messages: openBeforeEnd.messages,
+          summary: buildSessionSummaryFromCoachLog(openBeforeEnd),
+        }).catch(() => {});
+      }
     }
     return successResponse(res, ended ? "Coach session ended" : "No open session", {
       domain,
@@ -622,4 +555,5 @@ module.exports = {
   getCoachHistory,
   getCoachResume,
   endCoachChat,
+  COACH_STATE,
 };

@@ -281,8 +281,19 @@ const buildCoachingHomeOverlay = (map, opts = {}) => {
   }));
 
   const live = resolveLiveStrategies(memory, sessions, active);
-  const failureRule = live.failureRule;
-  const successRule = live.successRule;
+  const mapFailure =
+    map?.failure_strategy?.rule ||
+    map?.protector_rule ||
+    map?.failure_strategy?.behaviours?.[0] ||
+    null;
+  const mapSuccess =
+    map?.success_strategy?.behaviour ||
+    map?.success_strategy?.success_rule ||
+    map?.daily_rep?.name ||
+    null;
+
+  const failureRule = live.failureRule || mapFailure;
+  const successRule = live.successRule || mapSuccess;
 
   const progressLogs = memory.progress_logs || [];
   const sessionsEnded = sessions.filter((s) => s.ended_at).length;
@@ -295,6 +306,8 @@ const buildCoachingHomeOverlay = (map, opts = {}) => {
 
   return {
     source: "coaching_sessions",
+    gravity_rating_last: active?.gravity_rating_last ?? null,
+    cl_estimate_last: active?.cl_estimate ?? null,
     baseline_locked: Boolean(memory.initial_diagnostic?.captured_at),
     baseline_label: "Map Resistance (25 Q&A)",
     has_coaching_activity: hasActivity,

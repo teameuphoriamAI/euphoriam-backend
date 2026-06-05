@@ -8,12 +8,9 @@ const fetchContent = async (type) => {
 };
 
 /**
- * Active prompts for Stage 1 Python AI (coach, map resistance, friction).
- *
- * Layer order (Nathan V2):
- * 1. Coach Brain Prompt — goal-specific structural OS (Version 2 MVP)
- * 2. Brain Prompt — canonical library (48 signatures, reps, UC routing)
- * 3. stage1_* — turn-specific rules (JSON shape, Q&A flow)
+ * Stage 1 LLM prompts — required: Coach Brain + Brain Prompt.
+ * Optional admin overlays: stage1_daily_coach, stage1_map_resistance, stage1_friction_rescue.
+ * Templates, fallbacks, and JSON guardrails are hardcoded in stage1PromptSuite.js / prompts.py.
  */
 const loadCoachPromptBundle = async () => {
   const [coachBrain, brain, dailyCoach, friction] = await Promise.all([

@@ -1,6 +1,4 @@
 const openai = require("../config/openai");
-const { Prompt } = require("../models/promptModel");
-const { withDbSlot } = require("../config/sequelize");
 const { extractStructuredPacket } = require("./structuredPacketExtractor");
 const { normalizeSuccessStrategy } = require("./stage1SuccessStrategy");
 const {
@@ -12,67 +10,12 @@ const {
 } = require("./stage1MapStructure");
 const aiService = require("../clients/aiService");
 const { loadMapResistancePromptBundle } = require("./stage1Prompts");
+const { VORTEX_EXTRACT_RULES } = require("./stage1PromptSuite");
 
-const VORTEX_EXTRACT_RULES = `GOAL-SCOPED MAP RESISTANCE EXTRACTION (mandatory)
-
-You extract structural resistance for ONE specific goal from the Map Resistance Q&A transcript — NOT a generic life map.
-
-Use the Brain Prompt 48 vortex signature library to identify the primary signature for THIS outcome.
-You MUST return all of:
-- signature_id: code (e.g. "NE+S+R") OR full label ("Needs Not OK + Security + Rejection")
-- EO, lack_channel, avoid_type: human-readable labels from the signature library
-- orbit_pattern: optional orbit label if evident
-- failure_strategy: { title, rule, behaviours[] } — what the old structure predictably does toward this goal
-- top_3_avoidance_behaviours: exactly 3 specific sabotage behaviours (MUST match failure_strategy.behaviours)
-- success_strategy: { title, behaviour, belief?, success_rule?, behaviours[] } — opposite structure from Brain Prompt for this signature
-- daily_rep: { name, steps[], win_condition } — ONE green rep that interrupts failure strategy TODAY for this goal
-- win_condition: observable proof (e.g. "Walk done. Not perfect. Done.")
-- recovery_speed: "Slow" | "Moderate" | "Fast" — how quickly they collapse/pull back after action
-- core_fear, perceived_risk, past_pattern, required_role: short strings from transcript themes when evident
-
-Rules:
-- Anchor every field to ACTIVE_GOAL_CONTEXT (domain, goal, outcome, milestones).
-- daily_rep must come from the diagnosis — do NOT copy today_visible_action from goal onboarding unless it is clearly the green rep.
-- success_strategy must be the structural opposite for this vortex, not a restatement of desired_outcome.
-- Use null only when truly unknown — vortex fields are required.`;
-
-const FALLBACK_GOAL_EXTRACT_PROMPT = `${VORTEX_EXTRACT_RULES}
-
-Return ONLY valid JSON with these top-level keys:
-{
-  "signature_id": string,
-  "EO": string,
-  "lack_channel": string,
-  "avoid_type": string,
-  "orbit_pattern": string|null,
-  "protector_rule": string|null,
-  "failure_strategy": { "title": string, "rule": string, "behaviours": string[] },
-  "top_3_avoidance_behaviours": string[],
-  "success_strategy": { "title": string, "behaviour": string, "belief": string, "success_rule": string, "behaviours": string[] },
-  "daily_rep": { "name": string, "steps": string[], "win_condition": string },
-  "win_condition": string,
-  "recovery_speed": "Slow"|"Moderate"|"Fast",
-  "core_fear": string|null,
-  "perceived_risk": string|null,
-  "past_pattern": string|null,
-  "required_role": string|null
-}`;
-
-const getPromptByType = async (type) =>
-  withDbSlot(() =>
-    Prompt.findOne({
-      where: { type, isActive: true },
-      order: [["createdAt", "DESC"]],
-      raw: true,
-    }),
-  );
-
-const buildExtractSystemPrompt = (prompts, mapPromptContent) => {
+const buildExtractSystemPrompt = (prompts) => {
   const parts = [VORTEX_EXTRACT_RULES];
-  if (mapPromptContent?.trim()) {
-    parts.push(`--- MAP RESISTANCE EXTRACTION (admin) ---\n${mapPromptContent.trim()}`);
-  } else {
-    parts.push(FALLBACK_GOAL_EXTRACT_PROMPT);
+  if (prompts?.stage1_map_resistance?.trim()) {
+    parts.push(`--- MAP RESISTANCE (admin overlay) ---\n${prompts.stage1_map_resistance.trim()}`);
   }
   if (prompts?.brain_prompt?.trim()) {
     parts.push(
@@ -173,11 +116,10 @@ const extractViaOpenAI = async ({
   activeGoalContext,
   domain,
   prompts,
-  mapPromptContent,
 }) => {
   const transcriptText = JSON.stringify(transcript, null, 2);
   const contextText = JSON.stringify(activeGoalContext, null, 2);
-  const systemContent = buildExtractSystemPrompt(prompts, mapPromptContent);
+  const systemContent = buildExtractSystemPrompt(prompts);
 
   const response = await openai.chat.completions.create({
     model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-4o",
@@ -217,7 +159,7 @@ const extractGoalStructureFromTranscript = async ({
 }) => {
   const prompts = await loadMapResistancePromptBundle();
   let merged = {};
-  const mapPrompt = await getPromptByType("stage1_map_resistance");
+  const extractRules = VORTEX_EXTRACT_RULES;
 
   const tryMerge = (candidate) => {
     if (!candidate || typeof candidate !== "object") return;
@@ -250,7 +192,7 @@ const extractGoalStructureFromTranscript = async ({
 
   try {
     const packet = await extractStructuredPacket({
-      reportText: `Goal-scoped Map Resistance for domain "${domain}". ${VORTEX_EXTRACT_RULES}\n\nACTIVE_GOAL_CONTEXT:\n${JSON.stringify(activeGoalContext, null, 2)}`,
+      reportText: `Goal-scoped Map Resistance for domain "${domain}". ${extractRules}\n\nACTIVE_GOAL_CONTEXT:\n${JSON.stringify(activeGoalContext, null, 2)}`,
       transcript,
     });
     tryMerge(packetToDomainStructure(packet));
@@ -268,7 +210,6 @@ const extractGoalStructureFromTranscript = async ({
         activeGoalContext,
         domain,
         prompts,
-        mapPromptContent: mapPrompt?.content,
       }),
     );
     if (structureHasMinimalContent(merged, { transcript })) {

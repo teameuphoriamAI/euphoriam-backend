@@ -252,32 +252,27 @@ const sessionHasProof = (integration) => {
   );
 };
 
-/** Downplay after documented proof → POST_PROOF_DEVALUATION_LOOP */
-const detectPostProofDevaluation = (text, signals, integration, continuity = null) => {
-  const hasProofContext =
-    sessionHasProof(integration) ||
-    signals?.isStrong ||
-    signals?.hasProof ||
-    Boolean(continuity?.had_proof);
-  if (!hasProofContext) return false;
+/**
+ * Downplay only when THIS message (or proof already logged THIS session) + explicit downplay.
+ * Never use prior-session proof / continuity — avoids "not enough after a win" on setback days.
+ */
+const detectPostProofDevaluation = (text, signals, integration) => {
   const t = String(text || "").trim();
   if (!t) return false;
-  return Boolean(
-    signals?.downplaysResult ||
-      signals?.feelsNotEnough ||
-      DEVALUATION_PATTERNS.some((re) => re.test(t)),
-  );
+  const currentDownplay = DEVALUATION_PATTERNS.some((re) => re.test(t));
+  if (!currentDownplay) return false;
+
+  const turnProof = detectProgressSignals(t);
+  if (turnProof.isStrong && turnProof.hasProof) return true;
+
+  const state = normalizeProgressIntegration(integration);
+  if (!state?.answers?.acknowledge_note) return false;
+  const sessionProof = detectProgressSignals(state.answers.acknowledge_note);
+  return Boolean(sessionProof.isStrong && sessionProof.hasProof);
 };
 
-/** Seed progress state from prior session so first reply does not reset proof context */
-const buildProgressIntegrationFromContinuity = (continuity) => {
-  if (!continuity?.had_proof) return null;
-  const integration = initProgressIntegration({ isStrong: true, hasProof: true });
-  integration.proof_logged = true;
-  integration.answers.acknowledge_note =
-    continuity.recent_proof?.[0] || continuity.recent_proof?.[1] || null;
-  return integration;
-};
+/** Do not seed active progress from prior sessions — continuity is for opening copy only. */
+const buildProgressIntegrationFromContinuity = () => null;
 
 const shouldEnterProgressMode = (signals, { userState, checkInAnswers } = {}) => {
   if (userState === "progress") return true;
@@ -401,37 +396,21 @@ const buildPostLoopFollowUp = (text) => {
 
 const buildDevaluationLoopClose = (vague = false) => {
   if (vague) {
-    return [
-      "That's okay — you don't have to answer that cleanly right now.",
-      "",
-      "Hold that the action happened. We're not pushing the next step today.",
-    ].join("\n\n");
+    return "That's okay — we can leave it there for now.\n\nWhat feels like the real edge underneath that?";
   }
-  return [
-    "Thank you — that matters.",
-    "",
-    "Let this result count for today. No next action or milestone push from here.",
-  ].join("\n\n");
+  return "Thank you — that matters.\n\nWhat do you want to do with that insight today?";
 };
 
 const buildPostProofDevaluationMessage = buildPostProofDevaluationPackageOnce;
 const buildMeaningIntegrationClose = () => buildDevaluationLoopClose(false);
 
-/** Non-devaluation path: close without pushing next milestone */
+/** Bridge to continued coaching — never dead-end the session. */
 const buildProgressClosing = (signals, context = {}) => {
   void context;
   if (signals?.hasIncome) {
-    return [
-      "You generated income — that's proof you can move in the real world.",
-      "",
-      "Let that land before we plan anything else.",
-    ].join("\n");
+    return "You moved on income — that's real.\n\nWhat feels like the next honest step from here?";
   }
-  return [
-    "You have proof on the board — action happened outside your head.",
-    "",
-    "Let that land. We can pick up planning when you're ready.",
-  ].join("\n");
+  return null;
 };
 
 const appendQuestionToAck = (ackBody, question) => {
@@ -496,12 +475,8 @@ const advanceProgressIntegration = (integration, userMessage, context = {}) => {
     ...overrides,
   });
 
-  const devaluation = detectPostProofDevaluation(
-    text,
-    signals,
-    state,
-    context.continuity,
-  );
+  const turnOnlySignals = detectProgressSignals(text, context);
+  const devaluation = detectPostProofDevaluation(text, turnOnlySignals, state);
 
   if (
     state.step === PROGRESS_STEPS.MEANING_REFLECTION &&
@@ -601,9 +576,9 @@ const advanceProgressIntegration = (integration, userMessage, context = {}) => {
     state.step = PROGRESS_STEPS.COMPLETE;
     return baseReturn({
       assistant_message: buildProgressClosing(signals, context),
-      session_phase: "proof_integration_complete",
+      session_phase: "coaching",
       coach_state: COACH_SUBSTATE.COACHING,
-      ready_for_resistance_coaching: false,
+      ready_for_resistance_coaching: true,
     });
   }
 
@@ -625,9 +600,9 @@ const advanceProgressIntegration = (integration, userMessage, context = {}) => {
     }
     return baseReturn({
       assistant_message: buildProgressClosing(signals, context),
-      session_phase: "proof_integration_complete",
+      session_phase: "coaching",
       coach_state: COACH_SUBSTATE.COACHING,
-      ready_for_resistance_coaching: false,
+      ready_for_resistance_coaching: true,
     });
   }
 
@@ -639,10 +614,10 @@ const advanceProgressIntegration = (integration, userMessage, context = {}) => {
   }
 
   return baseReturn({
-    assistant_message: buildProgressClosing(signals, context),
-    session_phase: "proof_integration_complete",
+    assistant_message: null,
+    session_phase: "coaching",
     coach_state: COACH_SUBSTATE.COACHING,
-    ready_for_resistance_coaching: false,
+    ready_for_resistance_coaching: true,
   });
 };
 
@@ -681,6 +656,7 @@ const sanitizeCoachGreenRep = (
     progressMode = false,
     proofIntegrationActive = false,
     postProofDevaluation = false,
+    woundFlipActive = false,
     lastRepName = null,
     allowNewRep = false,
     userReportedProof = false,
@@ -690,7 +666,7 @@ const sanitizeCoachGreenRep = (
   const name = String(greenRep.name || "").trim();
   if (!name) return null;
 
-  if (proofIntegrationActive || postProofDevaluation || context.woundFlipActive) return null;
+  if (proofIntegrationActive || postProofDevaluation || woundFlipActive) return null;
   if (progressMode && userReportedProof && !allowNewRep) return null;
   if (progressMode && lastRepName && name.toLowerCase() === lastRepName.toLowerCase()) {
     return null;
@@ -711,11 +687,10 @@ const buildProgressCoachingInstructions = (_signals, integration, context = {}) 
       "One grounding question only, then STOP. No repeated reflection loops."
     );
   }
-  const repName = context.lastRepName || "the last Green Rep";
   return (
-    "Proof integration. Do NOT re-assign " +
-    repName +
-    ". Do NOT push next milestone. Return green_rep: null."
+    "Coaching turn. Discovery/check-in context is in the payload. " +
+    "Stay curious — at least two listening questions before naming failure strategy. " +
+    "Then one Green Rep with clear proof. Do not end the session early."
   );
 };
 

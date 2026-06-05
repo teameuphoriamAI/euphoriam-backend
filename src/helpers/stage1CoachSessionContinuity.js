@@ -4,14 +4,20 @@ const looksLikeProof = (text) => {
   const t = String(text || "").trim();
   if (t.length < 3) return false;
   return (
-    /\d+\s*dollar|\$|\/hr|an hr|generated|earned|competed|completed|outreach|reached out/i.test(
+    /\d+\s*(?:hrs?|hours?|dollars?)|\d+\s*dollar|\$|\/hr|an hr|generated|earned|competed|completed|outreach|reached out|worked\s+\d/i.test(
       t,
     ) || /\bi did it\b/i.test(t)
   );
 };
 
 const DEVALUATION_SNIPPET =
-  /\b(not enough|less money|too less|too small|not good enough|so+ less)\b/i;
+  /\b(not enough|too little|less money|too less|too small|not good enough|so+ less|feels its not enough|did too little)\b/i;
+
+const COLLAPSE_SNIPPET =
+  /\b(no motivation|did nothing|didn't do|did not|lazy|no earning|gave up|idk)\b/i;
+
+const WIN_SNIPPET =
+  /\b(earned|made|generated|worked|got paid|\$\d+|\d+\s*(?:hrs?|hours?|hr|hour|dollar))/i;
 
 const { isPlausibleGreenRepName } = require("./stage1CoachGreenRepUtils");
 
@@ -29,6 +35,46 @@ const extractUserSnippets = (session, { max = 8 } = {}) => {
     .filter((m) => m?.role === "user" && String(m.content || "").trim())
     .map((m) => String(m.content).trim())
     .slice(-max);
+};
+
+/** Win → devaluation → collapse chain from last session user messages. */
+const extractSessionNarrative = (session) => {
+  const snippets = extractUserSnippets(session, { max: 12 });
+  if (!snippets.length) return null;
+
+  const wins = snippets.filter((t) => WIN_SNIPPET.test(t));
+  const devals = snippets.filter((t) => DEVALUATION_SNIPPET.test(t));
+  const collapses = snippets.filter((t) => COLLAPSE_SNIPPET.test(t));
+
+  if (wins.length && (devals.length || collapses.length)) {
+    const win = wins[0].slice(0, 100);
+    const deval = devals[0]?.slice(0, 80);
+    const collapse = collapses[collapses.length - 1]?.slice(0, 80);
+    if (deval && collapse) {
+      return `you put in effort (${win}), judged it as not enough (${deval}), then motivation dropped (${collapse})`;
+    }
+    if (deval) {
+      return `you put in effort (${win}), then judged it as not enough (${deval})`;
+    }
+    return `you put in effort (${win}), then action stopped (${collapse})`;
+  }
+
+  const substantive = [...snippets].reverse().find((t) => t.length >= 20);
+  return substantive ? substantive.slice(0, 160) : snippets[snippets.length - 1]?.slice(0, 160) || null;
+};
+
+const detectSessionPattern = (session) => {
+  const snippets = extractUserSnippets(session, { max: 12 });
+  const combined = snippets.join(" ").toLowerCase();
+  const hasWin = WIN_SNIPPET.test(combined);
+  const hasDeval = DEVALUATION_SNIPPET.test(combined);
+  const hasCollapse = COLLAPSE_SNIPPET.test(combined);
+  if (hasWin && hasDeval && hasCollapse) {
+    return "proof_devaluation_collapse";
+  }
+  if (hasWin && hasDeval) return "proof_devaluation";
+  if (hasDeval && hasCollapse) return "devaluation_collapse";
+  return null;
 };
 
 /**
@@ -49,12 +95,15 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
   const lastEnded = getLastEndedCoachSession(stage1, domain);
   const userSnippets = extractUserSnippets(lastEnded);
   const integration = lastEnded?.progress_integration || null;
+  const lastSessionNarrative = extractSessionNarrative(lastEnded);
+  const detectedPattern = detectSessionPattern(lastEnded);
 
   const proofFromSession = userSnippets.filter((t) => looksLikeProof(t));
   const proofActions = [
-    integration?.answers?.acknowledge_note,
-    ...proofLogs.map((p) => p.action),
     ...proofFromSession,
+    integration?.answers?.acknowledge_note,
+    lastSessionNarrative,
+    ...proofLogs.map((p) => p.action),
   ]
     .filter(Boolean)
     .map((t) => String(t).trim().slice(0, 200));
@@ -108,12 +157,17 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
     last_session_id: lastEnded?.id || null,
     last_session_ended_at: lastEnded?.ended_at || null,
     recent_proof: uniqueProof,
+    last_session_narrative: lastSessionNarrative,
+    detected_pattern: detectedPattern,
     devaluation_notes: uniqueDevaluation,
     meaning_reflection: meaningReflection,
-    had_proof: uniqueProof.length > 0,
+    had_proof: uniqueProof.length > 0 || Boolean(lastSessionNarrative),
     had_devaluation: uniqueDevaluation.length > 0 || hadDevaluationFlow,
     last_green_rep: repFromContext || repFromSession || lastValidRep || null,
-    session_summary: lastEnded?.session_summary || coachContext?.last_session_summary || null,
+    session_summary:
+      lastEnded?.session_summary ||
+      coachContext?.last_session_summary ||
+      (lastSessionNarrative ? `Last session: ${lastSessionNarrative}` : null),
   };
 };
 
@@ -152,6 +206,11 @@ const buildContinuityOpeningQuestion = (continuity) => {
 /** Auto-summary when user ends coach session */
 const buildSessionSummaryFromCoachLog = (session) => {
   if (!session) return null;
+  if (session.session_summary?.trim()) return session.session_summary.trim();
+
+  const narrative = extractSessionNarrative(session);
+  if (narrative) return narrative;
+
   const snippets = extractUserSnippets(session, { max: 12 });
   const integration = session.progress_integration;
   const parts = [];
@@ -198,4 +257,6 @@ module.exports = {
   buildContinuityRecapLines,
   buildContinuityOpeningQuestion,
   buildSessionSummaryFromCoachLog,
+  extractSessionNarrative,
+  detectSessionPattern,
 };

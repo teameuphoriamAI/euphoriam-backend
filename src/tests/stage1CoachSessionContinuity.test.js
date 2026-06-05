@@ -19,22 +19,28 @@ describe("stage1CoachSessionContinuity", () => {
       had_proof: true,
       had_devaluation: true,
       recent_proof: ["i competed 12 dollar an hr"],
+      last_session_narrative:
+        "you put in effort (as i did 12 hrs yesterday), judged it as not enough (felt too little), then motivation dropped (idk)",
+      session_summary:
+        "you put in effort (as i did 12 hrs yesterday), judged it as not enough (felt too little), then motivation dropped (idk)",
       devaluation_notes: ["its soo less money", "not good enough"],
     };
     const msg = buildCoachOpeningCheckin({
       firstName: "Yashal",
       activeGoalContext: { goal_name: "12 dollar an hour", current_milestone: "10 dollar" },
       map: { top_3_avoidance_behaviours: ["overthinking"] },
-      memory: {},
-      coachContext: {},
-      continuity,
+      memory: { coaching_sessions: [{ ended_at: "2026-06-01", turn_count: 2 }] },
+      coachContext: { coaching_sessions: [{ ended_at: "2026-06-01" }] },
+      continuity: { ...continuity, last_session_ended_at: "2026-06-01" },
     });
 
-    expect(msg).toContain("Last session (carried forward)");
-    expect(msg).toContain("i competed 12 dollar an hr");
-    expect(msg).toContain("not enough");
-    expect(msg).not.toContain("successfully generated 50 dollar");
-    expect(msg).toMatch(/Since that session/i);
+    expect(msg).not.toContain("Last session (carried forward)");
+    expect(msg).not.toContain("Current Goal:");
+    expect(msg).toMatch(/Last time we talked/i);
+    expect(msg).toContain("12 hrs yesterday");
+    expect(msg).toMatch(/Hey Yashal/i);
+    expect(msg).toMatch(/How are things going today/i);
+    expect(msg).not.toMatch(/i competed 12 dollar an hr/);
   });
 
   test("gatherSessionContinuity from ended coach session log", () => {
@@ -82,14 +88,27 @@ describe("stage1CoachSessionContinuity", () => {
   test("buildSessionSummaryFromCoachLog", () => {
     const summary = buildSessionSummaryFromCoachLog({
       messages: [
-        { role: "user", content: "i competed 12 dollar an hr" },
-        { role: "user", content: "less money" },
+        { role: "user", content: "i didnt do anything today no earning today" },
+        { role: "user", content: "as i did 12 hrs yesterday i felt i did too little so today i didnt earn anything no motivation" },
+        { role: "user", content: "idk" },
       ],
       progress_integration: {
         answers: { acknowledge_note: "12 dollar an hr", meaning_reflection: "i am capable" },
       },
     });
-    expect(summary).toContain("Proof:");
-    expect(summary).toContain("capable");
+    expect(summary).toContain("12 hrs yesterday");
+    expect(summary).toContain("too little");
+  });
+
+  test("extractSessionNarrative detects win devaluation collapse", () => {
+    const { extractSessionNarrative } = require("../helpers/stage1CoachSessionContinuity");
+    const narrative = extractSessionNarrative({
+      messages: [
+        { role: "user", content: "as i did 12 hrs yesterday i felt i did too little" },
+        { role: "user", content: "so today i didnt earn anything no motivation" },
+      ],
+    });
+    expect(narrative).toMatch(/12 hrs yesterday/i);
+    expect(narrative).toMatch(/too little/i);
   });
 });

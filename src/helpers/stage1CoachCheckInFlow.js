@@ -50,8 +50,11 @@ const resolveLastGreenRep = (memory, map, continuity = null) => {
 
 const CHECK_IN_STEPS = Object.freeze({
   SINCE_LAST: "since_last_session",
+  /** @deprecated legacy — mapped to FOLLOW_UP in normalizeProgress */
   GREEN_REP: "green_rep_completed",
+  /** @deprecated legacy — mapped to FOLLOW_UP */
   BLOCKER: "current_blocker",
+  FOLLOW_UP: "follow_up",
   COMPLETE: "complete",
 });
 
@@ -76,9 +79,12 @@ const normalizeProgress = (raw) => {
     ...emptyCheckInProgress().answers,
     ...(raw.answers && typeof raw.answers === "object" ? raw.answers : {}),
   };
-  const step = Object.values(CHECK_IN_STEPS).includes(raw.step)
+  let step = Object.values(CHECK_IN_STEPS).includes(raw.step)
     ? raw.step
     : CHECK_IN_STEPS.SINCE_LAST;
+  if (step === CHECK_IN_STEPS.GREEN_REP || step === CHECK_IN_STEPS.BLOCKER) {
+    step = CHECK_IN_STEPS.FOLLOW_UP;
+  }
   return {
     step,
     answers,
@@ -102,111 +108,37 @@ const parseYesNo = (text) => {
   return null;
 };
 
-/**
- * Short opening recap + exactly ONE question (no multi-question form).
- */
+const { buildHumanCoachOpening } = require("./stage1CoachNaturalLanguage");
+
+/** Natural human greeting + memory recap + exactly ONE opening question. */
+const buildCoachOpeningCheckin = (ctx) => buildHumanCoachOpening(ctx);
+
 const {
-  buildContinuityRecapLines,
-  buildContinuityOpeningQuestion,
-} = require("./stage1CoachSessionContinuity");
-
-const buildCoachOpeningCheckin = ({
-  firstName,
-  activeGoalContext,
-  map,
-  memory,
-  coachContext,
-  continuity = null,
-}) => {
-  const goal =
-    activeGoalContext?.goal_name ||
-    activeGoalContext?.specific_goal ||
-    map?.goal_title ||
-    "your goal";
-  const milestone =
-    activeGoalContext?.current_milestone ||
-    activeGoalContext?.milestones?.day_7 ||
-    "—";
-
-  const lastRep = resolveLastGreenRep(memory, map, continuity);
-  const patterns = collectRecentPatterns(map, memory, coachContext);
-  const recapLines = buildContinuityRecapLines(continuity);
-
-  const lines = [];
-  lines.push(firstName ? `Welcome back ${firstName}.` : "Welcome back.");
-  lines.push("");
-  lines.push("Current Goal:");
-  lines.push(goal);
-  lines.push("");
-  lines.push("Current Milestone:");
-  lines.push(milestone);
-
-  if (recapLines.length) {
-    lines.push("");
-    lines.push(...recapLines);
-  }
-
-  if (lastRep?.name) {
-    lines.push("");
-    lines.push("Last Green Rep:");
-    lines.push(lastRep.name);
-  }
-
-  if (patterns.length) {
-    lines.push("");
-    lines.push("Recent Patterns:");
-    for (const p of patterns) {
-      lines.push(`• ${p}`);
-    }
-  }
-
-  lines.push("");
-  lines.push(buildContinuityOpeningQuestion(continuity));
-
-  return lines.join("\n");
-};
+  buildHumanAcknowledgment,
+  buildAdaptiveFollowUpQuestion,
+  isSubstantiveCheckInAnswer,
+} = require("./stage1CoachNaturalLanguage");
+const { detectProgressSignals } = require("./stage1CoachProgress");
 
 const questionForStep = (step, { lastRepName, answers }) => {
-  const repName = lastRepName || "your last Green Rep";
   switch (step) {
     case CHECK_IN_STEPS.SINCE_LAST:
-      return "What happened since our last session?";
-    case CHECK_IN_STEPS.GREEN_REP:
-      return `Did you complete the previous Green Rep — ${repName}?`;
-    case CHECK_IN_STEPS.BLOCKER:
-      if (answers.green_rep_completed === false) {
-        return "What stopped you?";
-      }
-      return "What feels hardest right now?";
+      return "How have things been since we last spoke?";
+    case CHECK_IN_STEPS.FOLLOW_UP:
+      return buildAdaptiveFollowUpQuestion(answers, { lastRepName });
     default:
       return null;
   }
 };
 
-/** Brief acknowledgment before the next single question. */
-const buildAcknowledgment = (stepJustAnswered, userMessage) => {
-  const snippet = String(userMessage || "").trim().slice(0, 120);
-  switch (stepJustAnswered) {
-    case CHECK_IN_STEPS.SINCE_LAST:
-      return snippet
-        ? `Got it — thanks for sharing.`
-        : `Thanks — I'm with you.`;
-    case CHECK_IN_STEPS.GREEN_REP:
-      return `Thanks for being straight about that.`;
-    case CHECK_IN_STEPS.BLOCKER:
-      return `I hear you.`;
-    default:
-      return "Thanks.";
-  }
-};
-
 /**
- * After user message: save answer, advance step, return next assistant line (one question only).
+ * After user message: adaptive check-in — one question at a time, follow energy.
  */
 const advanceCheckInConversation = (progress, userMessage, context = {}) => {
   const state = normalizeProgress(progress);
   const text = String(userMessage || "").trim();
   const lastRepName = context.lastRepName || null;
+  const signals = detectProgressSignals(text, { lastRepName, map: context.map });
 
   if (!text) {
     return {
@@ -219,30 +151,26 @@ const advanceCheckInConversation = (progress, userMessage, context = {}) => {
 
   if (state.step === CHECK_IN_STEPS.SINCE_LAST) {
     state.answers.since_last_session = text;
-    state.step = CHECK_IN_STEPS.GREEN_REP;
-    const ack = buildAcknowledgment(CHECK_IN_STEPS.SINCE_LAST, text);
-    const q = questionForStep(CHECK_IN_STEPS.GREEN_REP, {
-      lastRepName,
-      answers: state.answers,
-    });
-    return {
-      progress: state,
-      assistant_message: `${ack}\n\n${q}`,
-      session_phase: "check_in",
-      ready_for_coaching: false,
-    };
-  }
-
-  if (state.step === CHECK_IN_STEPS.GREEN_REP) {
     const yn = parseYesNo(text);
-    state.answers.green_rep_completed = yn;
-    state.answers.green_rep_completed_note = text;
-    state.step = CHECK_IN_STEPS.BLOCKER;
-    const ack = buildAcknowledgment(CHECK_IN_STEPS.GREEN_REP, text);
-    const q = questionForStep(CHECK_IN_STEPS.BLOCKER, {
-      lastRepName,
-      answers: state.answers,
-    });
+    if (yn !== null) {
+      state.answers.green_rep_completed = yn;
+      state.answers.green_rep_completed_note = text;
+    }
+
+    if (isSubstantiveCheckInAnswer(text, signals)) {
+      state.answers.current_blocker = text;
+      state.step = CHECK_IN_STEPS.COMPLETE;
+      return {
+        progress: state,
+        assistant_message: null,
+        session_phase: signals.isStrong || signals.hasProof ? "proof_integration" : "coaching",
+        ready_for_coaching: true,
+      };
+    }
+
+    state.step = CHECK_IN_STEPS.FOLLOW_UP;
+    const ack = buildHumanAcknowledgment(text, signals);
+    const q = buildAdaptiveFollowUpQuestion(state.answers, { lastRepName });
     return {
       progress: state,
       assistant_message: `${ack}\n\n${q}`,
@@ -251,8 +179,14 @@ const advanceCheckInConversation = (progress, userMessage, context = {}) => {
     };
   }
 
-  if (state.step === CHECK_IN_STEPS.BLOCKER) {
+  if (state.step === CHECK_IN_STEPS.FOLLOW_UP) {
+    state.answers.follow_up_note = text;
     state.answers.current_blocker = text;
+    const yn = parseYesNo(text);
+    if (yn !== null && state.answers.green_rep_completed == null) {
+      state.answers.green_rep_completed = yn;
+      state.answers.green_rep_completed_note = text;
+    }
     state.step = CHECK_IN_STEPS.COMPLETE;
     return {
       progress: state,
@@ -289,9 +223,10 @@ const inferCheckInProgressFromMessages = (messages) => {
     state.step = CHECK_IN_STEPS.GREEN_REP;
   }
   if (users[1]) {
+    state.answers.follow_up_note = users[1];
     state.answers.green_rep_completed_note = users[1];
     state.answers.green_rep_completed = parseYesNo(users[1]);
-    state.step = CHECK_IN_STEPS.BLOCKER;
+    state.step = CHECK_IN_STEPS.FOLLOW_UP;
   }
   if (users[2]) {
     state.answers.current_blocker = users[2];

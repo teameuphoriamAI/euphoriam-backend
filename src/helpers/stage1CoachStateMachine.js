@@ -24,8 +24,19 @@ const {
   COACH_SUBSTATE,
 } = require("./stage1CoachProgress");
 
+const {
+  detectStruggleSetback,
+  startDiscovery,
+  advanceDiscovery,
+  isDiscoveryActive,
+  discoveryContextForAi,
+  pickDiscoveryQuestion,
+  briefAck,
+} = require("./stage1CoachDiscovery");
+
 const COACH_STATE = Object.freeze({
   CHECK_IN: "check_in",
+  DISCOVERY: "discovery",
   PROGRESS: "progress",
   POST_PROOF_DEVALUATION: "post_proof_devaluation",
   WOUND_EDGE: "wound_edge",
@@ -80,20 +91,6 @@ const proofPriorityOverride = (userMessage, messages, context = {}) => {
   }
   if (isProgressIntegrationActive(context.progressIntegration)) {
     return { override: true, signals: current, reason: "active_progress_integration" };
-  }
-  const saved = normalizeProgressIntegration(context.progressIntegration);
-  if (saved?.proof_logged || saved?.answers?.acknowledge_note) {
-    const merged = mergeSessionProofSignals(saved, userMessage, context);
-    return { override: true, signals: merged, reason: "session_proof" };
-  }
-  const continuity = context.continuity;
-  if (continuity?.had_proof && continuity.recent_proof?.length) {
-    const merged = mergeSessionProofSignals(
-      { answers: { acknowledge_note: continuity.recent_proof[0] }, signals: {} },
-      userMessage,
-      context,
-    );
-    return { override: true, signals: merged, reason: "continuity_proof" };
   }
   return { override: false, signals: current };
 };
@@ -195,10 +192,12 @@ const handleProgressStateTurn = ({
 const bumpCheckInStep = (progress) => {
   const state = normalizeCheckInProgress(progress);
   if (state.step === CHECK_IN_STEPS.SINCE_LAST) {
-    state.step = CHECK_IN_STEPS.GREEN_REP;
-  } else if (state.step === CHECK_IN_STEPS.GREEN_REP) {
-    state.step = CHECK_IN_STEPS.BLOCKER;
-  } else if (state.step === CHECK_IN_STEPS.BLOCKER) {
+    state.step = CHECK_IN_STEPS.FOLLOW_UP;
+  } else if (
+    state.step === CHECK_IN_STEPS.FOLLOW_UP ||
+    state.step === CHECK_IN_STEPS.GREEN_REP ||
+    state.step === CHECK_IN_STEPS.BLOCKER
+  ) {
     state.step = CHECK_IN_STEPS.COMPLETE;
   }
   return state;
@@ -217,9 +216,55 @@ const nextQuestionWouldRepeat = (assistantMessage, messages) => {
   return false;
 };
 
-const handleCheckInStateTurn = ({ userMessage, checkInProgress, lastRep, messages }) => {
+const handleDiscoveryTurn = ({ userMessage, checkInProgress }) => {
+  const discovery = checkInProgress?.discovery;
+  if (!isDiscoveryActive(discovery)) {
+    const started = startDiscovery(userMessage);
+    const q = pickDiscoveryQuestion(started, userMessage);
+    started.questions_asked = [q];
+    started.step = 1;
+    return {
+      coach_state: COACH_STATE.DISCOVERY,
+      session_phase: "discovery",
+      assistant_message: `${briefAck(userMessage)}\n\n${q}`,
+      ready_for_coaching: false,
+      check_in_progress: {
+        ...checkInProgress,
+        discovery: started,
+        step: CHECK_IN_STEPS.COMPLETE,
+      },
+      progress_integration: null,
+      green_rep: null,
+    };
+  }
+
+  const flow = advanceDiscovery(discovery, userMessage);
+  const nextDiscovery = flow.discovery;
+  const check_in_progress = {
+    ...checkInProgress,
+    discovery: nextDiscovery,
+    step: CHECK_IN_STEPS.COMPLETE,
+  };
+
+  if (flow.ready_for_coaching) {
+    check_in_progress.discovery_context = discoveryContextForAi(nextDiscovery);
+  }
+
+  return {
+    coach_state: flow.ready_for_coaching ? COACH_STATE.COACHING : COACH_STATE.DISCOVERY,
+    session_phase: flow.session_phase || "discovery",
+    assistant_message: flow.assistant_message,
+    ready_for_coaching: Boolean(flow.ready_for_coaching),
+    check_in_progress,
+    progress_integration: null,
+    green_rep: null,
+  };
+};
+
+const handleCheckInStateTurn = ({ userMessage, checkInProgress, lastRep, messages, map }) => {
   let flow = advanceCheckInConversation(checkInProgress, userMessage, {
     lastRepName: lastRep?.name,
+    map,
   });
 
   let guard = 0;
@@ -232,6 +277,7 @@ const handleCheckInStateTurn = ({ userMessage, checkInProgress, lastRep, message
     const bumped = bumpCheckInStep(flow.progress);
     flow = advanceCheckInConversation(bumped, userMessage, {
       lastRepName: lastRep?.name,
+      map,
     });
     guard += 1;
   }
@@ -272,7 +318,8 @@ const resolveCoachTurn = ({
   userSelectedState: _userSelectedState = "clear",
 }) => {
   const checkInProgress = normalizeCheckInProgress(rawCheckIn);
-  const lastRep = resolveLastGreenRep(map, map);
+  const memoryForRep = map?.coaching_memory || map;
+  const lastRep = resolveLastGreenRep(memoryForRep, map, checkInProgress?.continuity);
   const savedProgress = normalizeProgressIntegration(openSession?.progress_integration);
 
   const proof = proofPriorityOverride(userMessage, messages, {
@@ -304,13 +351,24 @@ const resolveCoachTurn = ({
     });
   }
 
+  if (isDiscoveryActive(checkInProgress?.discovery)) {
+    return { ...handleDiscoveryTurn({ userMessage, checkInProgress }), stage1 };
+  }
+
+  const turnSignals = detectProgressSignals(userMessage, { lastRepName: lastRep?.name });
+  if (
+    detectStruggleSetback(userMessage) &&
+    !turnSignals.isStrong &&
+    !turnSignals.hasProof
+  ) {
+    return { ...handleDiscoveryTurn({ userMessage, checkInProgress }), stage1 };
+  }
+
   if (isCheckInActive(checkInProgress)) {
-    const turnSignals = detectProgressSignals(userMessage, { lastRepName: lastRep?.name });
     const downplayAfterProof = detectPostProofDevaluation(
       userMessage,
       turnSignals,
       savedProgress,
-      checkInProgress?.continuity,
     );
     if (turnSignals.isStrong && downplayAfterProof) {
       return handleProgressStateTurn({
@@ -330,6 +388,7 @@ const resolveCoachTurn = ({
       checkInProgress,
       lastRep,
       messages,
+      map,
     });
     if (!checkIn.ready_for_coaching) return { ...checkIn, stage1 };
 
@@ -365,10 +424,7 @@ const resolveCoachTurn = ({
   return {
     coach_state: COACH_STATE.COACHING,
     session_phase: "coaching",
-    assistant_message: buildProgressClosing(proof.signals, {
-      lastRepName: lastRep?.name,
-      map,
-    }),
+    assistant_message: null,
     ready_for_coaching: true,
     check_in_progress: checkInProgress,
     progress_integration: openSession?.progress_integration || null,

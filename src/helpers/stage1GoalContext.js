@@ -1,6 +1,9 @@
 const { DOMAIN_LABELS } = require("../constants/domains");
 const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
-
+const {
+  buildMapResistanceIntroText,
+  getStage1MapResistanceWelcomeMessage,
+} = require("./stage1PromptSuite");
 /**
  * ACTIVE_GOAL_CONTEXT for goal-scoped map resistance Q&A (Stage 1).
  * @see docs/EUPHORIAM-STAGE1-STAGE2-README.md
@@ -36,57 +39,9 @@ const buildActiveGoalContext = (map, domain) => {
   };
 };
 
-const buildMapResistanceIntroText = (goalContext) => {
-  const ctx = goalContext || {};
-  return `STAGE 1 — MAP RESISTANCE (goal-scoped diagnostic)
-
-You are mapping the hidden structure that activates when this person tries to achieve ONE specific goal — not a generic life diagnosis.
-
-ACTIVE_GOAL_CONTEXT (anchor every question to this):
-${JSON.stringify(ctx, null, 2)}
-
-Rules:
-- Ask numbered questions (Q1, Q2, …) one at a time.
-- Each question must relate to resistance, avoidance, protector patterns, or behaviour tied to this goal.
-- Do NOT ask which life area to focus on — the domain is already "${ctx.domain_label || ctx.active_domain}".
-- Do NOT run the 25-Question Deep Intake Engine or generic life-direction Q1.
-- Do not produce a full diagnostic report in chat; intake only.
-- Target ~${MAP_RESISTANCE_TARGET_QUESTIONS} focused questions before completion.
-- Match diagnostic intake style: always acknowledge the user's last message briefly, then ask the question (or re-ask if invalid).`;
-};
-
-/**
- * First assistant message for Map Resistance (domain already chosen).
- */
-const getStage1MapResistanceWelcomeMessage = (userName, goalContext = {}) => {
-  const displayName =
-    typeof userName === "string" && userName.trim().length
-      ? userName.trim()
-      : "there";
-  const label = goalContext.domain_label || goalContext.active_domain || "this domain";
-  const goal = goalContext.specific_goal || goalContext.goal_name || "your goal";
-  const outcome =
-    goalContext.measurable_outcome || "your 90-day outcome";
-
-  return [
-    `Hi ${displayName}, we're mapping the resistance structure for your **${label}** goal — not a generic life diagnostic.`,
-    "",
-    `**Your goal:** ${goal}`,
-    `**90-day outcome:** ${outcome}`,
-    "",
-    `About ${MAP_RESISTANCE_TARGET_QUESTIONS} focused questions — your goal and milestones are already set, so we isolate resistance around this outcome only.`,
-    "",
-    "One question at a time. Every question stays anchored to this goal.",
-    "",
-    "**Q1 — Resistance when pursuing this goal**",
-    `When you move toward "${goal}", what do you usually do instead, avoid, or tell yourself first that slows you down?`,
-  ].join("\n");
-};
-
 /**
  * User prompt for ongoing map-resistance turns (goal-scoped, not 25Q life intake).
- */
-const buildMapResistanceIntakePrompt = async ({
+ */const buildMapResistanceIntakePrompt = async ({
   transcript = [],
   userName,
   resumeNotice,

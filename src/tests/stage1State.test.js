@@ -29,6 +29,15 @@ describe("membershipDomains", () => {
     expect(getTier({ membership: { isCreatorClubSilver: true } })).toBe("silver");
   });
 
+  test("accelerate tier from membership flag or product title", () => {
+    expect(getTier({ membership: { isCreatorClubAccelerate: true } })).toBe("accelerate");
+    expect(
+      getTier({
+        membership: { products: [{ title: "Euphoriam Accelerate" }] },
+      }),
+    ).toBe("accelerate");
+  });
+
   test("canActivateDomain respects limit", () => {
     const user = { membership: { isCreatorClubBronze: true } };
     expect(canActivateDomain(user, 0, false)).toBe(true);

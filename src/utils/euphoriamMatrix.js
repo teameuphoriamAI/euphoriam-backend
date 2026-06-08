@@ -463,12 +463,7 @@ const calculateSignal = ({
   gravityLoad,
   gravityDepth = 2,
 }) => {
-  console.log("[calculateSignal] Input:", {
-    qgcActivation,
-    cl,
-    gravityLoad,
-    gravityDepth,
-  });
+
 
   // Validate inputs
   qgcActivation = Math.max(0, Math.min(100, qgcActivation));
@@ -476,12 +471,7 @@ const calculateSignal = ({
   gravityLoad = Math.max(0, Math.min(100, gravityLoad));
   gravityDepth = Math.max(1, Math.min(3, gravityDepth));
 
-  console.log("[calculateSignal] After validation:", {
-    qgcActivation,
-    cl,
-    gravityLoad,
-    gravityDepth,
-  });
+
 
   // Depth scaling multipliers (from documentation)
   const depthMultipliers = {
@@ -491,68 +481,26 @@ const calculateSignal = ({
   };
 
   const depthMultiplier = depthMultipliers[gravityDepth];
-  console.log(
-    "[calculateSignal] Depth multiplier:",
-    depthMultiplier,
-    "for depth",
-    gravityDepth
-  );
+  
 
   // Calculate QGC × CL component
   const qgcClComponent = (qgcActivation / 100) * (cl / 5) * 100;
-  console.log(
-    "[calculateSignal] QGC × CL component:",
-    qgcClComponent,
-    "=",
-    qgcActivation,
-    "/ 100 *",
-    cl,
-    "/ 5 * 100"
-  );
+  
 
   // Calculate Gravity Penalty with depth scaling
   const gravityPenalty = gravityLoad * depthMultiplier;
-  console.log(
-    "[calculateSignal] Gravity penalty (gravityLoad × depthMultiplier):",
-    gravityPenalty,
-    "=",
-    gravityLoad,
-    "×",
-    depthMultiplier
-  );
-
+  
   // Calculate Signal Output
   // Signal = (QGC × Hold) - GravityPenalty
   // Where Hold = CL Holding Capacity (simplified as CL for now)
   const clHolding = (cl / 5) * 100;
-  console.log(
-    "[calculateSignal] CL Holding (CL / 5 * 100):",
-    clHolding,
-    "=",
-    cl,
-    "/ 5 * 100"
-  );
+
 
   const qgcClProduct = (qgcActivation * clHolding) / 100;
-  console.log(
-    "[calculateSignal] QGC × CL Holding product:",
-    qgcClProduct,
-    "=",
-    qgcActivation,
-    "×",
-    clHolding,
-    "/ 100"
-  );
+
 
   const signalRaw = qgcClProduct - gravityPenalty;
-  console.log(
-    "[calculateSignal] Raw signal (QGC×CL - GravityPenalty):",
-    signalRaw,
-    "=",
-    qgcClProduct,
-    "-",
-    gravityPenalty
-  );
+ 
 
   // Normalize Signal Output to 0-100 scale
   // According to Euphoriam Formula: Signal Output = (QGC × CL) - Gravity
@@ -575,14 +523,7 @@ const calculateSignal = ({
   // Alternative: Simple clamp (loses negative information)
   // const signalOutput = Math.max(0, Math.min(100, signalRaw));
   
-  console.log(
-    "[calculateSignal] Normalized signal output:",
-    signalOutput,
-    "(raw was",
-    signalRaw,
-    signalRaw < 0 ? "- repulsion state" : "- attraction/lock-in state",
-    ")"
-  );
+
 
   // Calculate Integration Angle (geometry metric)
   const numerator = (qgcActivation * clHolding) / 100;

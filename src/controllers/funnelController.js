@@ -12,6 +12,11 @@ const {
   issueSessionForAccess,
   listFunnelDiagnostics,
 } = require("../helpers/funnelAccess");
+const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
+const { uploadBufferToSupabase } = require("../utils/storage");
+const { sendEmail } = require("../utils/email");
+const { diagnosticReportEmail } = require("../utils/emailTemplate/initialDignosticReport");
+const fs = require("fs").promises;
 
 /** GET /api/funnel/access-status */
 const getAccessStatus = async (req, res) => {
@@ -203,9 +208,109 @@ const getReport = async (req, res) => {
     email: diagnostic.email,
     pdf_url: diagnostic.pdfUrl,
     report: reportHtml,
+    report_text: reportHtml,
     created_at: diagnostic.createdAt,
     data,
   });
+};
+
+/**
+ * Persist funnel diagnostic after Q1–Q25 + full report generation (socket finalize).
+ */
+const completeDiagnostic = async ({
+  funnel_access_id,
+  email,
+  transcript = [],
+  reportText = "",
+  metrics = {},
+  chat_id = null,
+}) => {
+  const userName = email?.split("@")[0] || "User";
+  const diagnostic = await withDbSlot(() =>
+    Diagnostic.create({
+      email,
+      funnel_access_id: funnel_access_id || null,
+      title: `Euphoriam Diagnostic — ${userName}`,
+      data: {
+        diagnosticVersion: 3,
+        generatedAt: new Date(),
+        profile: { name: userName, email },
+        metrics,
+        intakeTranscript: transcript,
+        aiReport: reportText,
+        funnelMode: true,
+      },
+    }),
+  );
+
+  if (funnel_access_id) {
+    await withDbSlot(() =>
+      require("../config/sequelize").sequelize.query(
+        `UPDATE funnel_access
+         SET diagnostics_completed_count = COALESCE(diagnostics_completed_count, 0) + 1,
+             report_generated_count = COALESCE(report_generated_count, 0) + 1,
+             "updatedAt" = NOW()
+         WHERE id = :id`,
+        { replacements: { id: funnel_access_id } },
+      ),
+    );
+  }
+
+  let pdfUrl = null;
+  try {
+    const pdfPath = await generateDiagnosticPdf(diagnostic);
+    if (pdfPath) {
+      const buffer = await fs.readFile(pdfPath);
+      const upload = await uploadBufferToSupabase({
+        buffer,
+        objectPath: `funnel-reports/diagnostic-${diagnostic.id}.pdf`,
+        contentType: "application/pdf",
+      });
+      pdfUrl = upload.url || null;
+      await diagnostic.update({
+        pdfUrl,
+        data: {
+          ...diagnostic.data,
+          pdf: upload,
+          pdfUrls: pdfUrl ? [pdfUrl] : [],
+        },
+      });
+      try {
+        await sendEmail(
+          email,
+          "Your Diagnostic Report – Euphoriam AI",
+          diagnosticReportEmail(userName),
+          pdfPath,
+        );
+      } catch (emailErr) {
+        console.warn("[completeDiagnostic] Email failed:", emailErr.message);
+      }
+    }
+  } catch (pdfErr) {
+    console.warn("[completeDiagnostic] PDF failed:", pdfErr.message);
+  }
+
+  if (chat_id) {
+    const chat = await withDbSlot(() => Chat.findByPk(chat_id));
+    if (chat) {
+      await chat.update({
+        isChatEnded: true,
+        dignosticId: diagnostic.id,
+        data: {
+          ...(chat.data || {}),
+          transcript,
+          endedAt: new Date().toISOString(),
+          diagnostic_id: diagnostic.id,
+        },
+      });
+    }
+  }
+
+  return {
+    diagnostic_id: diagnostic.id,
+    pdf_url: pdfUrl,
+    report_text: reportText,
+  };
 };
 
 /** GET /api/funnel/report/:diagnosticId/pdf */
@@ -264,4 +369,5 @@ module.exports = {
   resendReport,
   getExpiredCopy,
   buildFreeFunnelCheckUserResult,
+  completeDiagnostic,
 };

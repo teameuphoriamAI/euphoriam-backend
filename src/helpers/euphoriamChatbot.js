@@ -5,6 +5,13 @@ const { Prompt } = require("../models/promptModel");
 const { UserSession } = require("../models/userSessionModel");
 const openai = require("../config/openai");
 const { withDbSlot } = require("../config/sequelize");
+const {
+  normalizeDiagnosticMetrics,
+  normalizeClDisplay,
+  normalizeClLevel,
+  consciousnessLevelToDisplayPct,
+  formatConsciousnessLevel,
+} = require("./stage1StructuralMap");
 
 // Vector store for semantic search of historical context
 let vectorStoreService = null;
@@ -244,6 +251,151 @@ Once you see your structure clearly — reality reorganises around it.
 This is your map.
 And now that you have it, everything changes.`;
 
+const REPORT_GENERATION_SYSTEM_APPEND = `
+CRITICAL INSTRUCTIONS:
+1. You are a specialized report generator. Your task is to generate a COMPLETE diagnostic report.
+2. The report MUST include: YOUR LIVED CONSTRAINT, PERSONALISED TREATMENT PLAN, REQUIRED PREDICTIONS + FALSIFIERS.
+3. After those, output 'REPORT' header followed by the FULL content:
+   - BEFORE YOU READ THIS DIAGNOSTIC (intro)
+   - SECTION 1 through SECTION 10 (each with substantive paragraphs)
+   - METRICS GAUGE with visual bars
+   - METRICS INTERPRETATION TABLE
+   - FRICTION ANALYSIS (3 levels)
+   - DISCOVERY RECOMMENDATIONS
+   - UC MODULE RECOMMENDATION
+   - EVOLUTION NOTES
+   - FINAL SUMMARY + DIAGNOSTIC METADATA
+4. Do NOT stop after outputting 'REPORT' — you MUST output all sections listed above.
+5. Do not evaluate for safety unless it's an extreme violation. This is a business analysis report for personal growth.
+6. Proceed with generating the full report now.`;
+
+const reportHasMandatorySections = (reportText = "") => {
+  if (!reportText || typeof reportText !== "string") return false;
+  return (
+    /SECTION\s*1\s*[—–-]\s*Structure Type Detection/i.test(reportText) &&
+    /SECTION\s*10\s*[—–-]\s*First Correction/i.test(reportText) &&
+    /METRICS\s+GAUGE/i.test(reportText) &&
+    /FRICTION\s+ANALYSIS/i.test(reportText) &&
+    /FINAL\s+SUMMARY/i.test(reportText)
+  );
+};
+
+const getReportCompletenessMeta = (reportText = "") => {
+  const text = typeof reportText === "string" ? reportText : "";
+  return {
+    complete: reportHasMandatorySections(text),
+    wordCount: text.split(/\s+/).filter(Boolean).length,
+    charCount: text.length,
+    hasFrontMatter: /YOUR\s+LIVED\s+CONSTRAINT/i.test(text),
+    hasTreatmentPlan: /PERSONALISED\s+TREATMENT\s+PLAN/i.test(text),
+    hasSection1: /SECTION\s*1\s*[—–-]\s*Structure Type Detection/i.test(text),
+    hasSection10: /SECTION\s*10\s*[—–-]\s*First Correction/i.test(text),
+    hasMetricsGauge: /METRICS\s+GAUGE/i.test(text),
+    hasFrictionAnalysis: /FRICTION\s+ANALYSIS/i.test(text),
+    hasFinalSummary: /FINAL\s+SUMMARY/i.test(text),
+  };
+};
+
+const buildReportFrontMatterUserPrompt = ({
+  transcript = [],
+  activeGoalContext = null,
+  userName = "User",
+  introPageText,
+}) => {
+  const introBlock = introPageText || DEFAULT_INTRO_PAGE_TEXT;
+  const goalBlock =
+    activeGoalContext && typeof activeGoalContext === "object"
+      ? `\nACTIVE GOAL CONTEXT (scope everything to this goal only):\n${JSON.stringify(activeGoalContext, null, 2)}\n`
+      : "";
+
+  return `Generate ONLY the front matter for a Map Resistance diagnostic report for ${userName}.
+Do NOT generate SECTION 1–10, metrics tables, or the REPORT body yet.
+
+Output EXACTLY these three sections in order:
+
+1) **YOUR LIVED CONSTRAINT (THE RED / INVISIBLE BARRIER)** — 4–7 sentences
+2) **PERSONALISED TREATMENT PLAN** with A) through F) subsections
+   Formatting rules (mandatory):
+   - Put each letter subsection (A–F) on its own line/block.
+   - C) Your 7-Day Treatment Thread: each day MUST be its own markdown bullet, e.g.:
+     - **Day 1:** ...
+     - **Day 2:** ...
+   - F) Sabotage Pre-empt: each item MUST be its own markdown bullet, e.g.:
+     - **Protector Script:** ...
+     - **What You Will Say:** ...
+     - **What You Will Do:** ...
+   Do NOT run Day 1–7 or F items inline on one paragraph.
+3) **REQUIRED PREDICTIONS + FALSIFIERS + CONFIRMATION TEST**
+
+Use evidence from the transcript. Anchor to the goal context.
+
+Intro reference:
+${introBlock}
+${goalBlock}
+
+Map Resistance transcript:
+${JSON.stringify(transcript, null, 2)}
+
+Start with "YOUR LIVED CONSTRAINT". Do not include a "REPORT" header yet.`;
+};
+
+const buildReportBodySectionsUserPrompt = ({
+  transcript = [],
+  activeGoalContext = null,
+  userName = "User",
+  introPageText,
+  structureHints = {},
+}) => {
+  const introBlock = introPageText || DEFAULT_INTRO_PAGE_TEXT;
+  const goalBlock =
+    activeGoalContext && typeof activeGoalContext === "object"
+      ? `\nACTIVE GOAL CONTEXT:\n${JSON.stringify(activeGoalContext, null, 2)}\n`
+      : "";
+  const structureBlock = Object.keys(structureHints || {}).length
+    ? `\nExtracted structure hints (use for metrics + signature):\n${JSON.stringify(structureHints, null, 2)}\n`
+    : "";
+
+  return `Generate ONLY the REPORT body for ${userName}'s Map Resistance diagnostic.
+Do NOT repeat YOUR LIVED CONSTRAINT or PERSONALISED TREATMENT PLAN.
+
+Start with:
+✨ BEFORE YOU READ THIS DIAGNOSTIC
+
+Then output ALL of the following in order (substantive paragraphs for each section):
+
+- SECTION 1 — Structure Type Detection
+- SECTION 2 — Avoidance Behaviour Mapping
+- SECTION 3 — Vortex Settings
+- SECTION 4 — 3D Code / Gravity
+- SECTION 5 — Consciousness Level (CL)
+- SECTION 6 — Quantum Genius Codes (QGC)
+- SECTION 7 — Signal Coherence
+- SECTION 8 — Signal Output
+- SECTION 9 — Angle of Growth
+- SECTION 10 — First Correction (include daily rep + win condition)
+- METRICS GAUGE (Current Snapshot) with bar visuals
+- METRICS INTERPRETATION TABLE
+- FRICTION ANALYSIS (3 levels + primary friction source)
+- DISCOVERY RECOMMENDATIONS (Alignment / Freedom / Prosperity)
+- UC MODULE RECOMMENDATION / LIVE CALLS / AI COACH RESOURCES
+- EVOLUTION NOTES
+- FINAL SUMMARY
+- DIAGNOSTIC METADATA (Structural Snapshot, Signature ID, Gravity %, CL, Key Routing Meta)
+
+End with METRICS_JSON block:
+METRICS_JSON_START
+{ "gravity": <number 0-100>, "signalCoherence": <number 0-100>, "signalOutput": <number 0-100>, "consciousnessLevel": <number 1.0-5.0 NOT percentage>, "qgcActivation": <number 0-100>, "signatureId": "XX_Y_Z" }
+METRICS_JSON_END
+
+Intro reference:
+${introBlock}
+${goalBlock}
+${structureBlock}
+
+Transcript:
+${JSON.stringify(transcript, null, 2)}`;
+};
+
 const buildFinalReportPrompt = ({
   customerContext,
   intakeAnswers = [],
@@ -251,6 +403,8 @@ const buildFinalReportPrompt = ({
   retrieved = [],
   previousReport,
   userSession = null, // Latest 1:1 coaching session
+  activeGoalContext = null,
+  userName = null,
 }) => {
   const introBlock = introPageText || DEFAULT_INTRO_PAGE_TEXT;
   const contextBlock = retrieved.length
@@ -273,6 +427,19 @@ const buildFinalReportPrompt = ({
     )} \n\nSession Date: ${userSession.sessionDate ? new Date(userSession.sessionDate).toLocaleDateString() : "Not specified"} \n`
     : "";
 
+  const goalContextBlock =
+    activeGoalContext && typeof activeGoalContext === "object"
+      ? `\n🎯 ACTIVE GOAL CONTEXT (Map Resistance — scope ALL analysis to this goal/domain only):
+${JSON.stringify(activeGoalContext, null, 2)}
+
+Do NOT give generic life advice unrelated to this goal. Anchor every section, metric, treatment lever, and recommendation to this specific outcome and domain.
+`
+      : "";
+
+  const clientNameBlock = userName
+    ? `\nClient name for personalization: ${userName}\n`
+    : "";
+
   // Determine if this is a first-time user or returning user
   const isFirstTimeUser = !previousReport || previousReport.trim().length === 0;
 
@@ -280,6 +447,8 @@ const buildFinalReportPrompt = ({
 You are Euphoriam AI generating a HIGH-DEPTH, ELITE-LEVEL diagnostic report following the PHASE C instructions. Your goal is to provide a "Brain Prompt" level of structural analysis that wows the user with its depth and physics-based accuracy.
 
   ${userSessionBlock}
+  ${goalContextBlock}
+  ${clientNameBlock}
 
 ${isFirstTimeUser
       ? `FIRST—TIME USER: This is a foundational diagnostic. Use the 25—Question Q&A answers from the transcript below to calculate ALL metrics using the Formulaic Map.
@@ -397,11 +566,12 @@ Signal Output:       ██░░░░░░░░░░ XX%
 1) **YOUR LIVED CONSTRAINT (THE RED / INVISIBLE BARRIER)** — 4-7 sentences describing the structural limiter
 2) **PERSONALISED TREATMENT PLAN**:
    - A) Constraint Removal Objective (1 line)
-   - B) The 3 levers we'll pull (3 bullets)
-   - C) Your 7-Day Treatment Thread (Day 1–7; one line each)
-   - D) Weekly Cadence (Daily: AI coach + rep; 2-3x/week: UC/meditation; Live calls if available)
+   - B) The 3 levers we'll pull (3 bullets: Protector / Lack / EO-Orbit)
+   - C) Your 7-Day Treatment Thread — Day 1–7 each as its own bullet line (- **Day N:** ...)
+   - D) Weekly Cadence (Daily / 2-3x week / Weekly as separate bullet lines)
    - E) Success Criteria (3 bullets)
-   - F) Sabotage Pre-empt (protector script: what it will say + what they will say + what they will do)
+   - F) Sabotage Pre-empt — 3 separate bullet lines: **Protector Script:**, **What You Will Say:**, **What You Will Do:**
+   🚨 Never put Day 1–7 or F items inline in one paragraph.
 3) **REQUIRED PREDICTIONS + FALSIFIERS + CONFIRMATION TEST**:
    - 3 predictions (Trigger→Protector→Behaviour for next 7 days)
    - 2 falsifiers (what would disprove the signature)
@@ -453,6 +623,180 @@ METRICS_JSON_START
 }
 METRICS_JSON_END
 `;
+};
+
+/**
+ * Generate the full Phase C diagnostic report (sections 1–10 + metrics + friction, etc.).
+ * Used by paid diagnostic finalize, Map Resistance finalize, and free funnel finalize.
+ */
+const generateFullDiagnosticReport = async ({
+  transcript = [],
+  introPageText,
+  previousReport = null,
+  activeGoalContext = null,
+  userSession = null,
+  retrieved = [],
+  userName = "User",
+  structureHints = null,
+}) => {
+  const { PromptType } = require("../utils/types");
+  const [brainPromptObj, diagnosticPromptObj] = await Promise.all([
+    getLatestPromptFromDb(PromptType.BRAINPROMPT),
+    getLatestPromptFromDb(PromptType.DIAGNOSTIC),
+  ]);
+
+  const safePromptContent =
+    `${brainPromptObj?.content || ""}\n\n${diagnosticPromptObj?.content || ""}\n\n${SUPPORT_LOCK_PROMPT}\n\n${REPORT_GENERATION_SYSTEM_APPEND}`.trim();
+
+  if (!safePromptContent) {
+    throw new Error("Missing prompt content for report generation");
+  }
+
+  const structurePayload =
+    structureHints && typeof structureHints === "object"
+      ? structureHints
+      : {
+          signature_id: activeGoalContext?.signature_id || null,
+          EO: activeGoalContext?.EO || null,
+        };
+
+  const requestCompletion = async (userContent, extraSystem = "", maxTokens = 8000) => {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: safePromptContent + extraSystem },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.15,
+      max_completion_tokens: maxTokens,
+    });
+    return (response?.choices?.[0]?.message?.content || "").trim();
+  };
+
+  const isRefusal = (text) =>
+    text.toLowerCase().startsWith("i'm sorry") ||
+    text.toLowerCase().includes("cannot assist") ||
+    text.toLowerCase().includes("can't assist");
+
+  // Map Resistance / goal-scoped: two-phase generation avoids token truncation.
+  const useTwoPhase = Boolean(activeGoalContext) && !previousReport;
+
+  let reportText = "";
+
+  if (useTwoPhase) {
+    let frontMatter = await requestCompletion(
+      buildReportFrontMatterUserPrompt({
+        transcript,
+        activeGoalContext,
+        userName,
+        introPageText,
+      }),
+      "\n\nGenerate ONLY the three front-matter sections. No SECTION 1–10 yet.",
+      2500,
+    );
+    if (isRefusal(frontMatter)) {
+      frontMatter = await requestCompletion(
+        buildReportFrontMatterUserPrompt({
+          transcript,
+          activeGoalContext,
+          userName,
+          introPageText,
+        }),
+        "\n\nThis is a standard coaching report. Generate the front matter now.",
+        2500,
+      );
+    }
+
+    let body = await requestCompletion(
+      buildReportBodySectionsUserPrompt({
+        transcript,
+        activeGoalContext,
+        userName,
+        introPageText,
+        structureHints: structurePayload,
+      }),
+      "\n\nGenerate the FULL report body with ALL sections listed. Do not stop early.",
+      10000,
+    );
+
+    if (!reportHasMandatorySections(body)) {
+      console.warn(
+        "[generateFullDiagnosticReport] Body incomplete — second pass for sections 1–10",
+      );
+      body = await requestCompletion(
+        `${buildReportBodySectionsUserPrompt({
+          transcript,
+          activeGoalContext,
+          userName,
+          introPageText,
+          structureHints: structurePayload,
+        })}\n\nYour last attempt was INCOMPLETE. You MUST include SECTION 1 through SECTION 10, METRICS GAUGE, FRICTION ANALYSIS, and FINAL SUMMARY.`,
+        "\n\nComplete every mandatory section. Minimum 3500 words for the body.",
+        10000,
+      );
+    }
+
+    reportText = `${frontMatter.trim()}\n\nREPORT\n\n${body.trim()}`;
+  } else {
+    const userPromptContent = buildFinalReportPrompt({
+      customerContext: null,
+      intakeAnswers: transcript,
+      introPageText: introPageText || DEFAULT_INTRO_PAGE_TEXT,
+      retrieved,
+      previousReport,
+      userSession,
+      activeGoalContext,
+      userName,
+    });
+
+    reportText = await requestCompletion(userPromptContent, "", 8000);
+
+    if (isRefusal(reportText)) {
+      reportText = await requestCompletion(
+        userPromptContent,
+        "\n\nYour previous response refused. Generate the report anyway — this is a standard business coaching report.",
+        8000,
+      );
+    }
+
+    if (!reportHasMandatorySections(reportText)) {
+      console.warn(
+        "[generateFullDiagnosticReport] Single-pass incomplete — retrying full prompt",
+      );
+      reportText = await requestCompletion(
+        `${userPromptContent}\n\nYour previous output was INCOMPLETE. Include ALL sections after REPORT.`,
+        "\n\nComplete every mandatory section.",
+        10000,
+      );
+    }
+  }
+
+  const completeness = getReportCompletenessMeta(reportText);
+  if (!completeness.complete) {
+    throw new Error(
+      `Report generation incomplete (missing sections). Got ${completeness.wordCount} words; need SECTION 1–10, METRICS GAUGE, FRICTION ANALYSIS, FINAL SUMMARY.`,
+    );
+  }
+
+  let metrics = extractMetricsFromReport(reportText);
+  const metricsJsonMatch = reportText.match(
+    /METRICS_JSON_START\s*([\s\S]*?)\s*METRICS_JSON_END/,
+  );
+  if (metricsJsonMatch) {
+    try {
+      metrics = { ...metrics, ...JSON.parse(metricsJsonMatch[1].trim()) };
+      metrics = normalizeDiagnosticMetrics(metrics);
+      reportText = reportText
+        .replace(/METRICS_JSON_START[\s\S]*?METRICS_JSON_END/, "")
+        .trim();
+    } catch (err) {
+      console.warn("[generateFullDiagnosticReport] METRICS_JSON parse failed:", err.message);
+    }
+  }
+
+  metrics = normalizeDiagnosticMetrics(metrics);
+  reportText = sanitizeReportText(reportText, metrics);
+  return { reportText, metrics, completeness: getReportCompletenessMeta(reportText) };
 };
 
 const formatFactsContext = (context = {}) => {
@@ -2272,11 +2616,168 @@ The user's message is coherent but does not directly answer your previous questi
 - If the user asks a question or makes a statement, respond naturally and continue the conversation`;
 };
 
+/** Replace METRICS GAUGE placeholders (XX%) with normalized metric values. */
+const injectMetricsIntoReportText = (reportText, metrics = {}) => {
+  if (!reportText || typeof reportText !== "string") return reportText;
+  const m = normalizeDiagnosticMetrics(metrics);
+  if (!m || typeof m !== "object") return reportText;
+
+  const clValue = formatConsciousnessLevel(m.consciousnessLevel);
+
+  const replacements = [
+    {
+      label: "QGC Activation",
+      pct: m.qgcActivation,
+    },
+    {
+      label: "Gravity \\(Load\\)",
+      pct: m.gravity,
+    },
+    {
+      label: "Signal Coherence",
+      pct: m.signalCoherence,
+    },
+    {
+      label: "Signal Output",
+      pct: m.signalOutput,
+    },
+  ];
+
+  let out = reportText;
+  for (const { label, pct } of replacements) {
+    if (pct == null || Number.isNaN(Number(pct))) continue;
+    const value = Math.round(Number(pct));
+    const pattern = new RegExp(
+      `(\\*\\*${label}\\*\\*[^\\n]*?)XX%`,
+      "gi",
+    );
+    out = out.replace(pattern, `$1${value}%`);
+    const metaPattern = new RegExp(
+      `(\\*\\*${label}\\*\\*[^\\n]*?)XX(?=%|\\s|$)`,
+      "gi",
+    );
+    out = out.replace(metaPattern, `$1${value}`);
+  }
+
+  if (m.gravity != null) {
+    out = out.replace(
+      /(\*\*Gravity\s*%:\*\*\s*)XX/gi,
+      `$1${Math.round(Number(m.gravity))}`,
+    );
+  }
+  if (clValue != null) {
+    out = out.replace(
+      /((?:\*\*)?Consciousness\s+Level(?:\*\*)?[^:\n]*:\s*(?:[█░\s*]+)?)XX%/gi,
+      `$1${clValue}`,
+    );
+    out = out.replace(
+      /(Consciousness\s+Level:\s*(?:[█░\s]+)?)X\.X/gi,
+      `$1${clValue}`,
+    );
+    out = out.replace(
+      /(\*\*Consciousness Level:\*\*\s*)CL(\d)/gi,
+      `$1${clValue} (CL$2)`,
+    );
+  }
+
+  return out;
+};
+
+/** Fix baked-in CL gauge lines where 50 was treated as CL scale → 1000% etc. */
+const scrubConsciousnessGaugeInReportText = (reportText, metrics = {}) => {
+  if (!reportText || typeof reportText !== "string") return reportText;
+  const clValue = formatConsciousnessLevel(
+    normalizeDiagnosticMetrics(metrics).consciousnessLevel,
+  );
+  if (clValue == null) return reportText;
+
+  let out = reportText;
+  out = out.replace(
+    /((?:\*\*)?Consciousness\s+Level(?:\*\*)?[^:\n]*:\s*(?:[█░\s*]+)?)(\d+(?:\.\d+)?)%/gi,
+    `$1${clValue}`,
+  );
+  out = out.replace(
+    /(Consciousness\s+Level:\s*)(\d+(?:\.\d+)?)%/gi,
+    `$1${clValue}`,
+  );
+  return out;
+};
+
+/** Split inline treatment-plan items (Day 1–7, Sabotage Pre-empt) onto bullet sub-lines. */
+const formatTreatmentPlanSubpoints = (reportText) => {
+  if (!reportText || typeof reportText !== "string") return reportText;
+
+  const startMatch = reportText.match(/PERSONALISED TREATMENT PLAN/i);
+  if (!startMatch) return reportText;
+
+  const start = startMatch.index;
+  const rest = reportText.slice(start);
+  const endRel = rest.search(
+    /\n\s*(?:#{1,3}\s+|\*\*REQUIRED PREDICTIONS|REQUIRED PREDICTIONS|REPORT\b|---)/i,
+  );
+  const end = endRel > 0 ? start + endRel : reportText.length;
+
+  const before = reportText.slice(0, start);
+  let section = reportText.slice(start, end);
+  const after = reportText.slice(end);
+
+  // Each letter subsection on its own block
+  section = section.replace(/\s+(?=\*\*[A-F]\)\s)/g, "\n\n");
+
+  // Move inline "- **Day N:**" off subsection headers onto its own bullet line
+  section = section.replace(
+    /(\*\*[A-F]\)[^\n]*\*\*)\s*-\s+(?=\*\*Day\s+\d+)/gi,
+    "$1\n- ",
+  );
+  section = section.replace(
+    /(\*\*F\)[^\n]*\*\*)\s*-\s+(?=\*\*Protector Script:\*\*)/gi,
+    "$1\n- ",
+  );
+
+  // Only insert bullet when not already "- **Day N:**" (avoid orphan "-" lines)
+  const bulletPrefix = "(?<![\\-\\n])\\s+(?=";
+  section = section.replace(
+    new RegExp(`${bulletPrefix}\\*\\*Day\\s+\\d+[^*]*:\\*\\*)`, "gi"),
+    "\n- ",
+  );
+  section = section.replace(
+    new RegExp(`${bulletPrefix}(?!\\*\\*)Day\\s+\\d+\\s*:)`, "gi"),
+    "\n- ",
+  );
+
+  // F) Sabotage pre-empt sub-bullets
+  const fLabels = [
+    "Protector Script:",
+    "What You Will Say:",
+    "What You Will Do:",
+  ];
+  for (const label of fLabels) {
+    const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    section = section.replace(
+      new RegExp(`${bulletPrefix}\\*\\*${esc}\\*\\*)`, "gi"),
+      "\n- ",
+    );
+  }
+
+  // Remove stray "-" left on subsection headers or empty bullet lines
+  section = section.replace(
+    /^(\*\*[A-F]\)[^\n]*\*\*)\s*-\s*$/gm,
+    "$1",
+  );
+  section = section.replace(/^\s*-\s*-\s*$/gm, "");
+  section = section.replace(/^\s*-\s*$/gm, "");
+
+  return before + section + after;
+};
+
 /**
  * Sanitizes report text by hiding proprietary formulas.
  */
 const sanitizeReportText = (reportText, metrics = {}) => {
   if (!reportText || typeof reportText !== "string") return "";
+  reportText = injectMetricsIntoReportText(reportText, metrics);
+  reportText = scrubConsciousnessGaugeInReportText(reportText, metrics);
+  reportText = formatTreatmentPlanSubpoints(reportText);
   const safeSignal =
     metrics.signalOutput !== undefined && metrics.signalOutput !== null
       ? `Signal Output: ${metrics.signalOutput}% (proprietary Euphoriam calculation withheld)`
@@ -3026,6 +3527,8 @@ Return ONLY valid JSON:
 /**
  * Extracts metrics from report text
  */
+const finalizeExtractedMetrics = (metrics) => normalizeDiagnosticMetrics(metrics);
+
 const extractMetricsFromReport = (reportText) => {
   if (!reportText) return {};
 
@@ -3047,7 +3550,7 @@ const extractMetricsFromReport = (reportText) => {
       );
 
       // Return the extracted metrics
-      return {
+      return finalizeExtractedMetrics({
         gravity:
           typeof parsed.gravity === "number" ? parsed.gravity : undefined,
         signalCoherence:
@@ -3071,7 +3574,7 @@ const extractMetricsFromReport = (reportText) => {
         lackChannel: parsed.lackChannel || undefined,
         avoidanceProtector: parsed.avoidanceProtector || undefined,
         orbitPattern: parsed.orbitPattern || undefined,
-      };
+      });
     } catch (e) {
       console.warn(
         "[extractMetricsFromReport] Failed to parse METRICS_JSON block:",
@@ -3081,22 +3584,32 @@ const extractMetricsFromReport = (reportText) => {
     }
   }
 
-  // Helper: try to get Consciousness Level as a direct numeric value (e.g. "Consciousness Level: 3.2")
+  // Helper: extract CL from "Consciousness Level: 3.2", "CL2", "CL 2.5", etc.
   const extractCLDirect = (text) => {
-    const m =
-      text &&
-      text.match(
-        /(?:Consciousness\s+Level|CL)[:\s]+(?:[█░\s]+)?([0-9]+(?:\.[0-9]+)?)/i,
-      );
-    if (m) {
-      const val = parseFloat(m[1]);
-      if (!Number.isNaN(val)) {
+    if (!text) return undefined;
+
+    const labeled = text.match(
+      /(?:Consciousness\s+Level|CL)\s*[:]\s*(?:[█░\s*]+)?([0-9]+(?:\.[0-9]+)?)/i,
+    );
+    if (labeled) {
+      const val = parseFloat(labeled[1]);
+      if (!Number.isNaN(val) && val <= 5) {
         console.log(
           `[extractMetricsFromReport] Extracted CL as direct number: ${val}`,
         );
         return val;
       }
     }
+
+    const clTag = text.match(/\bCL\s*([1-5](?:\.[0-9]+)?)\b/i);
+    if (clTag) {
+      const val = parseFloat(clTag[1]);
+      if (!Number.isNaN(val)) {
+        console.log(`[extractMetricsFromReport] Extracted CL tag: CL${val}`);
+        return val;
+      }
+    }
+
     return undefined;
   };
 
@@ -3172,7 +3685,7 @@ const extractMetricsFromReport = (reportText) => {
         `[extractMetricsFromReport] Extracted ${extractedCount}/5 metrics from METRICS GAUGE:`,
         extracted,
       );
-      return extracted;
+      return finalizeExtractedMetrics(extracted);
     }
   }
 
@@ -3363,7 +3876,7 @@ const extractMetricsFromReport = (reportText) => {
     }
   }
 
-  return extracted;
+  return finalizeExtractedMetrics(extracted);
 };
 
 /**
@@ -4577,6 +5090,10 @@ module.exports = {
   // DEEP_INTAKE_QUESTIONS,
   // buildIntakeQuestionResponse,
   buildFinalReportPrompt,
+  generateFullDiagnosticReport,
+  getReportCompletenessMeta,
+  reportHasMandatorySections,
+  REPORT_GENERATION_SYSTEM_APPEND,
   DEFAULT_INTRO_PAGE_TEXT,
   getDiagnosticNewUserWelcomeMessage,
   getDiagnosticRepeatIntakeWelcomeMessage,
@@ -4584,6 +5101,8 @@ module.exports = {
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   sanitizeReportText,
+  scrubConsciousnessGaugeInReportText,
+  formatTreatmentPlanSubpoints,
   getDiscoverySystemPrompt,
   buildChatPrompts,
   // Helper functions for chatbotDiagnosticFreeform

@@ -4,6 +4,13 @@ const PDFDocument = require("pdfkit");
 require("dotenv").config();
 const axios = require("axios");
 const { generateIrlReportPdf } = require("./irlPdf");
+const {
+  normalizeClLevel,
+  normalizeClDisplay,
+  normalizeDiagnosticMetrics,
+  consciousnessLevelToDisplayPct,
+  formatConsciousnessLevel,
+} = require("../helpers/stage1StructuralMap");
 
 const logoImage = process.env.LOGO_URL;
 
@@ -89,11 +96,9 @@ const renderVisualGauge = (doc, metrics) => {
     let displayVal = "";
 
     if (m.label.includes("Consciousness")) {
-      const val = parseFloat(m.val);
-      // Consciousness Level (CL) is on a 1.0–5.0 scale. For the gauge we want a 0–100%
-      // view that matches the other metrics, so use (CL/5)*100.
-      pct = Math.max(0, Math.min(100, (val / 5) * 100));
-      displayVal = `${Math.round((val / 5) * 100)}%`;
+      pct = consciousnessLevelToDisplayPct(m.val) ?? 0;
+      pct = Math.max(0, Math.min(100, pct));
+      displayVal = formatConsciousnessLevel(m.val) ?? String(m.val);
     } else {
       const val = parseFloat(m.val);
       pct = Math.max(0, Math.min(100, val));
@@ -244,31 +249,34 @@ const renderMetricLine = (doc, label, value, isPercentage = true) => {
     return;
   }
 
-  const displayValue = Number(value);
+  let displayValue = Number(value);
+  if (!isPercentage) {
+    const percentageForGauge = Math.max(
+      0,
+      Math.min(100, consciousnessLevelToDisplayPct(displayValue) ?? 0),
+    );
+    const valueText = formatConsciousnessLevel(displayValue) ?? "Unknown";
+    drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);
+    doc.font("Helvetica").fontSize(11).fillColor("#111111");
+    doc.text(valueText, valueStartX, currentY, {
+      width: 80,
+      align: "left",
+      lineGap: 0,
+    });
+    doc.moveDown(0.2);
+    return;
+  }
   // For gauge visualization: convert to percentage
-  // For Consciousness Level (0-5), convert to percentage for visual bar
-  const percentageForGauge = isPercentage
-    ? displayValue
-    : (displayValue / 5) * 100;
-  // For display text:
-  // - percentage metrics (Gravity, QGC, Signal, Coherence) show XX%
-  // - Consciousness Level (passed as isPercentage = false, 1.0–5.0) should display as a percentage too
-  const valueText = isPercentage
-    ? `${Math.round(displayValue)}%`
-    : `${Math.round((displayValue / 5) * 100)}%`;
+  const percentageForGauge = displayValue;
+  const valueText = `${Math.round(displayValue)}%`;
 
-  // Draw gauge bar
   drawGaugeBar(doc, gaugeStartX, gaugeStartY, percentageForGauge);
-
-  // Draw value text (percentage) - on the same line
   doc.font("Helvetica").fontSize(11).fillColor("#111111");
   doc.text(valueText, valueStartX, currentY, {
-    width: 80, // Fixed width for percentage text area
+    width: 80,
     align: "left",
     lineGap: 0,
   });
-
-  // Move to next line for next metric
   doc.moveDown(0.2);
 };
 
@@ -296,10 +304,14 @@ const drawMetricsTable = (doc, metrics) => {
   const rowHeight = 20;
   const colWidths = [150, 150]; // Adjust as needed
 
+  const clDisplay = formatConsciousnessLevel(metrics.consciousnessLevel);
   const tableData = [
     ["Metric", "Value"],
     ["QGC Activation", `${metrics.qgcActivation ?? "N/A"}%`],
-    ["Consciousness Level", `${metrics.consciousnessLevel ?? "N/A"}%`],
+    [
+      "Consciousness Level",
+      clDisplay != null ? `${clDisplay} / 5.0` : "N/A",
+    ],
     ["Gravity", `${metrics.gravity ?? "N/A"}%`],
     ["Signal Coherence", `${metrics.signalCoherence ?? "N/A"}%`],
     ["Signal Output", `${metrics.signalOutput ?? "N/A"}%`],
@@ -1196,10 +1208,17 @@ const renderStyledReport = (
       }
 
       const bulletContent = line.replace(/^[\-•\*]\s+/, "").trim();
+      if (!bulletContent || bulletContent === "-") {
+        continue;
+      }
+      const isTreatmentSubBullet =
+        /^(\*\*)?(Day\s+\d+|Protector Script:|What You Will Say:|What You Will Do:)/i.test(
+          bulletContent,
+        );
       doc.moveDown(0.2);
       renderTextWithBold(doc, `•  ${cleanText(bulletContent)}`, {
         width: availableWidth,
-        indent: 20,
+        indent: isTreatmentSubBullet ? 36 : 20,
         lineGap: 4,
       });
       continue;
@@ -1749,26 +1768,16 @@ const generateDiagnosticPdf = (diagnostic) =>
       const data = diagnostic.data || {};
       const profile = data.profile || {};
       const aiReport = data.aiReport || {};
-      let metrics = data.metrics || {};
+      let metrics = normalizeDiagnosticMetrics(data.metrics || {});
 
-      // If metrics are empty or incomplete, try to extract from report text
-      const hasAllMetrics =
-        metrics.gravity !== undefined &&
-        metrics.signalCoherence !== undefined &&
-        metrics.signalOutput !== undefined &&
-        metrics.consciousnessLevel !== undefined &&
-        metrics.qgcActivation !== undefined;
-
-      if (typeof aiReport === "string" && !hasAllMetrics) {
+      if (typeof aiReport === "string") {
         const {
           extractMetricsFromReport,
         } = require("../helpers/euphoriamChatbot");
         const extractedMetrics = extractMetricsFromReport(aiReport);
-        // Merge extracted metrics, preferring existing metrics over extracted ones
-        metrics = {
+        metrics = normalizeDiagnosticMetrics({
           ...extractedMetrics,
-          ...metrics, // Existing metrics take precedence
-          // But use extracted if existing is undefined
+          ...metrics,
           gravity: metrics.gravity ?? extractedMetrics.gravity,
           signalCoherence:
             metrics.signalCoherence ?? extractedMetrics.signalCoherence,
@@ -1777,9 +1786,19 @@ const generateDiagnosticPdf = (diagnostic) =>
             metrics.consciousnessLevel ?? extractedMetrics.consciousnessLevel,
           qgcActivation:
             metrics.qgcActivation ?? extractedMetrics.qgcActivation,
-        };
+        });
         console.log("[diagnosticPdf] Metrics after extraction:", metrics);
       }
+
+      const snapshotCl = normalizeClLevel(data.structure_snapshot?.cl_level);
+      if (
+        snapshotCl != null &&
+        (metrics.consciousnessLevel == null ||
+          Number(metrics.consciousnessLevel) > 5)
+      ) {
+        metrics.consciousnessLevel = snapshotCl;
+      }
+      metrics = normalizeDiagnosticMetrics(metrics);
 
       if (typeof aiReport === "string") {
         console.log("[diagnosticPdf] aiReport typeof:", typeof aiReport);
@@ -1898,6 +1917,16 @@ const generateDiagnosticPdf = (diagnostic) =>
           diagnostic.title?.toLowerCase().includes("chat report") ||
           cleanedReport.toLowerCase().includes("structural update report") ||
           cleanedReport.toLowerCase().includes("discovery report");
+
+        const {
+          scrubConsciousnessGaugeInReportText,
+          formatTreatmentPlanSubpoints,
+        } = require("../helpers/euphoriamChatbot");
+        cleanedReport = scrubConsciousnessGaugeInReportText(
+          cleanedReport,
+          metrics,
+        );
+        cleanedReport = formatTreatmentPlanSubpoints(cleanedReport);
 
         // Always ensure x position is at left margin before processing any line
         doc.x = doc.page.margins.left;

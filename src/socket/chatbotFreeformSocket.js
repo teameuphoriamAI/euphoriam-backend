@@ -2,6 +2,7 @@ const {
   buildFreeformIntakePrompt,
   buildDiscoveryChatPrompt,
   buildFinalReportPrompt,
+  generateFullDiagnosticReport,
   DEFAULT_INTRO_PAGE_TEXT,
   sanitizeReportText,
   SUPPORT_LOCK_PROMPT,
@@ -848,38 +849,19 @@ const runFunnelIrFinalize = async (socket, session) => {
   });
 
   try {
-    const metrics = {};
-    invalidateLatestPromptCache("Diagnostic");
-    const [retrieved, prompt] = await Promise.all([
+    const [retrieved] = await Promise.all([
       retrieveSimilarChunks({ query: session.transcript.at(-1)?.content || "", topK: 3 }),
-      getLatestPromptFromDb(),
     ]);
 
-    const promptContent =
-      typeof prompt === "string" ? prompt : prompt?.fullPrompt || prompt?.content || "";
+    const userName =
+      session.funnelDisplayName || session.email?.split("@")[0] || "User";
 
-    const userPromptContent = buildFinalReportPrompt({
-      customerContext: null,
-      intakeAnswers: session.transcript,
+    const { reportText: stage1ReportText, metrics } = await generateFullDiagnosticReport({
+      transcript: session.transcript,
       introPageText: session.introPageText || DEFAULT_INTRO_PAGE_TEXT,
       retrieved,
-      previousReport: null,
+      userName,
     });
-
-    const stage1Response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: promptContent },
-        { role: "user", content: userPromptContent },
-      ],
-      temperature: 0.15,
-      max_completion_tokens: 4500,
-    });
-
-    const stage1ReportText = sanitizeReportText(
-      stage1Response?.choices?.[0]?.message?.content?.trim() || "",
-      metrics,
-    );
 
     socket.emit("status", {
       stage: "compiling_report",

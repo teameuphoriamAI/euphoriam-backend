@@ -10,6 +10,23 @@ describe("stage1StructuralMap", () => {
     expect(normalizeClDisplay(72)).toBe(72);
   });
 
+  test("normalizeDiagnosticMetrics converts stored CL percentage to 1-5 scale", () => {
+    const { normalizeDiagnosticMetrics } = require("../helpers/stage1StructuralMap");
+    const normalized = normalizeDiagnosticMetrics({
+      gravity: 60,
+      consciousnessLevel: 50,
+      qgcActivation: 30,
+    });
+    expect(normalized.consciousnessLevel).toBe(2.5);
+  });
+
+  test("formatConsciousnessLevel shows 1-5 scale not percentage", () => {
+    const { formatConsciousnessLevel } = require("../helpers/stage1StructuralMap");
+    expect(formatConsciousnessLevel(2)).toBe("2.0");
+    expect(formatConsciousnessLevel(50)).toBe("2.5");
+    expect(formatConsciousnessLevel(2.5)).toBe("2.5");
+  });
+
   test("buildMapResistanceBaseline derives metrics from map resistance fields", () => {
     const map = {
       domain: "health",

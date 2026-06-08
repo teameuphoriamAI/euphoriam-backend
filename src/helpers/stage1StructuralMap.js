@@ -38,8 +38,34 @@ const normalizeClLevel = (raw) => {
   const n = toNumber(raw);
   if (n == null) return null;
   if (n >= 1 && n <= 5) return n;
-  if (n > 5) return clamp(n / 20, 1, 5);
+  if (n > 5) {
+    const cl = n / 20;
+    return Math.max(1, Math.min(5, Math.round(cl * 10) / 10));
+  }
   return null;
+};
+
+/** Normalize stored diagnostic metrics (CL is 1.0–5.0; AI sometimes saves 0–100). */
+const normalizeDiagnosticMetrics = (metrics = {}) => {
+  if (!metrics || typeof metrics !== "object") return metrics;
+  const out = { ...metrics };
+  const cl = normalizeClLevel(out.consciousnessLevel);
+  if (cl != null) out.consciousnessLevel = cl;
+  return out;
+};
+
+/** CL as 0–100 display % for gauge bar fill only (not the printed CL label). */
+const consciousnessLevelToDisplayPct = (raw) => {
+  const cl = normalizeClLevel(raw);
+  if (cl == null) return null;
+  return normalizeClDisplay(cl);
+};
+
+/** CL label on the original 1.0–5.0 scale (e.g. 2.0, 2.5) — not a percentage. */
+const formatConsciousnessLevel = (raw) => {
+  const cl = normalizeClLevel(raw);
+  if (cl == null) return null;
+  return Number.isInteger(cl) ? `${cl}.0` : cl.toFixed(1);
 };
 
 const repCompletionPct = (progressMetrics) => {
@@ -468,4 +494,9 @@ module.exports = {
   inferGravityFromCoachState,
   pickMetric,
   normalizeClDisplay,
+  normalizeClLevel,
+  normalizeDiagnosticMetrics,
+  consciousnessLevelToDisplayPct,
+  formatConsciousnessLevel,
+  inferClLevel,
 };

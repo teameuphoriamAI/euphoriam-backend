@@ -51,6 +51,16 @@ router.post(
   asyncHandler(stage1Controller.reExtractMapResistance),
 );
 router.post(
+  "/domains/:domain/map-resistance/regenerate-report",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.regenerateMapResistanceReport),
+);
+router.get(
+  "/domains/:domain/map-resistance/report",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.getMapResistanceReport),
+);
+router.post(
   "/domains/:domain/map-resistance/restart",
   ...stage1Auth,
   asyncHandler(stage1Controller.restartMapResistance),

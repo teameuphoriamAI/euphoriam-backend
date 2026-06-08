@@ -479,6 +479,22 @@ const finalizeMapResistance = async (req, res) => {
       domain,
     });
 
+    const introText = buildMapResistanceIntroText(activeGoalContext);
+    let reportResult = null;
+    try {
+      const { generateAndPersistMapResistanceReport } = require("../helpers/stage1MapResistanceReport");
+      reportResult = await generateAndPersistMapResistanceReport({
+        user,
+        domain,
+        transcript: messages,
+        activeGoalContext,
+        introText,
+        structure,
+      });
+    } catch (reportErr) {
+      console.error("[finalizeMapResistance] Report generation failed:", reportErr.message);
+    }
+
     const completedAt = new Date().toISOString();
     const existingMap = (stage1.domain_maps || []).find((m) => m.domain === domain);
     const preservedMemory = existingMap?.coaching_memory;
@@ -488,6 +504,17 @@ const finalizeMapResistance = async (req, res) => {
       map_resistance_complete: true,
       map_resistance_transcript: messages,
       map_resistance_completed_at: completedAt,
+      ...(reportResult?.reportText
+        ? {
+            diagnostic_report: reportResult.reportText,
+            diagnostic_report_generated_at: completedAt,
+            diagnostic_id: reportResult.diagnosticId,
+            pdf_url: reportResult.pdfUrl,
+          }
+        : {}),
+      ...(reportResult?.progressMetrics
+        ? { progress_metrics: reportResult.progressMetrics }
+        : {}),
       ...(preservedMemory ? { coaching_memory: preservedMemory } : {}),
     });
 
@@ -562,6 +589,132 @@ const finalizeMapResistance = async (req, res) => {
 const reExtractMapResistance = async (req, res) => {
   req.body = { ...(req.body || {}), reextract: true };
   return finalizeMapResistance(req, res);
+};
+
+/** POST /api/stage1/domains/:domain/map-resistance/regenerate-report — full Phase C report from saved transcript */
+const regenerateMapResistanceReport = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const domain = normalizeDomain(req.params.domain);
+    if (!domain) return errorResponse(res, "Invalid domain", 400);
+
+    let stage1 = await loadStage1ForUser(user);
+    const map = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    if (!map) {
+      return errorResponse(res, "Domain not found. Save goals first.", 404);
+    }
+    if (!map.map_resistance_complete) {
+      return errorResponse(res, "Complete Map Resistance before regenerating the report.", 400);
+    }
+
+    const messages = map.map_resistance_transcript;
+    if (!Array.isArray(messages) || messages.length < 4) {
+      return errorResponse(
+        res,
+        "No saved Map Resistance transcript. Re-run Map Resistance first.",
+        400,
+      );
+    }
+
+    const activeGoalContext = buildActiveGoalContext(map, domain);
+    const introText = buildMapResistanceIntroText(activeGoalContext);
+    const { generateAndPersistMapResistanceReport } = require("../helpers/stage1MapResistanceReport");
+
+    const reportResult = await generateAndPersistMapResistanceReport({
+      user,
+      domain,
+      transcript: messages,
+      activeGoalContext,
+      introText,
+      structure: map,
+      sendEmail: false,
+    });
+
+    const generatedAt = new Date().toISOString();
+    stage1 = upsertDomainMap(stage1, domain, {
+      diagnostic_report: reportResult.reportText,
+      diagnostic_report_generated_at: generatedAt,
+      diagnostic_id: reportResult.diagnosticId,
+      pdf_url: reportResult.pdfUrl,
+      ...(reportResult.progressMetrics
+        ? { progress_metrics: reportResult.progressMetrics }
+        : {}),
+    });
+    stage1 = await persistStage1ForUser(user.id, stage1);
+
+    const updatedMapRaw = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
+    const { enrichMapForClient } = require("../helpers/stage1MapStructure");
+    const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+    const updatedMap = enrichMapForClient(
+      applyProofMetricsToMap({ ...updatedMapRaw }, proof_logs),
+      { proof_logs },
+    );
+
+    return successResponse(res, "Report regenerated", {
+      domain,
+      map: updatedMap,
+      diagnostic_id: reportResult.diagnosticId,
+      pdf_url: reportResult.pdfUrl,
+      report_text: reportResult.reportText,
+      report_complete: Boolean(reportResult.completeness?.complete),
+      report_word_count: reportResult.completeness?.wordCount ?? 0,
+      report_generated_at: generatedAt,
+      active_goal_context: buildActiveGoalContext(updatedMap, domain),
+      ...buildHomePayload(user, stage1),
+    });
+  } catch (err) {
+    console.error("[regenerateMapResistanceReport]", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to regenerate report",
+      err.status || 500,
+    );
+  }
+};
+
+/** GET /api/stage1/domains/:domain/map-resistance/report — full report text for this domain */
+const getMapResistanceReport = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const domain = normalizeDomain(req.params.domain);
+    if (!domain) return errorResponse(res, "Invalid domain", 400);
+
+    const stage1 = await loadStage1ForUser(user);
+    const map = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    if (!map?.map_resistance_complete) {
+      return errorResponse(res, "Complete Map Resistance first.", 400);
+    }
+
+    const reportText = map.diagnostic_report || null;
+    if (!reportText || typeof reportText !== "string") {
+      return errorResponse(
+        res,
+        "No report saved yet. Click Regenerate report to build your full diagnostic.",
+        404,
+      );
+    }
+
+    const { getReportCompletenessMeta } = require("../helpers/euphoriamChatbot");
+    const completeness = getReportCompletenessMeta(reportText);
+    const pdfBase = map.pdf_url || null;
+    const pdfUrl = pdfBase
+      ? `${pdfBase}${String(pdfBase).includes("?") ? "&" : "?"}v=${Date.now()}`
+      : null;
+
+    return successResponse(res, "Map resistance report", {
+      domain,
+      report_text: reportText,
+      report_complete: completeness.complete,
+      report_word_count: completeness.wordCount,
+      generated_at: map.diagnostic_report_generated_at || map.map_resistance_completed_at || null,
+      diagnostic_id: map.diagnostic_id || null,
+      pdf_url: pdfUrl,
+      completeness,
+    });
+  } catch (err) {
+    return errorResponse(res, err.message || "Failed to load report", err.status || 500);
+  }
 };
 
 /** POST /api/stage1/domains/:domain/map-resistance/restart — begin a new mapping session */
@@ -686,6 +839,8 @@ module.exports = {
   mapResistanceChat,
   finalizeMapResistance,
   reExtractMapResistance,
+  regenerateMapResistanceReport,
+  getMapResistanceReport,
   restartMapResistance,
   getMapResistanceHistory,
   getDomainMapResistanceHistory,

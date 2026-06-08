@@ -4000,6 +4000,7 @@ const handleDiagnosticMode = async ({
   latestUserSession = null, // Latest 1:1 coaching session
   confidenceResult = null, // Optimization: Passed from main loop
   retrieved = [], // Optimization: Passed from main loop
+  stage1MapResistance = false,
 }) => {
   // Count questions in the ORIGINAL transcript (before nextMessage) to see what's been answered
   const {
@@ -4201,6 +4202,11 @@ const handleDiagnosticMode = async ({
     (hasHighConfidence || // Confidence is high enough
       hasMaxQuestions || // Can't ask more questions
       userWantsToGenerateReport); // User explicitly requested
+
+  // Map Resistance: full report is generated at POST .../map-resistance/finalize — not mid-chat
+  if (stage1MapResistance) {
+    shouldAutoFinalize = false;
+  }
 
   // Log why we're NOT finalizing if confidence is low
   if (
@@ -6838,6 +6844,7 @@ Take your time and share what feels true for you.`,
       latestUserSession, // Pass latest user session
       confidenceResult, // Optimization: Avoid redundant calculation
       retrieved, // Optimization: Avoid redundant retrieval
+      stage1MapResistance,
     });
   }
 

@@ -258,6 +258,7 @@ const updateUserClubMembership = async ({
     isCreatorClub: isCreatorClub.club,
     isCreatorClubBronze: isCreatorClub.bronze,
     isCreatorClubSilver: isCreatorClub.silver,
+    isCreatorClubAccelerate: isCreatorClub.accelerate,
     lastUpdated: new Date().toISOString(),
     products: diagnosticContext.products || [],
     offers: diagnosticContext.offers || [],
@@ -289,7 +290,10 @@ const isCreatorClubMember = (context = {}) => {
 
   const bronze = titles.some((t) => t.includes("creator club bronze"));
   const silver = titles.some((t) => t.includes("creator club silver"));
-  const club = titles.some((t) => t.includes("creator club"));
+  const accelerate = titles.some(
+    (t) => t.includes("accelerate") || t.includes("creator club accelerate"),
+  );
+  const club = titles.some((t) => t.includes("creator club")) || accelerate;
 
   // --- Logging for debugging ---
   console.log("==== Creator Club Check ====");
@@ -308,6 +312,7 @@ const isCreatorClubMember = (context = {}) => {
     club,
     bronze,
     silver,
+    accelerate,
   };
 };
 

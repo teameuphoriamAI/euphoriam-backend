@@ -40,6 +40,7 @@ const getTier = (user) => {
   const m = parseMembership(user);
   const titles = productTitles(m);
 
+  if (m.isCreatorClubAccelerate) return TIERS.ACCELERATE;
   if (titles.some((t) => t.includes("accelerate"))) return TIERS.ACCELERATE;
   if (m.isCreatorClubSilver) return TIERS.SILVER;
   if (m.isCreatorClubBronze) return TIERS.BRONZE;

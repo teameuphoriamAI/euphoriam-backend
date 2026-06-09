@@ -116,14 +116,11 @@ const createBarcodeForProduct = async (req, res) => {
 };
 const getAllBarcode = async (req, res) => {
   try {
-    const getAllBarcode = await Barcode.findAll();
-    if (getAllBarcode.length <= 0) {
-      return errorResponse(res, "No barcode found", 404);
-    }
-    return successResponse(res, "barcode fetched duccessfully", getAllBarcode);
+    const rows = await Barcode.findAll({ order: [["createdAt", "DESC"]] });
+    return successResponse(res, "barcode fetched successfully", rows);
   } catch (error) {
-    console.error("QR Generation Error:", error);
-    return errorResponse(res, "Failed to get QR code");
+    console.error("Barcode fetch error:", error);
+    return errorResponse(res, "Failed to get barcodes");
   }
 };
 const deleteBarcode = async (req, res) => {

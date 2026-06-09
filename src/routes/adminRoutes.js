@@ -53,6 +53,8 @@ router.get(
   "/users/:userId/reports",
   asyncHandler(adminController.getUserReports),
 );
+router.patch("/users/:id", asyncHandler(adminController.changeUserStatus));
+router.delete("/users/:id", asyncHandler(adminController.deleteUser));
 
 // Prompt management
 router.get("/prompts", asyncHandler(adminController.getAllPrompts));

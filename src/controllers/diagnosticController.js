@@ -162,7 +162,13 @@ const findOrCreateCreatorUser = async (req, res) => {
 
     email = email.toLowerCase().trim();
     name = name?.trim();
+  // Find user
+  let user = await User.findOne({ where: { email } });
 
+  if (user.status === UserStatus.BLOCK) {
+    return errorResponse(res, "Account is blocked", 400);
+
+  }
     // 🔍 Check Kajabi membership FIRST
     const { clubStatus, diagnosticContext } = await checkCreatorClubByEmail({
       email,
@@ -173,14 +179,6 @@ const findOrCreateCreatorUser = async (req, res) => {
       typeof clubStatus === "object" &&
       (clubStatus.club || clubStatus.bronze || clubStatus.silver);
 
-    
-    // Find user
-    let user = await User.findOne({ where: { email } });
-
-    if (user.status === UserStatus.BLOCK) {
-      return errorResponse(res, "Account is blocked", 400);
-
-    }
     if (!isPaid) {
       const { buildFreeFunnelCheckUserResult } = require("./funnelController");
       const funnelPayload = await buildFreeFunnelCheckUserResult(email);

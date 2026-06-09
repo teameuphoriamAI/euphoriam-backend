@@ -58,7 +58,7 @@ const {
   detectDiscoveryEndIntents,
 } = require("../utils/validation");
 const { updateMetricsFromDiscovery } = require("../helpers/metricsCalculator");
-const { PromptType } = require("../utils/types");
+const { PromptType, UserStatus } = require("../utils/types");
 const { isCreatorClubMember } = require("./userController");
 const { FunnelAccess } = require("../models/funnelAccessModel");
 const { generateFunnelToken } = require("../utils/funnelToken");
@@ -173,16 +173,23 @@ const findOrCreateCreatorUser = async (req, res) => {
       typeof clubStatus === "object" &&
       (clubStatus.club || clubStatus.bronze || clubStatus.silver);
 
+    
+    // Find user
+    let user = await User.findOne({ where: { email } });
+
+    if (user.status === UserStatus.BLOCK) {
+      return errorResponse(res, "Account is blocked", 400);
+
+    }
     if (!isPaid) {
       const { buildFreeFunnelCheckUserResult } = require("./funnelController");
       const funnelPayload = await buildFreeFunnelCheckUserResult(email);
       return successResponse(res, "Free funnel access", funnelPayload);
     }
-    // Find user
-    let user = await User.findOne({ where: { email } });
     if (user && name) {
       return errorResponse(res, "Account already created", 400);
     }
+  
     // New user= must provide name
     if (!user) {
       if (!name) {

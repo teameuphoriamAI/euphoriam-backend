@@ -165,7 +165,7 @@ const findOrCreateCreatorUser = async (req, res) => {
   // Find user
   let user = await User.findOne({ where: { email } });
 
-  if (user.status === UserStatus.BLOCK) {
+  if (user && user.status === UserStatus.BLOCK) {
     return errorResponse(res, "Account is blocked", 400);
 
   }

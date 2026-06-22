@@ -10,6 +10,17 @@ const router = express.Router();
 const stage1Auth = [auth, requirePaidStage1];
 
 router.get("/home", ...stage1Auth, asyncHandler(stage1Controller.getHome));
+router.patch("/profile", ...stage1Auth, asyncHandler(stage1Controller.updateProfile));
+router.post(
+  "/profile/avatar",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.uploadAvatar),
+);
+router.delete(
+  "/profile/avatar",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.deleteAvatar),
+);
 router.get("/onboarding/status", ...stage1Auth, asyncHandler(stage1Controller.getOnboardingStatus));
 router.patch(
   "/walkthrough/complete",

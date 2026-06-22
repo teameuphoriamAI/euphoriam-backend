@@ -71,7 +71,10 @@ const extractStructuredPacket = async ({ reportText = "", transcript = [] }) => 
   };
 };
 
+const { inferStructureType } = require("./stage1InferStructureType");
+
 module.exports = {
   extractStructuredPacket,
   formatTranscript,
+  inferStructureType,
 };

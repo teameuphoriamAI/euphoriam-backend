@@ -143,10 +143,13 @@ const extractViaOpenAI = async ({
     parsed = {};
   }
 
-  return finishStructure({
-    ...parsed,
-    ...packetToDomainStructure({ diagnostic_packet: parsed, constraint_packet: parsed }),
-  });
+  return finishStructure(
+    {
+      ...parsed,
+      ...packetToDomainStructure({ diagnostic_packet: parsed, constraint_packet: parsed }),
+    },
+    { transcript, activeGoalContext },
+  );
 };
 
 /**
@@ -177,7 +180,7 @@ const extractGoalStructureFromTranscript = async ({
         }),
       );
       if (structureHasMinimalContent(merged, { transcript })) {
-        return finishStructure(merged, { transcript });
+        return finishStructure(merged, { transcript, activeGoalContext });
       }
       console.warn(
         "[stage1MapResistanceExtract] Python finalize missing vortex; trying fallbacks",
@@ -197,7 +200,7 @@ const extractGoalStructureFromTranscript = async ({
     });
     tryMerge(packetToDomainStructure(packet));
     if (structureHasMinimalContent(merged, { transcript })) {
-      return finishStructure(merged, { transcript });
+      return finishStructure(merged, { transcript, activeGoalContext });
     }
   } catch (err) {
     console.warn("[stage1MapResistanceExtract] structuredPacket path failed:", err.message);
@@ -213,7 +216,7 @@ const extractGoalStructureFromTranscript = async ({
       }),
     );
     if (structureHasMinimalContent(merged, { transcript })) {
-      return finishStructure(merged, { transcript });
+      return finishStructure(merged, { transcript, activeGoalContext });
     }
   } catch (err) {
     console.warn("[stage1MapResistanceExtract] OpenAI extract failed:", err.message);
@@ -221,7 +224,7 @@ const extractGoalStructureFromTranscript = async ({
 
   console.warn("[stage1MapResistanceExtract] Using heuristic transcript fallback (no vortex)");
   tryMerge(heuristicStructureFromTranscript(transcript));
-  return finishStructure(merged, { transcript });
+  return finishStructure(merged, { transcript, activeGoalContext });
 };
 
 module.exports = {

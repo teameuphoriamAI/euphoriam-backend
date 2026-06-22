@@ -1,5 +1,6 @@
 const { normalizeSuccessStrategy } = require("./stage1SuccessStrategy");
 const { enrichProgressMetricsFromMap } = require("./stage1ProgressMetrics");
+const { enrichResistanceNarrative } = require("./stage1ResistanceNarrative");
 const {
   EGOIC_ORIENTATIONS,
   LACK_CHANNELS,
@@ -345,6 +346,13 @@ const mergeExtractedStructures = (base = {}, patch = {}) => {
     "opposite_belief",
     "opposite_behaviour",
     "success_rule",
+    "structure_type",
+    "contradiction_statement",
+    "structure_takeover_moment",
+    "flip_belief",
+    "flip_rule",
+    "flip_90_day_projection",
+    "contradiction_rate",
   ];
   for (const key of keys) {
     const val = patch?.[key];
@@ -425,13 +433,15 @@ const normalizeExtractedStructure = (structure, options = {}) => {
     ? out.top_3_avoidance_behaviours.filter((x) => x != null && String(x).trim()).slice(0, 3)
     : [];
 
-  if (top3.length < 3 && Array.isArray(transcript) && transcript.length) {
+  // Only fall back to raw transcript lines when the LLM produced NOTHING.
+  // Otherwise we echo the user's own answers back into the diagnosis.
+  if (top3.length === 0 && Array.isArray(transcript) && transcript.length) {
     const fromTranscript = (transcript || [])
       .filter((m) => m?.role === "user")
       .map((m) => String(m.content || "").trim())
       .filter(isUsableTranscriptAnswer)
       .filter((line) => /tell myself|delay|later|phone|scroll|distract|avoid|postpone|rest|tomorrow/i.test(line));
-    if (fromTranscript.length >= top3.length) {
+    if (fromTranscript.length) {
       top3 = [...new Set(fromTranscript)].slice(0, 3);
       out.top_3_avoidance_behaviours = top3;
     }
@@ -464,27 +474,31 @@ const normalizeExtractedStructure = (structure, options = {}) => {
 
   out.recovery_speed = inferRecoverySpeed(out, transcript);
 
+  // Prefer the LLM-synthesized value. Only pull a raw transcript answer when
+  // the model left the field empty (last-resort fallback), so the diagnosis
+  // is an insight — not the user's own answer echoed back.
   out.core_fear =
+    out.core_fear?.trim() ||
     extractTranscriptAnswerByPatterns(transcript, [
       /\*\*Q\d+[^*\n]*[Ff]ear of/i,
       /what specific fear/i,
       /\bafraid of/i,
       /core fear/i,
     ]) ||
-    out.core_fear?.trim() ||
     null;
 
   out.perceived_risk =
+    out.perceived_risk?.trim() ||
     extractTranscriptAnswerByPatterns(transcript, [
       /perceived risk/i,
       /feels risky/i,
       /feels unsafe/i,
       /what feels risky/i,
     ]) ||
-    out.perceived_risk?.trim() ||
     null;
 
   out.past_pattern =
+    out.past_pattern?.trim() ||
     extractTranscriptAnswerByPatterns(transcript, [
       /past pattern/i,
       /when you['’]ve tried/i,
@@ -493,10 +507,10 @@ const normalizeExtractedStructure = (structure, options = {}) => {
       /\*\*Q\d+[^*\n]*[Ff]ear of [Dd]isappointment/i,
     ]) ||
     extractTranscriptAnswer(transcript, 8) ||
-    out.past_pattern?.trim() ||
     null;
 
   out.required_role =
+    out.required_role?.trim() ||
     extractTranscriptAnswerByPatterns(transcript, [
       /required role/i,
       /role or identity/i,
@@ -504,7 +518,6 @@ const normalizeExtractedStructure = (structure, options = {}) => {
       /step into/i,
       /what role must you embody/i,
     ]) ||
-    out.required_role?.trim() ||
     null;
 
   out = enrichSuccessStrategyFromSignature(out);
@@ -528,6 +541,13 @@ const normalizeExtractedStructure = (structure, options = {}) => {
     }
     out.success_strategy = ss;
   }
+
+  const goalContext = options.activeGoalContext || {
+    specific_goal: out.goal_title,
+    goal_name: out.goal_title,
+    measurable_outcome: out.desired_outcome,
+  };
+  out = enrichResistanceNarrative(out, { ...options, activeGoalContext: goalContext });
 
   return out;
 };

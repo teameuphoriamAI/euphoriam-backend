@@ -33,7 +33,36 @@ const uploadBufferToSupabase = async ({
   return { path: data?.path || objectPath, url: publicUrl };
 };
 
-module.exports = { uploadBufferToSupabase };
+/**
+ * Delete an object from Supabase storage. Ignores missing files.
+ */
+const deleteObjectFromSupabase = async ({
+  objectPath,
+  bucket = process.env.SUPABASE_STORAGE_BUCKET_REPORTS || "reports",
+}) => {
+  if (!objectPath) return;
+  const { error } = await supabase.storage.from(bucket).remove([objectPath]);
+  if (error && !/not found|does not exist/i.test(error.message || "")) {
+    throw error;
+  }
+};
+
+/**
+ * Resolve storage object path from a Supabase public URL.
+ */
+const objectPathFromPublicUrl = (publicUrl, bucket) => {
+  if (!publicUrl || !bucket) return null;
+  const marker = `/object/public/${bucket}/`;
+  const idx = String(publicUrl).indexOf(marker);
+  if (idx < 0) return null;
+  return decodeURIComponent(String(publicUrl).slice(idx + marker.length));
+};
+
+module.exports = {
+  uploadBufferToSupabase,
+  deleteObjectFromSupabase,
+  objectPathFromPublicUrl,
+};
 
 
 

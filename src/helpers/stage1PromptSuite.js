@@ -48,12 +48,20 @@ You MUST return all of:
 - win_condition: observable proof (e.g. "Walk done. Not perfect. Done.")
 - recovery_speed: "Slow" | "Moderate" | "Fast" — how quickly they collapse/pull back after action
 - core_fear, perceived_risk, past_pattern, required_role: short strings from transcript themes when evident
+- structure_type: one of "Orbit" | "Towards & Away" | "Something's Wrong With Me" | "Progress with Snapback"
+- contradiction_statement: ONE sentence naming the conscious goal vs the unconscious structure it actually powers (e.g. "You say you want consistent income, but your structure keeps you financially invisible — so you power avoidance instead of progress.")
+- structure_takeover_moment: { trigger, rule_obeyed, sabotage_sequence } — the exact moment the structure takes over: what triggers it, the rule it obeys, and the avoidance/orbit sequence that follows
+- flip_belief: the OPPOSITE installed belief from the Brain Prompt (the new code, not the vortex belief)
+- flip_rule: the new operating rule that replaces protector_rule
+- flip_90_day_projection: what becomes possible in 90 days if they live the flip toward THIS goal
 
 Rules:
 - Anchor every field to ACTIVE_GOAL_CONTEXT (domain, goal, outcome, milestones).
 - daily_rep must come from the diagnosis — do NOT copy today_visible_action from goal onboarding unless it is clearly the green rep.
 - success_strategy must be the structural opposite for this vortex, not a restatement of desired_outcome.
-- Use null only when truly unknown — vortex fields are required.
+- contradiction_statement, structure_takeover_moment, flip_belief, flip_rule and flip_90_day_projection MUST be written from THIS transcript and goal — never generic. These power the "What gets in the way" view.
+- flip_belief / flip_rule are the structural opposite of the vortex (the "code install"), aligned with success_strategy.belief.
+- Use null only when truly unknown — vortex and contradiction fields are required.
 
 Return ONLY valid JSON with these top-level keys:
 {
@@ -72,7 +80,14 @@ Return ONLY valid JSON with these top-level keys:
   "core_fear": string|null,
   "perceived_risk": string|null,
   "past_pattern": string|null,
-  "required_role": string|null
+  "required_role": string|null,
+  "structure_type": "Orbit"|"Towards & Away"|"Something's Wrong With Me"|"Progress with Snapback",
+  "contradiction_statement": string,
+  "structure_takeover_moment": { "trigger": string, "rule_obeyed": string, "sabotage_sequence": string },
+  "flip_belief": string,
+  "flip_rule": string,
+  "flip_90_day_projection": string,
+  "contradiction_rate": "low"|"medium"|"high"
 }`;
 
 const buildMapResistanceIntroText = (goalContext) => {

@@ -2,7 +2,9 @@ const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { successResponse, errorResponse } = require("../utils/response");
 const { normalizeDomain, DOMAIN_LABELS } = require("../constants/domains");
-const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
+const {
+  MAP_RESISTANCE_TARGET_QUESTIONS,
+} = require("../constants/mapResistance");
 const {
   getTier,
   canAddStoredGoal,
@@ -31,10 +33,16 @@ const {
   buildActiveGoalContext,
   buildMapResistanceIntroText,
 } = require("../helpers/stage1GoalContext");
-const { extractGoalStructureFromTranscript } = require("../helpers/stage1MapResistanceExtract");
+const {
+  extractGoalStructureFromTranscript,
+} = require("../helpers/stage1MapResistanceExtract");
 const { transcriptsDiffer } = require("../helpers/stage1MapResistanceResume");
-const { listMapResistanceHistory } = require("../helpers/stage1MapResistanceHistory");
-const { mapResistanceChatViaPython } = require("../helpers/stage1MapResistanceViaAi");
+const {
+  listMapResistanceHistory,
+} = require("../helpers/stage1MapResistanceHistory");
+const {
+  mapResistanceChatViaPython,
+} = require("../helpers/stage1MapResistanceViaAi");
 const aiService = require("../clients/aiService");
 const { chatbotDiagnosticFreeform } = require("./diagnosticController");
 const { Chat } = require("../models/chatModel");
@@ -76,6 +84,7 @@ const buildHomePayload = (user, stage1) => {
       onboarding_status === "none" || onboarding_status === "goals_draft",
     walkthrough_completed: Boolean(stage1.walkthrough_completed),
     dashboard: buildHomeDashboard(stage1),
+    avatar_url: user?.metadata?.avatar_url || null,
   };
 };
 
@@ -158,9 +167,13 @@ const getDomain = async (req, res) => {
 
     const isActive = (stage1.active_domains || []).includes(domain);
     const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
-    const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+    const proof_logs = Array.isArray(stage1.proof_logs)
+      ? stage1.proof_logs
+      : [];
     const { enrichMapForClient } = require("../helpers/stage1MapStructure");
-    const { ensureInitialDiagnosticOnStage1 } = require("../helpers/stage1CoachingMemory");
+    const {
+      ensureInitialDiagnosticOnStage1,
+    } = require("../helpers/stage1CoachingMemory");
 
     let stage1ForResponse = stage1;
     const { stage1: withDiagnostic, changed } = ensureInitialDiagnosticOnStage1(
@@ -171,7 +184,9 @@ const getDomain = async (req, res) => {
       stage1ForResponse = await persistStage1ForUser(user.id, withDiagnostic);
     }
 
-    const mapRow = (stage1ForResponse.domain_maps || []).find((m) => m.domain === domain);
+    const mapRow = (stage1ForResponse.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     const mapForClient = enrichMapForClient(
       applyProofMetricsToMap({ ...mapRow }, proof_logs),
       {
@@ -183,13 +198,21 @@ const getDomain = async (req, res) => {
     return successResponse(res, "Domain detail", {
       domain,
       label: DOMAIN_LABELS[domain],
-      status: isActive ? "active" : map.status === "stored" ? "stored" : "draft",
+      status: isActive
+        ? "active"
+        : map.status === "stored"
+          ? "stored"
+          : "draft",
       map: mapForClient,
       is_primary: stage1.primary_domain === domain,
       onboarding_status: computeOnboardingStatus(stage1),
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to load domain", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to load domain",
+      err.status || 500,
+    );
   }
 };
 
@@ -201,7 +224,9 @@ const createOrUpdateDomain = async (req, res) => {
     if (!domain) return errorResponse(res, "Valid domain is required", 400);
 
     let stage1 = await loadStage1ForUser(user);
-    const existing = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const existing = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     const storedCount = countStoredMaps(stage1.domain_maps || []);
 
     if (!existing && !canAddStoredGoal(user, storedCount, false)) {
@@ -219,7 +244,11 @@ const createOrUpdateDomain = async (req, res) => {
     }
 
     stage1 = upsertDomainMap(stage1, domain, patch);
-    stage1 = ensurePrimaryAfterGoalSave(stage1, domain, getTierLimits(getTier(user)));
+    stage1 = ensurePrimaryAfterGoalSave(
+      stage1,
+      domain,
+      getTierLimits(getTier(user)),
+    );
     stage1 = await persistStage1ForUser(user.id, stage1);
 
     return successResponse(res, "Domain goals saved", {
@@ -228,7 +257,11 @@ const createOrUpdateDomain = async (req, res) => {
       ...buildHomePayload(user, stage1),
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to save domain", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to save domain",
+      err.status || 500,
+    );
   }
 };
 
@@ -240,9 +273,15 @@ const patchDomain = async (req, res) => {
     if (!domain) return errorResponse(res, "Invalid domain", 400);
 
     let stage1 = await loadStage1ForUser(user);
-    const existing = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const existing = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     if (!existing) {
-      return errorResponse(res, "Domain not found. POST to create goals first.", 404);
+      return errorResponse(
+        res,
+        "Domain not found. POST to create goals first.",
+        404,
+      );
     }
 
     const patch = pickAllowedGoalFields(req.body);
@@ -263,7 +302,11 @@ const patchDomain = async (req, res) => {
       onboarding_status: computeOnboardingStatus(stage1),
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to update domain", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to update domain",
+      err.status || 500,
+    );
   }
 };
 
@@ -275,19 +318,29 @@ const activateDomain = async (req, res) => {
     if (!domain) return errorResponse(res, "Invalid domain", 400);
 
     let stage1 = await loadStage1ForUser(user);
-    const existing = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const existing = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     if (!existing) {
-      return errorResponse(res, "Save goals for this domain before activating.", 404);
+      return errorResponse(
+        res,
+        "Save goals for this domain before activating.",
+        404,
+      );
     }
 
-    const activeCount = (stage1.domain_maps || []).filter((m) => m.status === "active").length;
+    const activeCount = (stage1.domain_maps || []).filter(
+      (m) => m.status === "active",
+    ).length;
     const alreadyActive = existing.status === "active";
 
     if (!alreadyActive && !canActivateDomain(user, activeCount, false)) {
       const tier = getTier(user);
       const limits = getTierLimits(tier);
       if (limits.maxActiveDomains === 1) {
-        const result = setActiveDomain(stage1, domain, limits, { setPrimary: true });
+        const result = setActiveDomain(stage1, domain, limits, {
+          setPrimary: true,
+        });
         if (!result.ok) return errorResponse(res, result.error, 400);
         stage1 = result.stage1;
       } else {
@@ -304,9 +357,14 @@ const activateDomain = async (req, res) => {
           : req.body?.set_primary === true
             ? true
             : undefined;
-      const result = setActiveDomain(stage1, domain, getTierLimits(getTier(user)), {
-        setPrimary,
-      });
+      const result = setActiveDomain(
+        stage1,
+        domain,
+        getTierLimits(getTier(user)),
+        {
+          setPrimary,
+        },
+      );
       if (!result.ok) return errorResponse(res, result.error, 400);
       stage1 = result.stage1;
     }
@@ -318,7 +376,11 @@ const activateDomain = async (req, res) => {
       ...buildHomePayload(user, stage1),
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to activate domain", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to activate domain",
+      err.status || 500,
+    );
   }
 };
 
@@ -326,20 +388,27 @@ const activateDomain = async (req, res) => {
 const setDomainPrimary = async (req, res) => {
   try {
     const user = await resolveUser(req);
+
     const domain = normalizeDomain(req.params.domain);
     if (!domain) return errorResponse(res, "Invalid domain", 400);
 
     let stage1 = await loadStage1ForUser(user);
+    console.log("stage", stage1, "domain", domain);
+
     const result = setPrimaryDomain(stage1, domain);
     if (!result.ok) return errorResponse(res, result.error, 400);
 
-    stage1 = await persistStage1ForUser(user.id, stage1);
+    stage1 = await persistStage1ForUser(user.id, result.stage1);
     return successResponse(res, "Primary domain updated", {
       domain,
       ...buildHomePayload(user, stage1),
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to set primary domain", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to set primary domain",
+      err.status || 500,
+    );
   }
 };
 
@@ -360,7 +429,11 @@ const deactivateDomainHandler = async (req, res) => {
       ...buildHomePayload(user, stage1),
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to deactivate domain", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to deactivate domain",
+      err.status || 500,
+    );
   }
 };
 
@@ -393,7 +466,11 @@ const mapResistanceChat = async (req, res) => {
       return errorResponse(res, "Domain not found. Save goals first.", 404);
     }
     if (!map.goals_complete) {
-      return errorResponse(res, "Complete all goal fields before Map Resistance.", 400);
+      return errorResponse(
+        res,
+        "Complete all goal fields before Map Resistance.",
+        400,
+      );
     }
 
     if (!stage1.map_resistance_in_progress) {
@@ -416,17 +493,27 @@ const mapResistanceChat = async (req, res) => {
     req.body.stage1MapResistance = true;
     req.body.activeDomain = domain;
     req.body.activeGoalContext = activeGoalContext;
-    req.body.targetCount = req.body.targetCount || MAP_RESISTANCE_TARGET_QUESTIONS;
+    req.body.targetCount =
+      req.body.targetCount || MAP_RESISTANCE_TARGET_QUESTIONS;
     req.body.introPageText =
       req.body.introPageText || buildMapResistanceIntroText(activeGoalContext);
 
     if (aiService.flags.mapResistance && aiService.isEnabled()) {
-      return mapResistanceChatViaPython(req, res, { user, domain, map, stage1 });
+      return mapResistanceChatViaPython(req, res, {
+        user,
+        domain,
+        map,
+        stage1,
+      });
     }
 
     return chatbotDiagnosticFreeform(req, res);
   } catch (err) {
-    return errorResponse(res, err.message || "Map resistance chat failed", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Map resistance chat failed",
+      err.status || 500,
+    );
   }
 };
 
@@ -452,14 +539,19 @@ const finalizeMapResistance = async (req, res) => {
       }
     }
     if (messages.length < 4) {
-      return errorResponse(res, "Transcript too short to finalize Map Resistance.", 400);
+      return errorResponse(
+        res,
+        "Transcript too short to finalize Map Resistance.",
+        400,
+      );
     }
 
-    const { resolveFailureStrategyForMap } = require("../helpers/stage1MapStructure");
+    const {
+      resolveFailureStrategyForMap,
+    } = require("../helpers/stage1MapStructure");
     const savedTranscript = map.map_resistance_transcript;
     const remappingTranscript = transcriptsDiffer(messages, savedTranscript);
-    const shouldReextract =
-      Boolean(req.body?.reextract) || remappingTranscript;
+    const shouldReextract = Boolean(req.body?.reextract) || remappingTranscript;
     if (
       map.map_resistance_complete &&
       resolveFailureStrategyForMap(map) &&
@@ -482,7 +574,9 @@ const finalizeMapResistance = async (req, res) => {
     const introText = buildMapResistanceIntroText(activeGoalContext);
     let reportResult = null;
     try {
-      const { generateAndPersistMapResistanceReport } = require("../helpers/stage1MapResistanceReport");
+      const {
+        generateAndPersistMapResistanceReport,
+      } = require("../helpers/stage1MapResistanceReport");
       reportResult = await generateAndPersistMapResistanceReport({
         user,
         domain,
@@ -492,11 +586,16 @@ const finalizeMapResistance = async (req, res) => {
         structure,
       });
     } catch (reportErr) {
-      console.error("[finalizeMapResistance] Report generation failed:", reportErr.message);
+      console.error(
+        "[finalizeMapResistance] Report generation failed:",
+        reportErr.message,
+      );
     }
 
     const completedAt = new Date().toISOString();
-    const existingMap = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const existingMap = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     const preservedMemory = existingMap?.coaching_memory;
 
     stage1 = upsertDomainMap(stage1, domain, {
@@ -518,8 +617,12 @@ const finalizeMapResistance = async (req, res) => {
       ...(preservedMemory ? { coaching_memory: preservedMemory } : {}),
     });
 
-    const { captureInitialDiagnosticIfNeeded } = require("../helpers/stage1CoachingMemory");
-    const mapAfterMerge = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const {
+      captureInitialDiagnosticIfNeeded,
+    } = require("../helpers/stage1CoachingMemory");
+    const mapAfterMerge = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     const mapWithSnapshot = captureInitialDiagnosticIfNeeded(
       mapAfterMerge,
       activeGoalContext,
@@ -550,7 +653,10 @@ const finalizeMapResistance = async (req, res) => {
         where: { userId: user.id, isChatEnded: false },
         order: [["updatedAt", "DESC"]],
       });
-      if (mrChat?.data?.stage1MapResistance && mrChat?.data?.stage1MapResistanceDomain === domain) {
+      if (
+        mrChat?.data?.stage1MapResistance &&
+        mrChat?.data?.stage1MapResistanceDomain === domain
+      ) {
         await mrChat.update({
           isChatEnded: true,
           data: {
@@ -561,13 +667,20 @@ const finalizeMapResistance = async (req, res) => {
         });
       }
     } catch (chatErr) {
-      console.warn("[finalizeMapResistance] Could not close chat:", chatErr.message);
+      console.warn(
+        "[finalizeMapResistance] Could not close chat:",
+        chatErr.message,
+      );
     }
 
-    const updatedMapRaw = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const updatedMapRaw = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
     const { enrichMapForClient } = require("../helpers/stage1MapStructure");
-    const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+    const proof_logs = Array.isArray(stage1.proof_logs)
+      ? stage1.proof_logs
+      : [];
     const updatedMap = enrichMapForClient(
       applyProofMetricsToMap({ ...updatedMapRaw }, proof_logs),
       { proof_logs },
@@ -581,7 +694,11 @@ const finalizeMapResistance = async (req, res) => {
     });
   } catch (err) {
     console.error("[finalizeMapResistance]", err);
-    return errorResponse(res, err.message || "Failed to finalize map resistance", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to finalize map resistance",
+      err.status || 500,
+    );
   }
 };
 
@@ -604,7 +721,11 @@ const regenerateMapResistanceReport = async (req, res) => {
       return errorResponse(res, "Domain not found. Save goals first.", 404);
     }
     if (!map.map_resistance_complete) {
-      return errorResponse(res, "Complete Map Resistance before regenerating the report.", 400);
+      return errorResponse(
+        res,
+        "Complete Map Resistance before regenerating the report.",
+        400,
+      );
     }
 
     const messages = map.map_resistance_transcript;
@@ -618,7 +739,9 @@ const regenerateMapResistanceReport = async (req, res) => {
 
     const activeGoalContext = buildActiveGoalContext(map, domain);
     const introText = buildMapResistanceIntroText(activeGoalContext);
-    const { generateAndPersistMapResistanceReport } = require("../helpers/stage1MapResistanceReport");
+    const {
+      generateAndPersistMapResistanceReport,
+    } = require("../helpers/stage1MapResistanceReport");
 
     const reportResult = await generateAndPersistMapResistanceReport({
       user,
@@ -642,10 +765,14 @@ const regenerateMapResistanceReport = async (req, res) => {
     });
     stage1 = await persistStage1ForUser(user.id, stage1);
 
-    const updatedMapRaw = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    const updatedMapRaw = (stage1.domain_maps || []).find(
+      (m) => m.domain === domain,
+    );
     const { applyProofMetricsToMap } = require("../helpers/stage1Proof");
     const { enrichMapForClient } = require("../helpers/stage1MapStructure");
-    const proof_logs = Array.isArray(stage1.proof_logs) ? stage1.proof_logs : [];
+    const proof_logs = Array.isArray(stage1.proof_logs)
+      ? stage1.proof_logs
+      : [];
     const updatedMap = enrichMapForClient(
       applyProofMetricsToMap({ ...updatedMapRaw }, proof_logs),
       { proof_logs },
@@ -695,7 +822,9 @@ const getMapResistanceReport = async (req, res) => {
       );
     }
 
-    const { getReportCompletenessMeta } = require("../helpers/euphoriamChatbot");
+    const {
+      getReportCompletenessMeta,
+    } = require("../helpers/euphoriamChatbot");
     const completeness = getReportCompletenessMeta(reportText);
     const pdfBase = map.pdf_url || null;
     const pdfUrl = pdfBase
@@ -707,13 +836,20 @@ const getMapResistanceReport = async (req, res) => {
       report_text: reportText,
       report_complete: completeness.complete,
       report_word_count: completeness.wordCount,
-      generated_at: map.diagnostic_report_generated_at || map.map_resistance_completed_at || null,
+      generated_at:
+        map.diagnostic_report_generated_at ||
+        map.map_resistance_completed_at ||
+        null,
       diagnostic_id: map.diagnostic_id || null,
       pdf_url: pdfUrl,
       completeness,
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to load report", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to load report",
+      err.status || 500,
+    );
   }
 };
 
@@ -730,7 +866,11 @@ const restartMapResistance = async (req, res) => {
       return errorResponse(res, "Domain not found. Save goals first.", 404);
     }
     if (!map.goals_complete && !String(map.goal_title || "").trim()) {
-      return errorResponse(res, "Save your goal before starting Map Resistance.", 400);
+      return errorResponse(
+        res,
+        "Save your goal before starting Map Resistance.",
+        400,
+      );
     }
 
     try {
@@ -740,7 +880,10 @@ const restartMapResistance = async (req, res) => {
       });
       for (const chat of openChats) {
         const data = chat.data || {};
-        if (data.stage1MapResistance && data.stage1MapResistanceDomain === domain) {
+        if (
+          data.stage1MapResistance &&
+          data.stage1MapResistanceDomain === domain
+        ) {
           await chat.update({
             isChatEnded: true,
             data: {
@@ -751,7 +894,10 @@ const restartMapResistance = async (req, res) => {
         }
       }
     } catch (chatErr) {
-      console.warn("[restartMapResistance] Could not close open chat:", chatErr.message);
+      console.warn(
+        "[restartMapResistance] Could not close open chat:",
+        chatErr.message,
+      );
     }
 
     stage1 = {
@@ -766,7 +912,11 @@ const restartMapResistance = async (req, res) => {
       map_resistance_in_progress: true,
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to restart map resistance", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to restart map resistance",
+      err.status || 500,
+    );
   }
 };
 
@@ -783,7 +933,11 @@ const getMapResistanceHistory = async (req, res) => {
       count: sessions.length,
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to load history", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to load history",
+      err.status || 500,
+    );
   }
 };
 
@@ -801,7 +955,11 @@ const getDomainMapResistanceHistory = async (req, res) => {
       count: sessions.length,
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to load history", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to load history",
+      err.status || 500,
+    );
   }
 };
 
@@ -821,12 +979,178 @@ const completeWalkthrough = async (req, res) => {
       walkthrough_completed_at: stage1.walkthrough_completed_at,
     });
   } catch (err) {
-    return errorResponse(res, err.message || "Failed to save walkthrough", err.status || 500);
+    return errorResponse(
+      res,
+      err.message || "Failed to save walkthrough",
+      err.status || 500,
+    );
+  }
+};
+
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024; // 5MB
+const ALLOWED_AVATAR_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+]);
+const AVATAR_EXT = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
+const AVATAR_BUCKET = () =>
+  process.env.SUPABASE_STORAGE_BUCKET_AVATARS || "avatars";
+
+const resolveAvatarStoragePath = (user) => {
+  const metadata = user?.metadata || {};
+  if (metadata.avatar_storage_path) return metadata.avatar_storage_path;
+  const {
+    objectPathFromPublicUrl,
+  } = require("../utils/storage");
+  return objectPathFromPublicUrl(metadata.avatar_url, AVATAR_BUCKET());
+};
+
+const removeStoredAvatar = async (user) => {
+  const objectPath = resolveAvatarStoragePath(user);
+  if (!objectPath) return;
+  const { deleteObjectFromSupabase } = require("../utils/storage");
+  await deleteObjectFromSupabase({
+    objectPath,
+    bucket: AVATAR_BUCKET(),
+  });
+};
+
+/** PATCH /api/stage1/profile — update display name. */
+const updateProfile = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const name = String(req.body?.name || "").trim();
+    if (!name) {
+      return errorResponse(res, "Name is required.", 400);
+    }
+    if (name.length > 120) {
+      return errorResponse(res, "Name is too long (max 120 characters).", 400);
+    }
+
+    await withDbSlot(() =>
+      User.update({ name }, { where: { id: user.id } }),
+    );
+
+    return successResponse(res, "Profile updated", { name });
+  } catch (err) {
+    console.error("[stage1] updateProfile failed:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to update profile",
+      err.status || 500,
+    );
+  }
+};
+
+/** DELETE /api/stage1/profile/avatar — remove avatar from storage and user metadata. */
+const deleteAvatar = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    await removeStoredAvatar(user);
+
+    const metadata = { ...(user.metadata || {}) };
+    delete metadata.avatar_url;
+    delete metadata.avatar_storage_path;
+
+    await withDbSlot(() =>
+      User.update({ metadata }, { where: { id: user.id } }),
+    );
+
+    return successResponse(res, "Avatar removed", { avatar_url: null });
+  } catch (err) {
+    console.error("[stage1] deleteAvatar failed:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to remove avatar",
+      err.status || 500,
+    );
+  }
+};
+
+/** POST /api/stage1/profile/avatar — upload avatar image to Supabase, save URL on user. */
+const uploadAvatar = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+
+    const raw = req.body?.image || req.body?.image_base64 || "";
+    let contentType = req.body?.content_type || "";
+    let base64 = String(raw);
+
+    // Support data URLs: data:image/png;base64,XXXX
+    const dataUrlMatch = base64.match(/^data:([^;]+);base64,(.*)$/s);
+    if (dataUrlMatch) {
+      contentType = contentType || dataUrlMatch[1];
+      base64 = dataUrlMatch[2];
+    }
+
+    contentType = String(contentType || "").toLowerCase().trim();
+    if (!base64) {
+      return errorResponse(res, "No image provided.", 400);
+    }
+    if (!ALLOWED_AVATAR_TYPES.has(contentType)) {
+      return errorResponse(
+        res,
+        "Unsupported image type. Use PNG, JPG, WEBP, or GIF.",
+        400,
+      );
+    }
+
+    const buffer = Buffer.from(base64, "base64");
+    if (!buffer.length) {
+      return errorResponse(res, "Invalid image data.", 400);
+    }
+    if (buffer.length > MAX_AVATAR_BYTES) {
+      return errorResponse(res, "Image too large (max 5MB).", 400);
+    }
+
+    await removeStoredAvatar(user);
+
+    const { uploadBufferToSupabase } = require("../utils/storage");
+    const ext = AVATAR_EXT[contentType] || "png";
+    const objectPath = `avatars/${user.id}-${Date.now()}.${ext}`;
+    const bucket = AVATAR_BUCKET();
+    const { url } = await uploadBufferToSupabase({
+      buffer,
+      objectPath,
+      bucket,
+      contentType,
+    });
+
+    const metadata = {
+      ...(user.metadata || {}),
+      avatar_url: url,
+      avatar_storage_path: objectPath,
+    };
+    await withDbSlot(() =>
+      User.update({ metadata }, { where: { id: user.id } }),
+    );
+
+    return successResponse(res, "Avatar updated", { avatar_url: url });
+  } catch (err) {
+    console.error("[stage1] uploadAvatar failed:", err);
+    return errorResponse(
+      res,
+      err.message || "Failed to upload avatar",
+      err.status || 500,
+    );
   }
 };
 
 module.exports = {
   getHome,
+  updateProfile,
+  uploadAvatar,
+  deleteAvatar,
   listDomains,
   getDomain,
   createOrUpdateDomain,

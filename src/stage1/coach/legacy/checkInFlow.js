@@ -27,7 +27,7 @@ const collectRecentPatterns = (map, memory, coachContext) => {
   return patterns.slice(0, 6);
 };
 
-const { isPlausibleGreenRepName } = require("./stage1CoachGreenRepUtils");
+const { isPlausibleGreenRepName } = require("../utils/greenRep");
 
 const resolveLastGreenRep = (memory, map, continuity = null) => {
   if (continuity?.last_green_rep?.name && isPlausibleGreenRepName(continuity.last_green_rep.name)) {
@@ -108,7 +108,7 @@ const parseYesNo = (text) => {
   return null;
 };
 
-const { buildHumanCoachOpening } = require("./stage1CoachNaturalLanguage");
+const { buildHumanCoachOpening } = require("../context/naturalLanguage");
 
 /** Natural human greeting + memory recap + exactly ONE opening question. */
 const buildCoachOpeningCheckin = (ctx) => buildHumanCoachOpening(ctx);
@@ -117,8 +117,8 @@ const {
   buildHumanAcknowledgment,
   buildAdaptiveFollowUpQuestion,
   isSubstantiveCheckInAnswer,
-} = require("./stage1CoachNaturalLanguage");
-const { detectProgressSignals } = require("./stage1CoachProgress");
+} = require("../context/naturalLanguage");
+const { detectProgressSignals } = require("../utils/progress");
 
 const questionForStep = (step, { lastRepName, answers }) => {
   switch (step) {

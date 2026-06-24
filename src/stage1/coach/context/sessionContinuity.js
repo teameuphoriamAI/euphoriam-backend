@@ -1,14 +1,7 @@
-const { ensureCoachingMemory } = require("./stage1CoachingMemory");
+const { ensureCoachingMemory } = require("./coachingMemory");
+const { isPositiveProofReport, isSetbackOrGapReport } = require("../signals/setback");
 
-const looksLikeProof = (text) => {
-  const t = String(text || "").trim();
-  if (t.length < 3) return false;
-  return (
-    /\d+\s*(?:hrs?|hours?|dollars?)|\d+\s*dollar|\$|\/hr|an hr|generated|earned|competed|completed|outreach|reached out|worked\s+\d/i.test(
-      t,
-    ) || /\bi did it\b/i.test(t)
-  );
-};
+const looksLikeProof = (text) => isPositiveProofReport(text);
 
 const DEVALUATION_SNIPPET =
   /\b(not enough|too little|less money|too less|too small|not good enough|so+ less|feels its not enough|did too little)\b/i;
@@ -19,7 +12,28 @@ const COLLAPSE_SNIPPET =
 const WIN_SNIPPET =
   /\b(earned|made|generated|worked|got paid|\$\d+|\d+\s*(?:hrs?|hours?|hr|hour|dollar))/i;
 
-const { isPlausibleGreenRepName } = require("./stage1CoachGreenRepUtils");
+const { isPlausibleGreenRepName } = require("../utils/greenRep");
+
+const RELATIONSHIP_SNIPPET =
+  /\b(overthink|no one|nobody|alone|relationship|trust|mirror|honest|visible|kindness|express|rep|proof|stuck|same thing|nothing special)\b/i;
+
+const getLastMeaningfulCoachSession = (stage1, domain) => {
+  const sessions = Array.isArray(stage1?.coach_session_log) ? stage1.coach_session_log : [];
+  const candidates = sessions
+    .filter((s) => s.domain === domain)
+    .filter(
+      (s) =>
+        s.ended_at ||
+        (s.turn_count || 0) >= 2 ||
+        (Array.isArray(s.messages) && s.messages.length >= 4),
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.updated_at || b.ended_at || b.started_at) -
+        new Date(a.updated_at || a.ended_at || a.started_at),
+    );
+  return candidates[0] || null;
+};
 
 const getLastEndedCoachSession = (stage1, domain) => {
   const sessions = Array.isArray(stage1?.coach_session_log) ? stage1.coach_session_log : [];
@@ -60,7 +74,12 @@ const extractSessionNarrative = (session) => {
   }
 
   const substantive = [...snippets].reverse().find((t) => t.length >= 20);
-  return substantive ? substantive.slice(0, 160) : snippets[snippets.length - 1]?.slice(0, 160) || null;
+  if (substantive) return substantive.slice(0, 160);
+
+  const relationship = [...snippets].reverse().find((t) => RELATIONSHIP_SNIPPET.test(t));
+  if (relationship) return relationship.slice(0, 160);
+
+  return snippets[snippets.length - 1]?.slice(0, 160) || null;
 };
 
 const detectSessionPattern = (session) => {
@@ -93,12 +112,21 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
     .slice(0, 5);
 
   const lastEnded = getLastEndedCoachSession(stage1, domain);
-  const userSnippets = extractUserSnippets(lastEnded);
-  const integration = lastEnded?.progress_integration || null;
-  const lastSessionNarrative = extractSessionNarrative(lastEnded);
-  const detectedPattern = detectSessionPattern(lastEnded);
+  const lastMeaningful = lastEnded || getLastMeaningfulCoachSession(stage1, domain);
+  const memorySessions = (coachContext?.coaching_sessions || memory.coaching_sessions || [])
+    .filter((s) => !domain || s.domain === domain)
+    .slice(-5);
+  const lastMemorySession = [...memorySessions].reverse().find(
+    (s) => s.session_summary || (s.turn_count || 0) >= 2 || s.ended_at,
+  );
+
+  const userSnippets = extractUserSnippets(lastMeaningful);
+  const integration = lastMeaningful?.progress_integration || null;
+  const lastSessionNarrative = extractSessionNarrative(lastMeaningful);
+  const detectedPattern = detectSessionPattern(lastMeaningful);
 
   const proofFromSession = userSnippets.filter((t) => looksLikeProof(t));
+  const setbackFromSession = userSnippets.filter((t) => isSetbackOrGapReport(t));
   const proofActions = [
     ...proofFromSession,
     integration?.answers?.acknowledge_note,
@@ -125,6 +153,7 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
   };
 
   const uniqueProof = dedupeProofLines(proofActions).slice(0, 2);
+  const recent_setback = dedupeProofLines(setbackFromSession).slice(0, 1);
 
   const devaluationNotes = [
     integration?.answers?.devaluation_note,
@@ -142,8 +171,8 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
 
   const assigned = coachContext?.last_green_rep_assigned;
   const repFromContext = isPlausibleGreenRepName(assigned?.name) ? assigned : null;
-  const repFromSession = isPlausibleGreenRepName(lastEnded?.green_rep_last?.name)
-    ? lastEnded.green_rep_last
+  const repFromSession = isPlausibleGreenRepName(lastMeaningful?.green_rep_last?.name)
+    ? lastMeaningful.green_rep_last
     : null;
 
   const meaningReflection = integration?.answers?.meaning_reflection || null;
@@ -153,10 +182,40 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
     integration?.step === "complete" ||
     uniqueDevaluation.length > 0;
 
+  const priorSessionCount =
+    (stage1?.coach_session_log || []).filter(
+      (s) => s.domain === domain && (s.ended_at || (s.turn_count || 0) > 1),
+    ).length + memorySessions.filter((s) => s.ended_at || (s.turn_count || 0) > 1).length;
+
+  const coachingSummaries = coachContext?.coaching_summaries || memory.coaching_summaries || [];
+  const lastCoachingSummary = coachingSummaries.length
+    ? coachingSummaries[coachingSummaries.length - 1]?.summary
+    : null;
+
+  const resolvedSummary =
+    lastEnded?.session_summary ||
+    lastMeaningful?.session_summary ||
+    lastMemorySession?.session_summary ||
+    coachContext?.last_session_summary ||
+    lastCoachingSummary ||
+    (lastSessionNarrative ? `Last session: ${lastSessionNarrative}` : null);
+
+  const is_returning_member = Boolean(
+    priorSessionCount > 0 ||
+      lastEnded?.ended_at ||
+      uniqueProof.length > 0 ||
+      resolvedSummary ||
+      (memory.green_rep_history || []).length > 0 ||
+      coachingSummaries.length > 0,
+  );
+
+  const lastUserSnippet = userSnippets[userSnippets.length - 1] || null;
+
   return {
-    last_session_id: lastEnded?.id || null,
-    last_session_ended_at: lastEnded?.ended_at || null,
+    last_session_id: lastMeaningful?.id || null,
+    last_session_ended_at: lastEnded?.ended_at || lastMeaningful?.updated_at || null,
     recent_proof: uniqueProof,
+    recent_setback: recent_setback,
     last_session_narrative: lastSessionNarrative,
     detected_pattern: detectedPattern,
     devaluation_notes: uniqueDevaluation,
@@ -164,10 +223,15 @@ const gatherSessionContinuity = (stage1, map, domain, coachContext = {}) => {
     had_proof: uniqueProof.length > 0 || Boolean(lastSessionNarrative),
     had_devaluation: uniqueDevaluation.length > 0 || hadDevaluationFlow,
     last_green_rep: repFromContext || repFromSession || lastValidRep || null,
-    session_summary:
-      lastEnded?.session_summary ||
-      coachContext?.last_session_summary ||
-      (lastSessionNarrative ? `Last session: ${lastSessionNarrative}` : null),
+    session_summary: resolvedSummary,
+    prior_session_count: priorSessionCount,
+    is_returning_member,
+    last_user_snippet: lastUserSnippet,
+    coaching_insights: (lastMemorySession?.coaching_insights || []).slice(-3),
+    active_resistance:
+      lastMemorySession?.current_resistance ||
+      coachContext?.last_session_fear ||
+      null,
   };
 };
 
@@ -194,11 +258,20 @@ const buildContinuityRecapLines = (continuity) => {
 };
 
 const buildContinuityOpeningQuestion = (continuity) => {
+  if (continuity?.recent_setback?.length) {
+    return "You named the gap last time — what happened since then, specifically?";
+  }
   if (continuity?.had_proof && continuity?.had_devaluation) {
-    return "Since that session — is more of the 'not enough' feeling showing up again, or did something shift?";
+    return "Since that session — is the 'not enough' feeling showing up again, or did something shift?";
+  }
+  if (continuity?.last_green_rep?.name) {
+    return `Where are you with ${continuity.last_green_rep.name} — done, stuck, or somewhere in between?`;
   }
   if (continuity?.had_proof) {
     return "Since you logged that proof — what's shifted, even a little?";
+  }
+  if (continuity?.last_user_snippet) {
+    return "What's changed since last time we spoke?";
   }
   return "What happened since our last session?";
 };
@@ -217,7 +290,7 @@ const buildSessionSummaryFromCoachLog = (session) => {
 
   const proof =
     integration?.answers?.acknowledge_note ||
-    snippets.find((t) => looksLikeProof(t));
+    snippets.find((t) => looksLikeProof(t) && !isSetbackOrGapReport(t));
   if (proof) parts.push(`Proof: ${String(proof).slice(0, 120)}`);
 
   const deval = integration?.answers?.devaluation_note || integration?.answers?.not_enough_feeling;
@@ -245,6 +318,11 @@ const buildSessionSummaryFromCoachLog = (session) => {
 
   if (!parts.length && snippets.length) {
     parts.push(`Last note: ${snippets[snippets.length - 1].slice(0, 100)}`);
+  }
+
+  const repName = session?.green_rep_last?.name;
+  if (isPlausibleGreenRepName(repName) && !parts.some((p) => p.includes(repName))) {
+    parts.unshift(`Rep: ${repName}`);
   }
 
   return parts.length ? parts.join(" | ") : null;

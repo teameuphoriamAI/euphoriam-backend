@@ -3,10 +3,18 @@
  * Best-effort — failures do not block coaching.
  */
 
-const { getSessionCollection } = require("../config/chromadb");
-const { generateEmbedding } = require("../services/vectorStoreService");
+const { getSessionCollection } = require("../../../config/chromadb");
+const { generateEmbedding } = require("../../../services/vectorStoreService");
 
 const coachDocId = (sessionId) => `coach_stage1_${sessionId}`;
+
+const buildCoachSessionWhere = ({ userId, domain } = {}) => {
+  const clauses = [{ source: "stage1_coach" }];
+  if (userId) clauses.push({ userId: String(userId) });
+  if (domain) clauses.push({ domain });
+  if (clauses.length === 1) return clauses[0];
+  return { $and: clauses };
+};
 
 const formatCoachTranscript = (messages = []) =>
   messages
@@ -77,9 +85,7 @@ const searchCoachSessions = async ({
   try {
     const collection = await getSessionCollection();
     const queryEmbedding = await generateEmbedding(query.slice(0, 2000));
-    const where = { source: "stage1_coach" };
-    if (userId) where.userId = String(userId);
-    if (domain) where.domain = domain;
+    const where = buildCoachSessionWhere({ userId, domain });
 
     const results = await collection.query({
       queryEmbeddings: [queryEmbedding],
@@ -111,5 +117,6 @@ const searchCoachSessions = async ({
 module.exports = {
   indexCoachSession,
   searchCoachSessions,
+  buildCoachSessionWhere,
   coachDocId,
 };

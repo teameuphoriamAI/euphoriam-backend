@@ -44,10 +44,10 @@ You MUST return all of:
 - failure_strategy: { title, rule, behaviours[] } — what the old structure predictably does toward this goal
 - top_3_avoidance_behaviours: exactly 3 specific sabotage behaviours (MUST match failure_strategy.behaviours)
 - success_strategy: { title, behaviour, belief?, success_rule?, behaviours[] } — opposite structure from Brain Prompt for this signature
-- daily_rep: { name, steps[], win_condition } — ONE green rep that interrupts failure strategy TODAY for this goal
+- daily_rep: { name, steps[], win_condition } — ONE green rep that physically embodies flip_rule toward this goal (real-world action, not mirror/voice/generic truth)
 - win_condition: observable proof (e.g. "Walk done. Not perfect. Done.")
 - recovery_speed: "Slow" | "Moderate" | "Fast" — how quickly they collapse/pull back after action
-- core_fear, perceived_risk, past_pattern, required_role: short strings from transcript themes when evident
+- core_fear, perceived_risk, past_pattern, required_role: a concise SYNTHESIZED insight (your clinical interpretation of the pattern), 1 short sentence each. Always provide these by inferring from the whole transcript + signature — do NOT leave them null.
 - structure_type: one of "Orbit" | "Towards & Away" | "Something's Wrong With Me" | "Progress with Snapback"
 - contradiction_statement: ONE sentence naming the conscious goal vs the unconscious structure it actually powers (e.g. "You say you want consistent income, but your structure keeps you financially invisible — so you power avoidance instead of progress.")
 - structure_takeover_moment: { trigger, rule_obeyed, sabotage_sequence } — the exact moment the structure takes over: what triggers it, the rule it obeys, and the avoidance/orbit sequence that follows
@@ -56,8 +56,12 @@ You MUST return all of:
 - flip_90_day_projection: what becomes possible in 90 days if they live the flip toward THIS goal
 
 Rules:
+- NEVER copy the user's raw answers verbatim into ANY field. Every value must be YOUR synthesized, professional interpretation — rephrase in clean third-person/coaching language and silently fix the user's typos and grammar. A field that simply echoes what the user typed is wrong.
+- The Brain Prompt signature library uses EXAMPLE phrasing (often money / income / pricing — e.g. "avoid pricing conversations", "Be Financially Visible", "name the number out loud"). Those are TEMPLATES illustrating the structure, NOT content to copy. You MUST translate every behaviour, belief, rule, failure_strategy, success_strategy, flip_belief and flip_rule into the user's ACTUAL domain and goal from ACTIVE_GOAL_CONTEXT.
+- If the domain is NOT "income" or "wealth", you MUST NOT mention money, pricing, invoices, sales, "financially visible", or income anywhere. (e.g. for a relationships goal: "avoid pricing conversations" → "avoid honest conversations"; "Be Financially Visible" → "Let yourself be seen and valued"; "name the number out loud" → "say what you actually feel".)
+- core_fear, perceived_risk, past_pattern and required_role must ALWAYS be filled with a synthesized insight (never null) drawn from this transcript and signature.
 - Anchor every field to ACTIVE_GOAL_CONTEXT (domain, goal, outcome, milestones).
-- daily_rep must come from the diagnosis — do NOT copy today_visible_action from goal onboarding unless it is clearly the green rep.
+- daily_rep must physically embody flip_rule — the member practices the new strategy in the real world toward the milestone, not a private visibility exercise.
 - success_strategy must be the structural opposite for this vortex, not a restatement of desired_outcome.
 - contradiction_statement, structure_takeover_moment, flip_belief, flip_rule and flip_90_day_projection MUST be written from THIS transcript and goal — never generic. These power the "What gets in the way" view.
 - flip_belief / flip_rule are the structural opposite of the vortex (the "code install"), aligned with success_strategy.belief.

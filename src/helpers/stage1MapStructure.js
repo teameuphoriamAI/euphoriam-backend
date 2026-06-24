@@ -375,32 +375,6 @@ function isUsableTranscriptAnswer(text) {
   return true;
 }
 
-/** Pull a user answer that followed a matching assistant question in the transcript. */
-function extractTranscriptAnswerByPatterns(transcript, patterns) {
-  const rows = Array.isArray(transcript) ? transcript : [];
-  for (let i = 0; i < rows.length - 1; i++) {
-    if (rows[i]?.role !== "assistant") continue;
-    const content = String(rows[i].content || "");
-    if (!patterns.some((pattern) => pattern.test(content))) continue;
-    const ans = rows[i + 1]?.role === "user" ? rows[i + 1].content : null;
-    if (isUsableTranscriptAnswer(ans)) return String(ans).trim();
-  }
-  return null;
-}
-
-/** Pull a user answer that followed **Q{n}** in the transcript. */
-function extractTranscriptAnswer(transcript, qNum) {
-  const rows = Array.isArray(transcript) ? transcript : [];
-  for (let i = 0; i < rows.length - 1; i++) {
-    if (rows[i]?.role !== "assistant") continue;
-    const content = rows[i].content || "";
-    if (!new RegExp(`\\*\\*Q${qNum}\\b`, "i").test(content)) continue;
-    const ans = rows[i + 1]?.role === "user" ? rows[i + 1].content : null;
-    if (isUsableTranscriptAnswer(ans)) return String(ans).trim();
-  }
-  return null;
-}
-
 function inferRecoverySpeed(structure, transcript) {
   const existing = String(structure?.recovery_speed || "").trim();
   if (existing) return existing;
@@ -474,51 +448,13 @@ const normalizeExtractedStructure = (structure, options = {}) => {
 
   out.recovery_speed = inferRecoverySpeed(out, transcript);
 
-  // Prefer the LLM-synthesized value. Only pull a raw transcript answer when
-  // the model left the field empty (last-resort fallback), so the diagnosis
-  // is an insight — not the user's own answer echoed back.
-  out.core_fear =
-    out.core_fear?.trim() ||
-    extractTranscriptAnswerByPatterns(transcript, [
-      /\*\*Q\d+[^*\n]*[Ff]ear of/i,
-      /what specific fear/i,
-      /\bafraid of/i,
-      /core fear/i,
-    ]) ||
-    null;
-
-  out.perceived_risk =
-    out.perceived_risk?.trim() ||
-    extractTranscriptAnswerByPatterns(transcript, [
-      /perceived risk/i,
-      /feels risky/i,
-      /feels unsafe/i,
-      /what feels risky/i,
-    ]) ||
-    null;
-
-  out.past_pattern =
-    out.past_pattern?.trim() ||
-    extractTranscriptAnswerByPatterns(transcript, [
-      /past pattern/i,
-      /when you['’]ve tried/i,
-      /in the past/i,
-      /tried multiple times/i,
-      /\*\*Q\d+[^*\n]*[Ff]ear of [Dd]isappointment/i,
-    ]) ||
-    extractTranscriptAnswer(transcript, 8) ||
-    null;
-
-  out.required_role =
-    out.required_role?.trim() ||
-    extractTranscriptAnswerByPatterns(transcript, [
-      /required role/i,
-      /role or identity/i,
-      /who do you need to become/i,
-      /step into/i,
-      /what role must you embody/i,
-    ]) ||
-    null;
+  // These are AI-synthesized insights only. We deliberately do NOT fall back to
+  // raw transcript answers — echoing the user's own 25-QA replies here reads as
+  // "my answers" rather than a diagnosis. Empty → UI shows "—".
+  out.core_fear = out.core_fear?.trim() || null;
+  out.perceived_risk = out.perceived_risk?.trim() || null;
+  out.past_pattern = out.past_pattern?.trim() || null;
+  out.required_role = out.required_role?.trim() || null;
 
   out = enrichSuccessStrategyFromSignature(out);
 
@@ -564,7 +500,7 @@ const enrichMapForClient = (map, opts = {}) => {
   const {
     buildCoachingHomeOverlay,
     applyCoachingToProgressMetrics,
-  } = require("./stage1CoachingHomeOverlay");
+  } = require("../stage1/coach/legacy/homeOverlay");
   const coaching_progress = buildCoachingHomeOverlay(normalized, {
     proof_logs: opts.proof_logs,
     coach_session_log: opts.coach_session_log,

@@ -2,10 +2,10 @@
  * Coaching progress for Home / domain detail — separate from Map Resistance (25 Q&A) baseline.
  */
 
-const { ensureCoachingMemory } = require("./stage1CoachingMemory");
-const { isPlausibleGreenRepName } = require("./stage1CoachGreenRepUtils");
-const { buildSessionSummaryFromCoachLog } = require("./stage1CoachSessionContinuity");
-const { deriveCoachingWritebackFromProgress } = require("./stage1CoachWriteback");
+const { ensureCoachingMemory } = require("../context/coachingMemory");
+const { isPlausibleGreenRepName } = require("../utils/greenRep");
+const { buildSessionSummaryFromCoachLog } = require("../context/sessionContinuity");
+const { deriveCoachingWritebackFromProgress } = require("../persistence/writeback");
 
 const strategyRule = (block) => {
   if (!block) return null;

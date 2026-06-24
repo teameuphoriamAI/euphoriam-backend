@@ -1,17 +1,17 @@
-const { buildActiveGoalContext } = require("./stage1GoalContext");
+const { buildActiveGoalContext } = require("../../../helpers/stage1GoalContext");
 const {
   ensureCoachingMemory,
   captureInitialDiagnosticIfNeeded,
   syncProofLogsToCoachingMemory,
   serializeCoachingMemoryForCoach,
-} = require("./stage1CoachingMemory");
-const { findOpenSessionForDomain } = require("./stage1CoachHistory");
+} = require("./coachingMemory");
+const { findOpenSessionForDomain } = require("../persistence/history");
 const {
   buildCoachOpeningCheckin,
   collectRecentPatterns,
   resolveLastGreenRep,
-} = require("./stage1CoachCheckInFlow");
-const { gatherSessionContinuity } = require("./stage1CoachSessionContinuity");
+} = require("../legacy/checkInFlow");
+const { gatherSessionContinuity } = require("./sessionContinuity");
 
 const gatherCoachOpenPayload = (user, stage1, map, domain) => {
   let enriched = captureInitialDiagnosticIfNeeded(

@@ -1,6 +1,11 @@
-const { resolveLastGreenRep } = require("./stage1CoachCheckInFlow");
-const { recordProof } = require("./stage1Proof");
-const { handleWoundFlipTurn } = require("./stage1CoachWoundFlip");
+const { resolveLastGreenRep } = require("../legacy/checkInFlow");
+const { recordProof } = require("../../../helpers/stage1Proof");
+const { handleWoundFlipTurn } = require("../legacy/woundFlip");
+const {
+  passesGreenRepTest,
+  alignGreenRepToMilestone,
+} = require("./milestoneRep");
+const { isOutcomeRep } = require("./greenRep");
 
 const PROGRESS_STEPS = Object.freeze({
   ACKNOWLEDGE: "acknowledge",
@@ -37,6 +42,9 @@ const PROOF_PATTERNS = [
   /\bcontacted\b/i,
   /\bclient\b/i,
   /\bsent\s+(?:the\s+)?(?:message|email|proposal)/i,
+  /\btexted\b/i,
+  /\bmotivational\s+message\b/i,
+  /\bfriend\b/i,
   /\bbooked\b/i,
   /\bcompleted\s+(?:the\s+)?(?:rep|green\s+rep)/i,
   /\bi\s+completed\s+it\b/i,
@@ -50,6 +58,8 @@ const PROOF_PATTERNS = [
   /\btook\s+action\b/i,
   /\bvisible\s+action\b/i,
   /\bproof\s+of\b/i,
+  /\b(identif|found|listed)\w*\s+(?:\d+\s+)?(?:client|prospect|business|lead)/i,
+  /\b(\d+)\s+(?:client|prospect|business)es?\s+(?:identif|found|listed)/i,
 ];
 
 const DEVALUATION_PATTERNS = [
@@ -166,6 +176,30 @@ const detectProgressSignals = (text, context = {}) => {
   const lower = t.toLowerCase();
   if (t.length < 3) {
     return { isStrong: false, hasProof: false, repCompleted: false, summary: null };
+  }
+
+  const { isSetbackOrGapReport } = require("../signals/setback");
+  if (isSetbackOrGapReport(t)) {
+    return {
+      isStrong: true,
+      hasProof: false,
+      repCompleted: false,
+      isSetback: true,
+      summary: t.slice(0, 280),
+      patterns: [],
+    };
+  }
+
+  const { hasVisibilityAction } = require("../signals/evidence");
+  if (hasVisibilityAction(t)) {
+    return {
+      isStrong: true,
+      hasProof: true,
+      repCompleted: false,
+      hasOutreach: true,
+      summary: t.slice(0, 280),
+      patterns: ["visibility_action"],
+    };
   }
 
   const matched = PROOF_PATTERNS.filter((re) => re.test(t));
@@ -660,17 +694,65 @@ const sanitizeCoachGreenRep = (
     lastRepName = null,
     allowNewRep = false,
     userReportedProof = false,
+    completedActionFamilies = [],
+    blockedFamilies = [],
+    map = null,
+    goalContext = null,
+    allowSoloFallback = false,
+    assignRequested = false,
   } = {},
 ) => {
-  if (!greenRep || typeof greenRep !== "object") return null;
+  if (!greenRep || typeof greenRep !== "object") {
+    if (assignRequested && map) {
+      return alignGreenRepToMilestone(null, {
+        map,
+        goalContext,
+        allowSoloFallback,
+        assignRequested: true,
+      });
+    }
+    return null;
+  }
   const name = String(greenRep.name || "").trim();
   if (!name) return null;
 
   if (proofIntegrationActive || postProofDevaluation || woundFlipActive) return null;
   if (progressMode && userReportedProof && !allowNewRep) return null;
-  if (progressMode && lastRepName && name.toLowerCase() === lastRepName.toLowerCase()) {
+  if (lastRepName && name.toLowerCase() === lastRepName.toLowerCase()) {
+    if (!allowNewRep && !assignRequested) return null;
+    if (map) {
+      return alignGreenRepToMilestone(null, {
+        map,
+        goalContext,
+        allowSoloFallback,
+        assignRequested: true,
+      });
+    }
     return null;
   }
+
+  const { classifyActionFamily, isActionFamilyBlocked } = require("../signals/structuralReflection");
+  const repFamily = classifyActionFamily(name);
+  if (isActionFamilyBlocked(repFamily, completedActionFamilies)) return null;
+  if (blockedFamilies.some((f) => f && repFamily && f === repFamily)) return null;
+
+  if (map && !passesGreenRepTest(greenRep, goalContext, map, { allowSoloFallback })) {
+    return alignGreenRepToMilestone(greenRep, {
+      map,
+      goalContext,
+      allowSoloFallback,
+      assignRequested: assignRequested || allowNewRep,
+    });
+  }
+  if (isOutcomeRep(greenRep)) {
+    return alignGreenRepToMilestone(null, {
+      map,
+      goalContext,
+      allowSoloFallback,
+      assignRequested: assignRequested || allowNewRep,
+    });
+  }
+
   return greenRep;
 };
 
@@ -695,7 +777,14 @@ const buildProgressCoachingInstructions = (_signals, integration, context = {}) 
 };
 
 const maybeAutoLogProof = (stage1, domain, userMessage, signals, lastRepName) => {
-  if (!signals?.hasProof || String(userMessage || "").trim().length < 8) {
+  if (!signals?.hasProof || signals?.isSetback) {
+    return { stage1, proof: null };
+  }
+  if (String(userMessage || "").trim().length < 8) {
+    return { stage1, proof: null };
+  }
+  const { isSetbackOrGapReport } = require("../signals/setback");
+  if (isSetbackOrGapReport(userMessage)) {
     return { stage1, proof: null };
   }
   const result = recordProof(stage1, {

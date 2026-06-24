@@ -8,9 +8,86 @@ const FRAMEWORK_TERM_PATTERN =
 const REPORT_HEADER_PATTERN =
   /^(current\s+goal|current\s+milestone|last\s+green\s+rep|recent\s+patterns|last\s+session|loading|context\s+loaded)\s*:/gim;
 
-const sanitizeCoachUserFacingText = (text, { stripGreetingName = null } = {}) => {
-  if (!text || typeof text !== "string") return text;
-  let out = text.replace(REPORT_HEADER_PATTERN, "").trim();
+const COACH_TEMPLATE_LABEL_BLOCK =
+  /\n\s*\*\*(?:Pattern|Cost|Failure\s+Strategy|Success\s+Strategy|Today'?s?\s+Green\s+Rep|Win\s+Condition)\s*:\*\*[\s\S]*$/i;
+
+const HOLLOW_COACH_PHRASES = [
+  /\byou'?re doing great by staying engaged[^.!?\n]*[.!?]?\s*/gi,
+  /\bkeep going!\s*/gi,
+  /\bkeep it up!\s*/gi,
+  /\bone step at a time[.!?]?\s*/gi,
+  /\bi understand that feeling[^.!?\n]*[.!?]?\s*/gi,
+  /\bthis can make it seem like you'?re alone, even when you'?re not[^.!?\n]*[.!?]?\s*/gi,
+  /^(?:great|good) to see you here[,.]?\s*/i,
+  /\bremember, expressing your truth[^.!?\n]*[.!?]?\s*/gi,
+  /\beach time you practice this[^.!?\n]*[.!?]?\s*/gi,
+  /\byou'?ve already taken steps by expressing your truth to yourself and to someone you trust[^.!?\n]*[.!?]?\s*/gi,
+  /\beach small step is a victory[^.!?\n]*[.!?]?\s*/gi,
+  /\bchallenging the (?:old )?belief that you need to be perfect[^.!?\n]*[.!?]?\s*/gi,
+  /\bsmall steps you'?re taking are still valuable[^.!?\n]*[.!?]?\s*/gi,
+  /\bit sounds like you'?re feeling stuck[^.!?\n]*[.!?]?\s*/gi,
+  /\byou'?re staying financially invisible[^.!?\n]*[.!?]?\s*/gi,
+  /\bit sounds like you'?re staying financially invisible[^.!?\n]*[.!?]?\s*/gi,
+  /\bit sounds like the pattern of[^.!?\n]*[.!?]?\s*/gi,
+  /\bthis pattern tends to keep you[^.!?\n]*[.!?]?\s*/gi,
+  /\bremember, the strategy to counter[^.!?\n]*[.!?]?\s*/gi,
+  /\blet'?s revisit the core strategy[^.!?\n]*[.!?]?\s*/gi,
+  /\bthis helps build the muscle of[^.!?\n]*[.!?]?\s*/gi,
+  /\bthe resistance often shows up as[^.!?\n]*[.!?]?\s*/gi,
+  /\bfor example, you could practice stating your rate[^.!?\n]*[.!?]?\s*/gi,
+];
+
+const INLINE_REP_WORKSHEET =
+  /(?:here'?s what to do|your next step is|next step is the)[\s\S]*?(?=\n\n[A-Z]|$)/gi;
+
+const unwrapCoachAssistantMessage = (raw) => {
+  if (raw == null) return raw;
+  if (typeof raw === "object" && raw.assistant_message)
+    return String(raw.assistant_message);
+  const s = String(raw).trim();
+  if (!s.startsWith("{") || !s.includes('"assistant_message"')) return s;
+  try {
+    const parsed = JSON.parse(s);
+    return typeof parsed.assistant_message === "string"
+      ? parsed.assistant_message
+      : s;
+  } catch {
+    return s;
+  }
+};
+
+const stripInlineRepWorksheet = (text, greenRep = null) => {
+  if (!text || !greenRep?.name) return text;
+  let out = String(text);
+  out = out.replace(INLINE_REP_WORKSHEET, "").trim();
+  out = out.replace(/^\d+\.\s+.+$/gm, (line) => {
+    return /notes app|voice memo|read it|save it|mirror|honest sentence/i.test(
+      line,
+    )
+      ? ""
+      : line;
+  });
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+};
+
+const sanitizeCoachUserFacingText = (
+  text,
+  { stripGreetingName = null, noTrustedPerson = false, greenRep = null } = {},
+) => {
+  let out = unwrapCoachAssistantMessage(text);
+  if (!out || typeof out !== "string") return out;
+  out = out.replace(REPORT_HEADER_PATTERN, "").trim();
+  out = out.replace(COACH_TEMPLATE_LABEL_BLOCK, "").trim();
+  const patterns = [...HOLLOW_COACH_PHRASES];
+  if (noTrustedPerson) {
+    patterns.push(/\bsomeone you trust\b[^.!?\n]*[.!?]?\s*/gi);
+    patterns.push(
+      /\bexpressing your truth to yourself and to someone\b[^.!?\n]*[.!?]?\s*/gi,
+    );
+  }
+  for (const pattern of patterns) {
+    out = out.replace(pattern, "").trim();
+  }
   out = out.replace(FRAMEWORK_TERM_PATTERN, (match) => {
     const lower = match.toLowerCase();
     if (lower.includes("vortex")) return "old pattern";
@@ -21,11 +98,15 @@ const sanitizeCoachUserFacingText = (text, { stripGreetingName = null } = {}) =>
   if (stripGreetingName) {
     const name = String(stripGreetingName).trim();
     if (name) {
-      const greeting = new RegExp(`^\\s*hey\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[,!.—-]*\\s*`, "i");
+      const greeting = new RegExp(
+        `^\\s*hey\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[,!.—-]*\\s*`,
+        "i",
+      );
       out = out.replace(greeting, "").trim();
     }
   }
   out = out.replace(/\n{3,}/g, "\n\n").trim();
+  out = stripInlineRepWorksheet(out, greenRep);
   return out;
 };
 
@@ -93,6 +174,9 @@ const buildHumanCoachOpening = ({
   coachContext,
   continuity = null,
 }) => {
+const { buildContinuityOpeningQuestion } = require("./sessionContinuity");
+const { buildFirstSessionOpening, isFirstCoachSession } = require("../signals/firstSession");
+const { isSetbackOrGapReport } = require("../signals/setback");
   const name = firstName?.trim() || "there";
   const goal =
     activeGoalContext?.goal_name ||
@@ -105,62 +189,51 @@ const buildHumanCoachOpening = ({
     null;
   const goalPhrase = formatGoalPhrase(goal, milestone);
 
-  const priorSessions =
-    (coachContext?.coaching_sessions || memory?.coaching_sessions || []).filter(
-      (s) => s.ended_at || (s.turn_count || 0) > 1,
-    );
-  const isFirstCoachSession =
-    priorSessions.length === 0 &&
-    !continuity?.last_session_ended_at &&
-    !continuity?.had_proof &&
-    !continuity?.session_summary;
+  const isFirstCoachSessionFlag = isFirstCoachSession(continuity, coachContext, memory);
 
   const lines = [];
-  lines.push(`Hey ${name}, good to see you.`);
 
-  if (isFirstCoachSession) {
-    lines.push("");
-    lines.push(`Remember we're working on ${goalPhrase}.`);
-    lines.push("");
-    lines.push("How are things going today?");
-    return lines.join("\n");
+  if (isFirstCoachSessionFlag) {
+    return buildFirstSessionOpening({
+      firstName: name,
+      map,
+      activeGoalContext,
+    });
   }
 
+  lines.push(`Hey ${name}.`);
   lines.push("");
-  lines.push(`Remember we're working on ${goalPhrase}.`);
+  lines.push(`We're still on ${goalPhrase}.`);
 
-  if (continuity?.session_summary) {
-    lines.push("");
+  const repName =
+    continuity?.last_green_rep?.name ||
+    coachContext?.last_green_rep_assigned?.name ||
+    null;
+  if (repName) {
+    lines.push(`Last rep in play: ${repName}.`);
+  }
+
+  if (continuity?.recent_proof?.length) {
+    const positiveOnly = continuity.recent_proof.filter((p) => !isSetbackOrGapReport(p));
+    if (positiveOnly.length) {
+      lines.push(`Recent proof: ${positiveOnly[0]}.`);
+    }
+  } else if (continuity?.recent_setback?.length) {
+    lines.push(`Last named gap: ${continuity.recent_setback[0]}.`);
+  } else if (continuity?.session_summary) {
     const summary = String(continuity.session_summary).trim();
     lines.push(
       summary.toLowerCase().startsWith("last session")
         ? summary.charAt(0).toUpperCase() + summary.slice(1)
-        : `Last time we talked: ${summary.charAt(0).toLowerCase() + summary.slice(1)}.`,
-    );
-  } else if (continuity?.last_session_narrative) {
-    lines.push("");
-    lines.push(`Last time: ${continuity.last_session_narrative}.`);
-  } else if (continuity?.recent_proof?.length) {
-    lines.push("");
-    lines.push(`Last time you logged: "${continuity.recent_proof[0]}".`);
-  }
-
-  const patterns = [];
-  const pattern = pickNoticedPattern(map, coachContext);
-  if (pattern) patterns.push(pattern.toLowerCase());
-  for (const p of (coachContext?.recent_patterns || []).slice(0, 2)) {
-    const h = humanizePattern(p);
-    if (h && !patterns.includes(h.toLowerCase())) patterns.push(h.toLowerCase());
-  }
-  if (patterns.length) {
-    lines.push("");
-    lines.push(
-      `Your recent pattern has been ${patterns.slice(0, 3).join(" and ")}.`,
+        : `Last time: ${summary.charAt(0).toLowerCase() + summary.slice(1)}`,
     );
   }
 
   lines.push("");
-  lines.push("How are things going today?");
+  const followUp =
+    buildContinuityOpeningQuestion(continuity) ||
+    buildNaturalOpeningQuestion(continuity, { hadRep: Boolean(repName) });
+  lines.push(followUp);
 
   return sanitizeCoachUserFacingText(lines.join("\n"));
 };
@@ -223,7 +296,11 @@ const isSubstantiveCheckInAnswer = (text, signals = null) => {
   if (!t) return false;
   if (signals?.isStrong || signals?.hasProof) return true;
   if (t.length >= 90) return true;
-  if (/\b(stuck|fear|avoid|hard|difficult|resist|anxious|generated|earned|completed|finished|client|outreach|reached)\b/i.test(t)) {
+  if (
+    /\b(stuck|fear|avoid|hard|difficult|resist|anxious|generated|earned|completed|finished|client|outreach|reached)\b/i.test(
+      t,
+    )
+  ) {
     return true;
   }
   return false;
@@ -231,13 +308,16 @@ const isSubstantiveCheckInAnswer = (text, signals = null) => {
 
 /** @deprecated use resolveCoachingTransition from stage1CoachTransition */
 const inferCoachingPhase = (messages, userMessage) => {
-  const { inferCoachingPhase: infer } = require("./stage1CoachTransition");
+  const { inferCoachingPhase: infer } = require("../flows/transition");
   return infer(messages, userMessage);
 };
 
 module.exports = {
   sanitizeCoachUserFacingText,
+  unwrapCoachAssistantMessage,
+  stripInlineRepWorksheet,
   humanizePattern,
+  formatGoalPhrase,
   buildHumanCoachOpening,
   buildNaturalOpeningQuestion,
   buildHumanAcknowledgment,

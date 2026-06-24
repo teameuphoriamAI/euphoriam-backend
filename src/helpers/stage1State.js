@@ -187,9 +187,9 @@ const buildHomeDashboard = (stage1) => {
   let progress_metrics = mapWithMetrics.progress_metrics || map.progress_metrics;
 
   if (map.map_resistance_complete) {
-    progress_metrics = { ...progress_metrics };
-    if (!progress_metrics.milestones_completed) progress_metrics.milestones_completed = 1;
-    progress_metrics = enrichProgressMetricsFromMap(map, progress_metrics);
+    progress_metrics = enrichProgressMetricsFromMap(map, {
+      ...progress_metrics,
+    });
   }
 
   const visibleAction = map.today_visible_action?.trim() || null;
@@ -202,7 +202,8 @@ const buildHomeDashboard = (stage1) => {
   const {
     buildCoachingHomeOverlay,
     applyCoachingToProgressMetrics,
-  } = require("./stage1CoachingHomeOverlay");
+  } = require("../stage1/coach/legacy/homeOverlay");
+  const { buildSuggestedTraining } = require("./stage1TrainingRecommendation");
   const coaching_progress = buildCoachingHomeOverlay(mapWithMetrics, {
     proof_logs: proof_logs_all,
     coach_session_log: stage1.coach_session_log || [],
@@ -247,6 +248,12 @@ const buildHomeDashboard = (stage1) => {
     signature_id: map.signature_id || null,
     recovery_speed: map.recovery_speed || progress_metrics.recovery_speed || null,
     coaching_progress,
+    suggested_training:
+      map.suggested_training ||
+      buildSuggestedTraining({
+        map,
+        domain: primary,
+      }),
     initial_diagnostic_snapshot: map.coaching_memory?.initial_diagnostic
       ? {
           captured_at: map.coaching_memory.initial_diagnostic.captured_at,

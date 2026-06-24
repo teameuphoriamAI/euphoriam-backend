@@ -45,6 +45,10 @@ const STRUCTURE_KEYS = [
   "progress_metrics",
   "map_resistance_transcript",
   "map_resistance_completed_at",
+  "diagnostic_report",
+  "diagnostic_report_generated_at",
+  "diagnostic_id",
+  "pdf_url",
   "coaching_memory",
   "notes",
 ];
@@ -243,7 +247,7 @@ const loadStage1ForUser = async (user) => {
     if (Array.isArray(legacyCoachLog) && legacyCoachLog.length) {
       stage1.coach_session_log = legacyCoachLog;
     } else if (Array.isArray(legacyCoachTurns) && legacyCoachTurns.length) {
-      const { migrateLegacyCoachSessions } = require("./stage1CoachHistory");
+      const { migrateLegacyCoachSessions } = require("../stage1/coach/persistence/history");
       stage1.coach_session_log = migrateLegacyCoachSessions(legacyCoachTurns);
     }
   }

@@ -1,5 +1,5 @@
-const { buildActiveGoalContext } = require("./stage1GoalContext");
-const { resolveFailureStrategyForMap, resolveSuccessStrategyForMap } = require("./stage1MapStructure");
+const { buildActiveGoalContext } = require("../../../helpers/stage1GoalContext");
+const { resolveFailureStrategyForMap, resolveSuccessStrategyForMap } = require("../../../helpers/stage1MapStructure");
 
 const MAX_COACHING_HISTORY = 60;
 const MAX_PROOF_IN_MEMORY = 100;
@@ -112,7 +112,7 @@ const appendResistanceHistory = (memory, entry) => {
   };
 };
 
-const { isPlausibleGreenRepName } = require("./stage1CoachGreenRepUtils");
+const { isPlausibleGreenRepName } = require("../utils/greenRep");
 
 const appendGreenRepHistory = (memory, entry) => {
   if (!entry?.name || !isPlausibleGreenRepName(entry.name)) return memory;
@@ -149,7 +149,7 @@ const pickMetric = (map, keys) => {
  * Frozen snapshot from Map Resistance finalize — never overwritten by coaching or re-extract.
  */
 const buildInitialDiagnosticSnapshot = (map, activeGoalContext, domain) => {
-  const { baselineMetricsForDiagnostic } = require("./stage1StructuralMap");
+  const { baselineMetricsForDiagnostic } = require("../../../helpers/stage1StructuralMap");
   const metrics = baselineMetricsForDiagnostic(map) || {};
   return {
     captured_at: new Date().toISOString(),
@@ -247,7 +247,7 @@ const excerptMessages = (messages, max = 24) => {
  */
 const _appendStructuralSnapshot = (map, opts = {}) => {
   try {
-    const { appendStructuralMapSnapshot } = require("./stage1StructuralMap");
+    const { appendStructuralMapSnapshot } = require("../../../helpers/stage1StructuralMap");
     return appendStructuralMapSnapshot(map, opts);
   } catch {
     return map;
@@ -356,6 +356,9 @@ const recordCoachingMemoryTurn = (
     entry.current_success_strategy =
       typeof success === "object" ? success : { behaviour: String(success) };
   }
+  if (hints.active_bottleneck) entry.active_bottleneck = hints.active_bottleneck;
+  if (hints.progression_stage) entry.progression_stage = hints.progression_stage;
+  if (hints.removed_bottleneck) entry.removed_bottleneck = String(hints.removed_bottleneck);
   if (hints.session_summary) entry.session_summary = String(hints.session_summary);
   if (hints.coaching_insights) {
     const insights = Array.isArray(hints.coaching_insights)
@@ -397,6 +400,20 @@ const recordCoachingMemoryTurn = (
   if (active_goal_context?.current_milestone) {
     entry.milestone_focus =
       entry.milestone_focus || active_goal_context.current_milestone;
+  }
+
+  if (entry.messages.length >= 2 && (entry.turn_count || 0) >= 2) {
+    try {
+      const { buildSessionSummaryFromCoachLog } = require("./sessionContinuity");
+      const rolling = buildSessionSummaryFromCoachLog({
+        messages: entry.messages,
+        green_rep_last: entry.green_rep_assigned,
+        progress_integration: null,
+      });
+      if (rolling) entry.session_summary = rolling;
+    } catch {
+      /* optional */
+    }
   }
 
   let observations = [...memory.diagnostic_observations];
@@ -496,7 +513,7 @@ const recordCoachingMemoryTurn = (
 
 const _finalizeStructuralSnapshot = (map, opts = {}) => {
   try {
-    const { appendStructuralMapSnapshot } = require("./stage1StructuralMap");
+    const { appendStructuralMapSnapshot } = require("../../../helpers/stage1StructuralMap");
     return appendStructuralMapSnapshot(map, opts);
   } catch {
     return map;
@@ -675,7 +692,10 @@ const serializeCoachingMemoryForCoach = (map, stage1, domain) => {
     coaching_summaries: (memory.coaching_summaries || []).slice(-8),
     resistance_history: (memory.resistance_history || []).slice(-12),
     green_rep_history: (memory.green_rep_history || []).slice(-12),
-    proof_logs: (memory.proof_logs || []).slice(0, 15),
+    proof_logs: (memory.proof_logs || []).slice(0, 15).map((p) => ({
+      ...p,
+      action: String(p?.action || "").slice(0, 400),
+    })),
     progress_logs: (memory.progress_logs || []).slice(-15),
     diagnostic_observations: (memory.diagnostic_observations || []).slice(-10),
     resistance_evolution: listResistanceEvolution(memory),

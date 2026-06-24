@@ -5,7 +5,7 @@ const {
   resolveLastGreenRep,
   CHECK_IN_STEPS,
   questionForStep,
-} = require("./stage1CoachCheckInFlow");
+} = require("./checkInFlow");
 const {
   initProgressIntegration,
   normalizeProgressIntegration,
@@ -22,7 +22,7 @@ const {
   detectPostProofDevaluation,
   buildProgressIntegrationFromContinuity,
   COACH_SUBSTATE,
-} = require("./stage1CoachProgress");
+} = require("../utils/progress");
 
 const {
   detectStruggleSetback,
@@ -32,7 +32,7 @@ const {
   discoveryContextForAi,
   pickDiscoveryQuestion,
   briefAck,
-} = require("./stage1CoachDiscovery");
+} = require("../signals/discovery");
 
 const COACH_STATE = Object.freeze({
   CHECK_IN: "check_in",

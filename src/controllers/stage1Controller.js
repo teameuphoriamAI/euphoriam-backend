@@ -36,13 +36,22 @@ const {
 const {
   extractGoalStructureFromTranscript,
 } = require("../helpers/stage1MapResistanceExtract");
-const { transcriptsDiffer } = require("../helpers/stage1MapResistanceResume");
+const {
+  transcriptsDiffer,
+  resolveMapResistanceResume,
+  summarizeMapResistanceSession,
+  isMapResistanceTranscriptComplete,
+} = require("../helpers/stage1MapResistanceResume");
 const {
   listMapResistanceHistory,
 } = require("../helpers/stage1MapResistanceHistory");
 const {
   mapResistanceChatViaPython,
 } = require("../helpers/stage1MapResistanceViaAi");
+const {
+  buildSuggestedTraining,
+  recommendTrainingForMap,
+} = require("../helpers/stage1TrainingRecommendation");
 const aiService = require("../clients/aiService");
 const { chatbotDiagnosticFreeform } = require("./diagnosticController");
 const { Chat } = require("../models/chatModel");
@@ -173,7 +182,7 @@ const getDomain = async (req, res) => {
     const { enrichMapForClient } = require("../helpers/stage1MapStructure");
     const {
       ensureInitialDiagnosticOnStage1,
-    } = require("../helpers/stage1CoachingMemory");
+    } = require("../stage1/coach/context/coachingMemory");
 
     let stage1ForResponse = stage1;
     const { stage1: withDiagnostic, changed } = ensureInitialDiagnosticOnStage1(
@@ -195,6 +204,34 @@ const getDomain = async (req, res) => {
       },
     );
 
+    const remapping =
+      Boolean(mapRow?.map_resistance_complete) &&
+      Boolean(stage1ForResponse.map_resistance_in_progress);
+    const savedTranscript = Array.isArray(mapRow?.map_resistance_transcript)
+      ? mapRow.map_resistance_transcript
+      : [];
+    const mapResistanceFullyComplete =
+      Boolean(mapRow?.map_resistance_complete) &&
+      isMapResistanceTranscriptComplete(
+        savedTranscript,
+        MAP_RESISTANCE_TARGET_QUESTIONS,
+      );
+    let mapResistanceSession = null;
+    if (mapRow && (!mapResistanceFullyComplete || remapping)) {
+      const resume = await resolveMapResistanceResume(
+        user.id,
+        domain,
+        mapRow,
+        stage1ForResponse,
+        MAP_RESISTANCE_TARGET_QUESTIONS,
+      );
+      mapResistanceSession = summarizeMapResistanceSession(
+        resume,
+        MAP_RESISTANCE_TARGET_QUESTIONS,
+        remapping,
+      );
+    }
+
     return successResponse(res, "Domain detail", {
       domain,
       label: DOMAIN_LABELS[domain],
@@ -206,6 +243,11 @@ const getDomain = async (req, res) => {
       map: mapForClient,
       is_primary: stage1.primary_domain === domain,
       onboarding_status: computeOnboardingStatus(stage1),
+      map_resistance_in_progress: Boolean(
+        stage1ForResponse.map_resistance_in_progress,
+      ),
+      map_resistance_fully_complete: mapResistanceFullyComplete,
+      map_resistance_session: mapResistanceSession,
     });
   } catch (err) {
     return errorResponse(
@@ -547,6 +589,27 @@ const finalizeMapResistance = async (req, res) => {
     }
 
     const {
+      isMapResistanceTranscriptComplete,
+      progressFromTranscript,
+    } = require("../helpers/stage1MapResistanceResume");
+    if (
+      !isMapResistanceTranscriptComplete(
+        messages,
+        MAP_RESISTANCE_TARGET_QUESTIONS,
+      )
+    ) {
+      const prog = progressFromTranscript(
+        messages,
+        MAP_RESISTANCE_TARGET_QUESTIONS,
+      );
+      return errorResponse(
+        res,
+        `Answer all ${MAP_RESISTANCE_TARGET_QUESTIONS} questions before finalizing (${prog.answeredCount}/${MAP_RESISTANCE_TARGET_QUESTIONS} answered).`,
+        400,
+      );
+    }
+
+    const {
       resolveFailureStrategyForMap,
     } = require("../helpers/stage1MapStructure");
     const savedTranscript = map.map_resistance_transcript;
@@ -603,6 +666,11 @@ const finalizeMapResistance = async (req, res) => {
       map_resistance_complete: true,
       map_resistance_transcript: messages,
       map_resistance_completed_at: completedAt,
+      ...recommendTrainingForMap({
+        map: { ...map, ...structure, map_resistance_complete: true },
+        domain,
+        user,
+      }),
       ...(reportResult?.reportText
         ? {
             diagnostic_report: reportResult.reportText,
@@ -619,7 +687,7 @@ const finalizeMapResistance = async (req, res) => {
 
     const {
       captureInitialDiagnosticIfNeeded,
-    } = require("../helpers/stage1CoachingMemory");
+    } = require("../stage1/coach/context/coachingMemory");
     const mapAfterMerge = (stage1.domain_maps || []).find(
       (m) => m.domain === domain,
     );
@@ -690,6 +758,7 @@ const finalizeMapResistance = async (req, res) => {
       domain,
       map: updatedMap,
       active_goal_context: buildActiveGoalContext(updatedMap, domain),
+      suggested_training: updatedMap.suggested_training || null,
       ...buildHomePayload(user, stage1),
     });
   } catch (err) {
@@ -1146,6 +1215,44 @@ const uploadAvatar = async (req, res) => {
   }
 };
 
+/** GET /api/stage1/training/suggested?domain=income&refresh=true */
+const getSuggestedTraining = async (req, res) => {
+  try {
+    const user = await resolveUser(req);
+    const stage1 = await loadStage1ForUser(user);
+    const domain =
+      normalizeDomain(req.query?.domain) || resolvePrimaryDomain(stage1);
+    if (!domain) {
+      return errorResponse(res, "No domain specified", 400);
+    }
+
+    const map = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    if (!map) return errorResponse(res, "Domain map not found", 404);
+    if (!map.map_resistance_complete) {
+      return errorResponse(res, "Complete Map Resistance first.", 400);
+    }
+
+    const refresh = String(req.query?.refresh || "").toLowerCase() === "true";
+    let suggested =
+      !refresh && map.suggested_training
+        ? map.suggested_training
+        : buildSuggestedTraining({ map, domain, user });
+
+    if (refresh && suggested) {
+      const nextStage1 = upsertDomainMap(stage1, domain, { suggested_training: suggested });
+      await persistStage1ForUser(user.id, nextStage1);
+    }
+
+    return successResponse(res, "Suggested training", {
+      domain,
+      suggested_training: suggested,
+    });
+  } catch (err) {
+    console.error("[getSuggestedTraining]", err);
+    return errorResponse(res, err.message || "Failed to load suggested training", err.status || 500);
+  }
+};
+
 module.exports = {
   getHome,
   updateProfile,
@@ -1168,5 +1275,6 @@ module.exports = {
   restartMapResistance,
   getMapResistanceHistory,
   getDomainMapResistanceHistory,
+  getSuggestedTraining,
   buildHomePayload,
 };

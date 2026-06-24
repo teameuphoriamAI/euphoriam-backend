@@ -1,13 +1,15 @@
-const { DOMAIN_LABELS } = require("../constants/domains");
-const { buildActiveGoalContext } = require("./stage1GoalContext");
-const { listCoachHistory } = require("./stage1CoachHistory");
-const { listProofLogs } = require("./stage1Proof");
-const { getAllUserSessions } = require("./euphoriamChatbot");
-const { serializeCoachingMemoryForCoach } = require("./stage1CoachingMemory");
-const { buildResistanceEvolutionNarrative } = require("./stage1CoachNaturalLanguage");
+const { DOMAIN_LABELS } = require("../../../constants/domains");
+const { buildActiveGoalContext } = require("../../../helpers/stage1GoalContext");
+const { listCoachHistory } = require("../persistence/history");
+const { listProofLogs } = require("../../../helpers/stage1Proof");
+const { getAllUserSessions } = require("../../../helpers/euphoriamChatbot");
+const { serializeCoachingMemoryForCoach } = require("./coachingMemory");
+const { buildResistanceEvolutionNarrative } = require("./naturalLanguage");
 
 const MAX_TRANSCRIPT_MESSAGES = 16;
+const MAX_COACH_AI_MESSAGES = 24;
 const MAX_MESSAGE_CHARS = 900;
+const MAX_PROOF_ACTION_CHARS = 400;
 
 const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) => {
   if (!Array.isArray(transcript)) return [];
@@ -16,6 +18,25 @@ const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) =>
     content: String(m?.content || "").slice(0, MAX_MESSAGE_CHARS),
   }));
 };
+
+/** Cap live coach thread sent to Python — full history stays in DB. */
+const excerptCoachMessages = (messages, maxMessages = MAX_COACH_AI_MESSAGES) =>
+  excerptTranscript(messages, maxMessages);
+
+/** Strip bloated fields duplicated in USER_COACH_CONTEXT / COACH_MEMORY_CONTEXT. */
+const slimDomainMapForCoach = (map) => {
+  if (!map || typeof map !== "object") return {};
+  const {
+    coaching_memory: _coachingMemory,
+    map_resistance_transcript: _transcript,
+    structural_map: _structuralMap,
+    structural_map_history: _structuralHistory,
+    ...rest
+  } = map;
+  return rest;
+};
+
+const trimProofAction = (action) => String(action || "").slice(0, MAX_PROOF_ACTION_CHARS);
 
 const serializeUserSessions = (sessions) =>
   (sessions || []).slice(0, 6).map((s) => ({
@@ -57,6 +78,10 @@ const serializeMapResistance = (map) => {
     orbit_pattern: map.orbit_pattern || null,
     protector_rule: map.protector_rule || null,
     core_fear: map.core_fear || null,
+    contradiction_statement: map.contradiction_statement || null,
+    contradiction_rate: map.contradiction_rate || null,
+    flip_belief: map.flip_belief || null,
+    flip_rule: map.flip_rule || null,
     failure_strategy: failure || null,
     success_strategy: success || null,
     top_3_avoidance_behaviours: map.top_3_avoidance_behaviours || [],
@@ -112,10 +137,10 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
     coaching_memory,
     current_edge_narrative: edgeNarrative,
     coaching_instructions:
-      "Obey COACH_CHECKIN.coaching_mode. When stop_discovery is true: coach directly — pattern, cost, failure/success strategy, one Green Rep, proof. No reflective questions.",
+      "Obey COACH_CHECKIN flags. Product coaching voice is in Coach Brain Prompt.",
     progress_metrics: map.progress_metrics || null,
     recent_proof_logs: proofLogs.map((p) => ({
-      action: p.action,
+      action: trimProofAction(p.action),
       type: p.type,
       created_at: p.created_at,
       green_rep_name: p.green_rep_name || null,
@@ -139,6 +164,9 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
 module.exports = {
   buildCoachUserContext,
   excerptTranscript,
+  excerptCoachMessages,
+  slimDomainMapForCoach,
+  trimProofAction,
   serializeUserSessions,
   serializeCoachHistory,
   serializeMapResistance,

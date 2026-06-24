@@ -1,4 +1,4 @@
-const { DOMAIN_LABELS } = require("../constants/domains");
+const { DOMAIN_LABELS } = require("../../../constants/domains");
 
 const SESSION_GAP_MS = 4 * 60 * 60 * 1000;
 
@@ -63,7 +63,33 @@ const recordCoachCheckin = (stage1, payload) => {
   if (payload.progress_integration) {
     current.progress_integration = payload.progress_integration;
   }
-  if (payload.coach_state) current.coach_state_last = payload.coach_state;
+  if (payload.proof_cycle) {
+    current.proof_cycle = payload.proof_cycle;
+  }
+  if (payload.first_session_flow) {
+    current.first_session_flow = {
+      ...(current.first_session_flow || {}),
+      ...payload.first_session_flow,
+    };
+  }
+  if (payload.investigation_flow) {
+    current.investigation_flow = {
+      ...(current.investigation_flow || {}),
+      ...payload.investigation_flow,
+    };
+  }
+  if (payload.structural_coaching_flow) {
+    current.structural_coaching_flow = {
+      ...(current.structural_coaching_flow || {}),
+      ...payload.structural_coaching_flow,
+    };
+  }
+  if (payload.activation_moment_flow) {
+    current.activation_moment_flow = {
+      ...(current.activation_moment_flow || {}),
+      ...payload.activation_moment_flow,
+    };
+  }
 
   if (Array.isArray(messages) && messages.length > 0) {
     const incoming = messages
@@ -227,7 +253,7 @@ const getOpenCoachSession = (stage1, domain) => {
     isCheckInActive,
     inferCheckInProgressFromMessages,
     normalizeProgress,
-  } = require("./stage1CoachCheckInFlow");
+  } = require("../legacy/checkInFlow");
   let progress = open.check_in_progress
     ? normalizeProgress(open.check_in_progress)
     : null;
@@ -238,16 +264,18 @@ const getOpenCoachSession = (stage1, domain) => {
     isProgressIntegrationActive,
     isPostProofDevaluationActive,
     isWoundFlipActive,
-  } = require("./stage1CoachProgress");
+  } = require("../utils/progress");
   const devaluationActive = isPostProofDevaluationActive(open.progress_integration);
   const woundFlipActive = isWoundFlipActive(open.progress_integration);
+  const integration = open.progress_integration;
+  const proofCycle = open.proof_cycle;
   const progressActive =
     isProgressIntegrationActive(open.progress_integration) ||
     devaluationActive ||
-    woundFlipActive;
+    woundFlipActive ||
+    proofCycle?.step === "integration_question";
   const checkInActive =
     !progressActive && (progress ? isCheckInActive(progress) : !hasUser);
-  const integration = open.progress_integration;
   const woundStep = integration?.step;
   const coachState =
     open.coach_state_last ||
@@ -281,6 +309,8 @@ const getOpenCoachSession = (stage1, domain) => {
       (checkInActive || progressActive) && msgs.some((m) => m.role === "assistant"),
     check_in_progress: progress || null,
     progress_integration: open.progress_integration || null,
+    proof_cycle: open.proof_cycle || null,
+    awaiting_proof_log: proofCycle?.step === "awaiting_proof_log",
     coach_state: coachState,
     messages: msgs,
   };

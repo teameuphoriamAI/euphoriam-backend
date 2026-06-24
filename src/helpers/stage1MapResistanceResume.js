@@ -1,4 +1,5 @@
 const { Chat } = require("../models/chatModel");
+const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
 
 function extractQuestionNumber(content) {
   if (!content || typeof content !== "string") return 0;
@@ -73,6 +74,15 @@ function progressFromTranscript(transcript, targetCount, options = {}) {
     total: targetCount,
     finalizeReady: answered >= targetCount,
   };
+}
+
+/** True when every target question has a valid user answer (ready to finalize). */
+function isMapResistanceTranscriptComplete(
+  transcript,
+  targetCount = MAP_RESISTANCE_TARGET_QUESTIONS,
+) {
+  if (!Array.isArray(transcript) || transcript.length === 0) return false;
+  return progressFromTranscript(transcript, targetCount).finalizeReady;
 }
 
 /**
@@ -153,8 +163,107 @@ function transcriptsDiffer(incoming, saved) {
   return JSON.stringify(a) !== JSON.stringify(b);
 }
 
+function resumePayloadFromTranscript(transcript, domain, targetCount) {
+  const prog = progressFromTranscript(transcript, targetCount);
+  const lastMsg = transcript[transcript.length - 1];
+  return {
+    nextMessage: lastMsg?.role === "assistant" ? lastMsg : null,
+    transcript,
+    messages: transcript,
+    mode: "map_resistance",
+    targetCount,
+    answeredCount: prog.answeredCount,
+    pendingQuestion: prog.pendingQuestion,
+    progress: {
+      answered: prog.answered,
+      total: prog.total,
+      currentQuestion: prog.currentQuestion,
+    },
+    intakeState: {
+      transcript,
+      mode: "map_resistance",
+      activeDomain: domain,
+      answeredCount: prog.answeredCount,
+      lastQuestionNumber: prog.lastQuestionNumber,
+      pendingQuestion: prog.pendingQuestion,
+    },
+    finalize_ready: prog.finalizeReady,
+    status: "resumable",
+    hasIncompleteChat: true,
+  };
+}
+
+/**
+ * Load resumable Map Resistance payload from open chat or saved domain transcript.
+ * Supports first-time mapping and in-progress remapping after a prior completion.
+ */
+async function resolveMapResistanceResume(
+  userId,
+  domain,
+  map,
+  stage1,
+  targetCount = MAP_RESISTANCE_TARGET_QUESTIONS,
+) {
+  const remapping =
+    Boolean(map?.map_resistance_complete) &&
+    Boolean(stage1?.map_resistance_in_progress);
+  const savedTranscript = Array.isArray(map?.map_resistance_transcript)
+    ? map.map_resistance_transcript
+    : [];
+  const transcriptComplete = isMapResistanceTranscriptComplete(
+    savedTranscript,
+    targetCount,
+  );
+
+  if (map?.map_resistance_complete && transcriptComplete && !remapping) {
+    return null;
+  }
+
+  let resume = await buildMapResistanceResumePayload(userId, domain, targetCount);
+  if (!resume?.transcript?.length) {
+    if (
+      stage1?.map_resistance_in_progress &&
+      savedTranscript.length > 0
+    ) {
+      resume = resumePayloadFromTranscript(savedTranscript, domain, targetCount);
+    } else if (
+      map?.map_resistance_complete &&
+      !transcriptComplete &&
+      savedTranscript.length > 0
+    ) {
+      // Finalized early with a partial transcript — still resumable.
+      resume = resumePayloadFromTranscript(savedTranscript, domain, targetCount);
+    }
+  }
+  return resume;
+}
+
+/** Summary for domain detail / resume CTAs (no transcript body). */
+function summarizeMapResistanceSession(resume, targetCount, remapping = false) {
+  if (!resume?.transcript?.length) return null;
+  const prog = progressFromTranscript(resume.transcript, targetCount);
+  const transcriptComplete = isMapResistanceTranscriptComplete(
+    resume.transcript,
+    targetCount,
+  );
+  return {
+    resumable: true,
+    answered_count: prog.answeredCount,
+    total: prog.total,
+    current_question: prog.currentQuestion,
+    pending_question: prog.pendingQuestion,
+    remapping: Boolean(remapping),
+    incomplete: !transcriptComplete,
+    fully_complete: transcriptComplete,
+  };
+}
+
 module.exports = {
   buildMapResistanceResumePayload,
+  resolveMapResistanceResume,
+  resumePayloadFromTranscript,
+  summarizeMapResistanceSession,
+  isMapResistanceTranscriptComplete,
   progressFromTranscript,
   countAnsweredQuestions,
   transcriptsDiffer,

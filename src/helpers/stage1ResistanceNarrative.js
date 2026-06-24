@@ -125,6 +125,92 @@ const inferContradictionRate = (structure) => {
   return "medium";
 };
 
+const norm = (v) => String(v || "").trim().toLowerCase();
+
+const EO_FEAR = {
+  "not enough": "that you are fundamentally not enough",
+  "not capable": "that you are not capable of handling this",
+  "not safe": "that you are not safe",
+  powerless: "that you are powerless to change things",
+  "can't depend": "that you cannot rely on anyone but yourself",
+  "cant depend": "that you cannot rely on anyone but yourself",
+  "needs not ok": "that your own needs make you unacceptable to others",
+  "not ok vulnerable": "that being vulnerable will be used against you",
+  "not ok happy": "that you are not allowed to fully have what you want",
+};
+
+const AVOID_FEAR = {
+  rejection: "that if people truly saw you, they would judge or reject you",
+  "rejection-protector": "that if people truly saw you, they would judge or reject you",
+  failure: "that if you fully committed, you would fail and confirm something is wrong with you",
+  "failure-protector": "that if you fully committed, you would fail and confirm something is wrong with you",
+};
+
+const AVOID_RISK = {
+  rejection: "Being seen, judged, or rejected if you show your real self.",
+  "rejection-protector": "Being seen, judged, or rejected if you show your real self.",
+  failure: "Committing fully and failing — exposing yourself as not good enough.",
+  "failure-protector": "Committing fully and failing — exposing yourself as not good enough.",
+};
+
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+const humanizeOrbit = (orbit) =>
+  String(orbit || "")
+    .replace(/\s*(?:→|—>|->|➝|⟶|=>)\s*/g, " then ")
+    .replace(/\s*,\s*/g, "; ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Derive clean, domain-safe insight strings from the already-extracted
+ * structured signature (EO / lack / avoid / orbit / flip). Used only to fill
+ * fields the LLM left empty — never echoes the user's raw transcript answers.
+ */
+const synthesizeMissingInsights = (out) => {
+  const eo = norm(out.EO);
+  const avoid = norm(out.avoid_type);
+
+  if (!out.core_fear?.trim()) {
+    const eoPart = EO_FEAR[eo];
+    const avoidPart = AVOID_FEAR[avoid];
+    const parts = [eoPart, avoidPart].filter(Boolean);
+    if (parts.length) out.core_fear = cap(`${parts.join(", and ")}.`);
+  }
+
+  if (!out.perceived_risk?.trim()) {
+    if (AVOID_RISK[avoid]) out.perceived_risk = AVOID_RISK[avoid];
+  }
+
+  if (!out.past_pattern?.trim()) {
+    const orbit = humanizeOrbit(out.orbit_pattern);
+    if (orbit) {
+      out.past_pattern = `The same loop keeps repeating: ${orbit} — instead of moving forward.`;
+    }
+  }
+
+  if (!out.required_role?.trim()) {
+    const belief =
+      out.flip_belief?.trim() ||
+      out.success_strategy?.belief?.trim() ||
+      null;
+    const rule =
+      out.flip_rule?.trim() ||
+      out.success_strategy?.success_rule?.trim() ||
+      out.success_strategy?.behaviour?.trim() ||
+      null;
+    if (belief) {
+      out.required_role = `The version of you who lives "${belief}"${
+        rule ? ` and ${norm(rule).replace(/\.$/, "")}` : ""
+      }.`;
+    } else if (rule) {
+      out.required_role = `Someone who can ${norm(rule).replace(/\.$/, "")} without collapsing.`;
+    }
+  }
+
+  return out;
+};
+
 /**
  * Add client-facing resistance narrative fields after LLM extraction.
  */
@@ -162,6 +248,10 @@ const enrichResistanceNarrative = (structure, options = {}) => {
       if (rule) out.flip_rule = rule;
     }
   }
+
+  // Guarantee the four insight fields are populated from structured signature
+  // data when the LLM returned null — clean insight, never raw transcript text.
+  synthesizeMissingInsights(out);
 
   return out;
 };

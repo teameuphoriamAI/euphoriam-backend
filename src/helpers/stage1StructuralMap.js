@@ -5,8 +5,8 @@
  */
 
 const { calculateSignal } = require("../utils/euphoriamMatrix");
-const { ensureCoachingMemory } = require("./stage1CoachingMemory");
-const { mergeCoachingSessions } = require("./stage1CoachingHomeOverlay");
+const { ensureCoachingMemory } = require("../stage1/coach/context/coachingMemory");
+const { mergeCoachingSessions } = require("../stage1/coach/legacy/homeOverlay");
 
 const pickMetric = (sources, keys) => {
   for (const src of sources) {

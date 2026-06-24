@@ -4,7 +4,14 @@
  */
 
 const { detectStruggleSetback } = require("./stage1CoachDiscovery");
+const { buildCoachConversationSignals } = require("./stage1CoachConversationSignals");
+const { resolvePersistentBarriers } = require("./stage1CoachBarriers");
 const { humanizePattern } = require("./stage1CoachNaturalLanguage");
+const { buildStructuralCoachBlock } = require("./stage1StructuralFramework");
+const {
+  buildMilestoneAlignedRep,
+  buildMilestonePriorityDirective,
+} = require("./stage1CoachMilestoneRep");
 
 const AVOIDANCE_MESSAGE =
   /\b(slept|sleep(?:ing|y)?|whole day|procrastinat|lazy|avoid(?:ed|ing)?|scrolled|did nothing|didn't do|did not do|no progress|wasted|unproductive|no motivation|no earning|fell off|off track|bum(?:med)? out)\b/i;
@@ -113,11 +120,175 @@ const buildPatternLabel = (map, memoryCtx, userMessage) => {
   return pickFailureRule(map, memoryCtx) || "repeating resistance to the goal";
 };
 
-const buildCoachingBrief = (map, memoryCtx, userMessage) => {
+const buildCoachingBrief = (map, memoryCtx, userMessage, { messages = [], stage1 = null, domain = null, proofCycleFlow = null, openSession = null, firstSessionFlow = null, investigationFlow = null, goalContext = null } = {}) => {
   const failure = pickFailureRule(map, memoryCtx);
   const success = pickSuccessRule(map, memoryCtx);
   const protector = map?.protector_rule || memoryCtx?.protector_rule || null;
   const patternLabel = buildPatternLabel(map, memoryCtx, userMessage);
+  const msg = String(userMessage || "");
+  const isFirstUserTurn = !messages.some((m) => m?.role === "user");
+  const persistentBarriers = resolvePersistentBarriers({
+    map,
+    stage1,
+    domain,
+    messages,
+    userMessage: msg,
+  });
+  const conversation = buildCoachConversationSignals({
+    messages,
+    userMessage: msg,
+    map,
+    memoryCtx,
+    persistentBarriers,
+    openSession,
+  });
+  const hasActiveRep = Boolean(memoryCtx?.last_green_rep);
+  const repCompletedThisTurn = conversation.user_completed_current_rep;
+  const userAsksDirectQuestion = /\?/.test(msg);
+  const avoidance = reportsAvoidanceOrSetback(msg);
+
+  let assign_green_rep = Boolean(conversation.assign_new_rep);
+  if (
+    conversation.reports_stagnation ||
+    conversation.solo_ladder_complete ||
+    conversation.coaching_repeat_complaint ||
+    conversation.repeated_assistant_advice
+  ) {
+    assign_green_rep = false;
+  } else if (conversation.block_rep_reassign) {
+    assign_green_rep = false;
+  } else if (repCompletedThisTurn) {
+    assign_green_rep = false;
+  } else if (conversation.needs_solo_rep_adaptation) {
+    assign_green_rep = true;
+  } else if (
+    conversation.user_asked_what_next &&
+    repCompletedThisTurn &&
+    conversation.has_active_session_rep
+  ) {
+    assign_green_rep = false;
+  } else if (conversation.user_asked_what_next && !hasActiveRep) {
+    assign_green_rep = true;
+  } else if (isFirstUserTurn && avoidance && !hasActiveRep) {
+    assign_green_rep = true;
+  } else if (!userAsksDirectQuestion && avoidance && !hasActiveRep && isFirstUserTurn) {
+    assign_green_rep = true;
+  }
+
+  if (proofCycleFlow) {
+    if (
+      proofCycleFlow.awaiting_proof_log ||
+      proofCycleFlow.proof_integration_mode ||
+      proofCycleFlow.suggest_session_end
+    ) {
+      assign_green_rep = false;
+    } else if (proofCycleFlow.assign_green_rep) {
+      assign_green_rep = true;
+    }
+  }
+
+  if (investigationFlow?.skip_llm || investigationFlow?.active) {
+    assign_green_rep = false;
+  }
+
+  const activeGoalContext =
+    goalContext ||
+    (domain && map
+      ? (() => {
+          try {
+            const { buildActiveGoalContext } = require("./stage1GoalContext");
+            return buildActiveGoalContext(map, domain);
+          } catch {
+            return null;
+          }
+        })()
+      : null);
+
+  const allowSoloFallback = Boolean(
+    conversation.no_trusted_person &&
+      activeGoalContext?.active_domain &&
+      !["income", "wealth", "money"].includes(String(activeGoalContext.active_domain).toLowerCase()),
+  );
+
+  const suggested_milestone_rep =
+    assign_green_rep && map?.map_resistance_complete
+      ? buildMilestoneAlignedRep({
+          map,
+          goalContext: activeGoalContext,
+          memoryCtx: memoryCtx,
+          allowSoloFallback,
+        })
+      : null;
+
+  let instruction =
+    "Coach conversationally — respond to what they said this turn. " +
+    "Use internal_coaching_steps for thinking only; NEVER output labeled template blocks in assistant_message. " +
+    "Put Green Rep in green_rep JSON only when assign_green_rep is true; set writeback_hints.assign_new_green_rep accordingly. " +
+    "When assign_green_rep is true, use a DIFFERENT rep than last_green_rep if user_completed_current_rep is true. " +
+    "Do NOT ask discovery or hollow reflective questions. " +
+    "Lead with goal and milestone — resistance is context, not the headline. " +
+    "DIAGNOSIS UPDATE: when user gives proof, compare it to current_failure_strategy. " +
+    "If evidence contradicts the diagnosis, refine it and name the next funnel bottleneck — " +
+    "never repeat the old pattern or assign backwards funnel steps (e.g. do not re-assign outreach after outreach is done). " +
+    "If proof is vague, investigate (how many, what offer, what message, what response) before assigning a new rep.";
+  if (conversation.coaching_directive) {
+    instruction += ` ${conversation.coaching_directive}`;
+  }
+  if (proofCycleFlow?.coaching_directive) {
+    instruction += ` ${proofCycleFlow.coaching_directive}`;
+  }
+  if (firstSessionFlow?.coaching_directive) {
+    instruction += ` ${firstSessionFlow.coaching_directive}`;
+  }
+  if (investigationFlow?.coaching_directive) {
+    instruction += ` ${investigationFlow.coaching_directive}`;
+  }
+  if (proofCycleFlow?.intervention_advice_loop) {
+    instruction +=
+      " ANTI-LOOP: Stop repeating the same intervention family. Ask what is not changing and find the missing leverage point.";
+  }
+  if (conversation.has_active_session_rep === false && memoryCtx?.member_continuity?.is_returning_member) {
+    instruction +=
+      " RETURNING MEMBER in ongoing session — do not re-introduce goal or act like first chat. Continue from member_continuity.";
+  } else if (memoryCtx?.member_continuity?.is_returning_member) {
+    instruction +=
+      " RETURNING MEMBER — use COACH_MEMORY_CONTEXT.member_continuity and prior proof/sessions. No first-time discovery.";
+  }
+  if (assign_green_rep && suggested_milestone_rep) {
+    instruction += ` ${buildMilestonePriorityDirective({
+      map,
+      goalContext: activeGoalContext,
+      milestoneRep: suggested_milestone_rep,
+    })}`;
+  } else if (map?.map_resistance_complete) {
+    instruction += ` ${buildMilestonePriorityDirective({ map, goalContext: activeGoalContext })}`;
+  }
+  if (conversation.suggested_green_rep && assign_green_rep && allowSoloFallback) {
+    instruction +=
+      " Use conversation_signals.suggested_green_rep in green_rep JSON — not the previous rep.";
+  }
+
+  const structural_framework = buildStructuralCoachBlock({
+    map,
+    memoryCtx,
+    userMessage,
+    proofCycleFlow,
+    transition: {
+      coaching_phase: inferSessionPhase(messages, userMessage),
+      coaching_brief: { assign_green_rep },
+      conversation_signals: conversation,
+    },
+  });
+  if (structural_framework.current_step === "disrupt") {
+    instruction +=
+      " STRUCTURAL STEP: DISRUPT — tie interrupt to the milestone's next visible action; name resistance only as what blocks THAT action.";
+    if (structural_framework.example_coaching_line) {
+      instruction += ` Example tone (do not copy verbatim): ${structural_framework.example_coaching_line}`;
+    }
+  } else if (structural_framework.current_step === "install") {
+    instruction +=
+      " STRUCTURAL STEP: INSTALL — green rep must advance the active milestone; proof required.";
+  }
 
   return {
     discovery_complete: true,
@@ -125,21 +296,30 @@ const buildCoachingBrief = (map, memoryCtx, userMessage) => {
     failure_strategy: failure,
     success_strategy: success,
     protector_rule: protector,
+    structural_framework,
     cost_of_pattern:
       "When this pattern runs, proof does not count, motivation collapses, and the goal keeps drifting.",
-    required_structure: [
-      "Name the pattern in plain language",
-      "Explain the cost of repeating it",
-      "Identify the failure strategy (how protection shows up)",
-      "Identify the success strategy (what forward action looks like)",
-      "Assign exactly ONE Green Rep in JSON with clear steps",
-      "Define concrete proof for that rep",
+    internal_coaching_steps: [
+      "Current goal and active milestone (lead with these)",
+      "Fastest visible action that advances the milestone",
+      "Resistance blocking THAT specific action",
+      "Failure strategy + success strategy as supporting context only",
+      "ONE Green Rep that interrupts resistance AND advances the milestone",
+      "Observable proof tied to milestone movement",
     ],
-    must_assign_green_rep: true,
+    /** @deprecated alias for Python prompt compatibility */
+    required_structure: [
+      "Name the pattern in plain language (conversational — not a labeled section)",
+      "Explain the cost of repeating it",
+      "Reference failure and success strategy in plain words",
+      "Assign ONE Green Rep in green_rep JSON only when assign_green_rep is true",
+    ],
+    assign_green_rep,
+    must_assign_green_rep: assign_green_rep,
+    suggested_milestone_rep,
     no_reflective_questions: true,
-    instruction:
-      "Do NOT ask discovery or reflective questions. Coach directly using stored context. " +
-      "Return green_rep in JSON and set writeback_hints.assign_new_green_rep true.",
+    conversation_signals: conversation,
+    instruction,
   };
 };
 
@@ -158,7 +338,30 @@ const resolveCoachingTransition = ({
   userMessage = "",
   map = null,
   coachMemoryContext = {},
+  stage1 = null,
+  domain = null,
+  proofCycleFlow = null,
+  openSession = null,
+  firstSessionFlow = null,
+  investigationFlow = null,
+  goalContext = null,
 }) => {
+  const persistentBarriers = resolvePersistentBarriers({
+    map,
+    stage1,
+    domain,
+    messages,
+    userMessage,
+  });
+  const conversation = buildCoachConversationSignals({
+    messages,
+    userMessage,
+    map,
+    memoryCtx: coachMemoryContext,
+    persistentBarriers,
+    openSession,
+  });
+
   const sessionPhase = inferSessionPhase(messages, userMessage);
   const avoidance = reportsAvoidanceOrSetback(userMessage);
   const known = hasKnownResistance(map, coachMemoryContext);
@@ -167,6 +370,19 @@ const resolveCoachingTransition = ({
   const lastPattern = coachMemoryContext?.last_ended_session?.detected_pattern;
 
   const reasons = [];
+  const withSignals = (result) => ({ ...result, conversation_signals: conversation });
+
+  const needsConversationalCoaching =
+    known &&
+    enough &&
+    (conversation.no_trusted_person ||
+      conversation.user_asked_what_next ||
+      conversation.user_repeated_same_point ||
+      conversation.user_completed_current_rep ||
+      conversation.assistant_advice_loop ||
+      conversation.reports_stagnation ||
+      conversation.solo_ladder_complete ||
+      coachMemoryContext?.member_continuity?.is_returning_member);
 
   const patternEstablished =
     patternCount >= 2 ||
@@ -189,47 +405,85 @@ const resolveCoachingTransition = ({
     if (avoidance) reasons.push("avoidance_reported");
     if (enough) reasons.push("stored_context_sufficient");
 
-    return {
+    return withSignals({
       coaching_phase: "execute",
       coaching_mode: "execute",
       discovery_complete: true,
       stop_discovery: true,
       reasons,
-      coaching_brief: buildCoachingBrief(map, coachMemoryContext, userMessage),
-    };
+      coaching_brief: buildCoachingBrief(map, coachMemoryContext, userMessage, {
+        messages,
+        stage1,
+        domain,
+        proofCycleFlow,
+        openSession,
+        firstSessionFlow,
+        investigationFlow,
+        goalContext,
+      }),
+    });
+  }
+
+  if (needsConversationalCoaching) {
+    return withSignals({
+      coaching_phase: conversation.user_repeated_same_point ? "execute" : "directive",
+      coaching_mode: "coaching",
+      discovery_complete: true,
+      stop_discovery: true,
+      reasons: ["conversation_barrier_or_repeat"],
+      coaching_brief: buildCoachingBrief(map, coachMemoryContext, userMessage, {
+        messages,
+        stage1,
+        domain,
+        proofCycleFlow,
+        openSession,
+        firstSessionFlow,
+        investigationFlow,
+        goalContext,
+      }),
+    });
   }
 
   if (sessionPhase === "directive" || (known && enough && avoidance && lastPattern)) {
-    return {
+    return withSignals({
       coaching_phase: "directive",
       coaching_mode: "coaching",
       discovery_complete: true,
       stop_discovery: true,
       reasons: ["session_story_complete"],
-      coaching_brief: buildCoachingBrief(map, coachMemoryContext, userMessage),
-    };
+      coaching_brief: buildCoachingBrief(map, coachMemoryContext, userMessage, {
+        messages,
+        stage1,
+        domain,
+        proofCycleFlow,
+        openSession,
+        firstSessionFlow,
+        investigationFlow,
+        goalContext,
+      }),
+    });
   }
 
   if (sessionPhase === "transitioning") {
-    return {
+    return withSignals({
       coaching_phase: "transitioning",
       coaching_mode: "discovery",
       discovery_complete: false,
       stop_discovery: false,
       reasons: ["partial_session_context"],
       coaching_brief: null,
-    };
+    });
   }
 
   const missingInfo = !known || !enough;
-  return {
+  return withSignals({
     coaching_phase: "explore",
     coaching_mode: missingInfo ? "discovery" : "coaching",
     discovery_complete: !missingInfo && !avoidance,
     stop_discovery: !missingInfo && known && !avoidance,
     reasons: missingInfo ? ["resistance_or_history_missing"] : ["gathering_first_detail"],
     coaching_brief: null,
-  };
+  });
 };
 
 /** @deprecated use resolveCoachingTransition */

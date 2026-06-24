@@ -12,6 +12,13 @@ const { resolveLastGreenRep } = require("./stage1CoachCheckInFlow");
 const { humanizePattern } = require("./stage1CoachNaturalLanguage");
 const { searchCoachSessions } = require("./stage1CoachVectorMemory");
 const { gatherSessionContinuity } = require("./stage1CoachSessionContinuity");
+const { buildActiveCoachingThread } = require("./stage1CoachMemberContinuity");
+const {
+  resolvePersistentBarriers,
+  annotateProofsForCoach,
+} = require("./stage1CoachBarriers");
+const { buildStructuralAwareness } = require("./stage1StructuralFramework");
+const { buildSuggestedTraining } = require("./stage1TrainingRecommendation");
 
 const pickFailureRule = (map) => {
   const fs = map?.failure_strategy;
@@ -92,12 +99,23 @@ const buildCoachMemoryContext = async ({
   const activeGoal = buildActiveGoalContext(map, domain);
   const lastRep = resolveLastGreenRep(memory, map);
   const continuity = gatherSessionContinuity(stage1, map, domain, memory);
-  const proofs = listProofLogs(stage1, { domain, limit: 8 }).map((p) => ({
-    action: p.action,
-    type: p.type,
-    at: p.created_at,
-    green_rep_name: p.green_rep_name || null,
-  }));
+  const memberContinuity = buildActiveCoachingThread({
+    stage1,
+    map,
+    domain,
+    memory,
+    continuity,
+  });
+  const barriers = resolvePersistentBarriers({ map, stage1, domain });
+  const proofs = annotateProofsForCoach(
+    listProofLogs(stage1, { domain, limit: 8 }).map((p) => ({
+      action: p.action,
+      type: p.type,
+      at: p.created_at,
+      green_rep_name: p.green_rep_name || null,
+    })),
+    barriers,
+  );
 
   let semantic_matches = [];
   if (semanticQuery?.trim()) {
@@ -143,10 +161,31 @@ const buildCoachMemoryContext = async ({
       devaluation_notes: continuity.devaluation_notes || [],
     },
     semantic_session_matches: semantic_matches,
-    llm_instructions:
-      "Obey COACH_CHECKIN.coaching_mode and stop_discovery from Node — not generic curiosity ratios. " +
-      "execute mode: name pattern, cost, failure/success strategy, assign ONE Green Rep with proof — NO reflective questions. " +
-      "Do NOT start turns with Hey {name}. Celebrate proof only when reported in THIS message.",
+    member_continuity: memberContinuity,
+    member_barriers: barriers.no_trusted_person
+      ? {
+          no_trusted_person: true,
+          instruction:
+            "Member has stated they have no one to talk to — permanent for this domain until they say otherwise. Ignore proof logs that mention trusting someone; those are rep labels not social proof.",
+        }
+      : null,
+    structural_awareness: buildStructuralAwareness(map),
+    suggested_training:
+      map?.suggested_training ||
+      buildSuggestedTraining({ map, domain, user }) ||
+      null,
+    llm_instructions: memberContinuity.is_returning_member
+      ? "RETURNING MEMBER — prior sessions, proof logs, and map resistance are in COACH_MEMORY_CONTEXT. " +
+        "Continue the active thread in member_continuity.thread_summary. " +
+        "Do NOT greet like a first meeting. Do NOT re-ask discovery questions already answered. " +
+        "Do NOT re-explain the goal from scratch. Reference what you already know and ask what changed. " +
+        "Use structural_awareness (failure strategy, protector, flip) — milestone-first coaching. " +
+        "Obey COACH_CHECKIN.structural_framework.current_step (disrupt vs install). " +
+        "Obey COACH_CHECKIN flags (coaching_mode, stop_discovery, assign_green_rep, conversation_signals, suggested_milestone_rep)."
+      :         "Use structural_awareness every turn — lead with goal and milestone; resistance supports, never replaces, milestone action. " +
+        "Green Reps must advance the active milestone (outbound/client/income moves for income goals — not private rate exercises). " +
+        "No generic encouragement. Obey COACH_CHECKIN flags (coaching_mode, stop_discovery, assign_green_rep, conversation_signals, suggested_milestone_rep). " +
+        "Product coaching voice is in Coach Brain Prompt.",
   };
 };
 

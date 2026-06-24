@@ -10,8 +10,9 @@ const MIN_DISCOVERY_TURNS = 1;
 
 const STRUGGLE_PATTERNS = [
   /\b(?:bad|terrible|awful|rough|sucked)\b/i,
-  /\bdidn'?t\s+(?:do|get|finish|start|complete)\b/i,
-  /\bno(?:thing)?\s+(?:done|happened|progress)\b/i,
+  /\bdidn'?t\s+(?:do|get|finish|start|complete|generate|make|earn|land)\b/i,
+  /\bno(?:thing)?\s+(?:done|happened|progress|dollar|income|money)\b/i,
+  /\b(?:zero|no)\s+dollars?\b/i,
   /\bavoided\b/i,
   /\bstuck\b/i,
   /\bprocrastinat/i,

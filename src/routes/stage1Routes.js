@@ -100,5 +100,10 @@ router.get(
   ...stage1Auth,
   asyncHandler(stage1ProofController.getProgress),
 );
+router.get(
+  "/training/suggested",
+  ...stage1Auth,
+  asyncHandler(stage1Controller.getSuggestedTraining),
+);
 
 module.exports = router;

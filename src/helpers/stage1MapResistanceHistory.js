@@ -2,7 +2,9 @@ const { Op } = require("sequelize");
 const { withDbSlot } = require("../config/sequelize");
 const { Chat } = require("../models/chatModel");
 const { DOMAIN_LABELS, normalizeDomain } = require("../constants/domains");
+const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
 const { loadStage1ForUser } = require("./stage1Repository");
+const { isMapResistanceTranscriptComplete } = require("./stage1MapResistanceResume");
 
 const summarizeTranscript = (transcript = []) => {
   const userCount = transcript.filter((m) => m?.role === "user").length;
@@ -15,20 +17,34 @@ const summarizeTranscript = (transcript = []) => {
   };
 };
 
-/** List completed map resistance sessions for a user (newest first). */
+/** List map resistance sessions for a user (newest first). Includes incomplete mappings. */
 const listMapResistanceHistory = async (user, { domain: domainFilter } = {}) => {
   const stage1 = await loadStage1ForUser(user);
   const filterDomain = domainFilter ? normalizeDomain(domainFilter) : null;
 
   const entries = (stage1.domain_maps || [])
-    .filter((m) => m.map_resistance_complete)
-    .filter((m) => !filterDomain || m.domain === filterDomain)
+    .filter((m) => {
+      const transcript = Array.isArray(m.map_resistance_transcript)
+        ? m.map_resistance_transcript
+        : [];
+      if (filterDomain && m.domain !== filterDomain) return false;
+      return (
+        m.map_resistance_complete ||
+        (stage1.map_resistance_in_progress && transcript.length > 0)
+      );
+    })
     .map((m) => {
       const transcript = Array.isArray(m.map_resistance_transcript)
         ? m.map_resistance_transcript
         : [];
       const completedAt =
         m.map_resistance_completed_at || m.updatedAt || new Date().toISOString();
+      const fullyComplete =
+        Boolean(m.map_resistance_complete) &&
+        isMapResistanceTranscriptComplete(
+          transcript,
+          MAP_RESISTANCE_TARGET_QUESTIONS,
+        );
       return {
         id: `${m.domain}-${completedAt}`,
         domain: m.domain,
@@ -42,6 +58,8 @@ const listMapResistanceHistory = async (user, { domain: domainFilter } = {}) => 
         daily_rep: m.daily_rep || null,
         win_condition: m.win_condition || null,
         signature_id: m.signature_id || null,
+        incomplete: !fullyComplete,
+        fully_complete: fullyComplete,
         ...summarizeTranscript(transcript),
       };
     });

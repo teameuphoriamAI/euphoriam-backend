@@ -57,6 +57,10 @@ const serializeMapResistance = (map) => {
     orbit_pattern: map.orbit_pattern || null,
     protector_rule: map.protector_rule || null,
     core_fear: map.core_fear || null,
+    contradiction_statement: map.contradiction_statement || null,
+    contradiction_rate: map.contradiction_rate || null,
+    flip_belief: map.flip_belief || null,
+    flip_rule: map.flip_rule || null,
     failure_strategy: failure || null,
     success_strategy: success || null,
     top_3_avoidance_behaviours: map.top_3_avoidance_behaviours || [],
@@ -112,7 +116,7 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
     coaching_memory,
     current_edge_narrative: edgeNarrative,
     coaching_instructions:
-      "Obey COACH_CHECKIN.coaching_mode. When stop_discovery is true: coach directly — pattern, cost, failure/success strategy, one Green Rep, proof. No reflective questions.",
+      "Obey COACH_CHECKIN flags. Product coaching voice is in Coach Brain Prompt.",
     progress_metrics: map.progress_metrics || null,
     recent_proof_logs: proofLogs.map((p) => ({
       action: p.action,

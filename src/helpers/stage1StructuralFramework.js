@@ -4,7 +4,7 @@
  */
 
 const { resolveFailureStrategyForMap, resolveSuccessStrategyForMap } = require("./stage1MapStructure");
-const { detectUncertaintySignal } = require("./stage1CoachInvestigation");
+const { detectUncertaintySignal } = require("../stage1/coach/signals/investigation");
 
 const STEPS = Object.freeze({
   MAP: "map",
@@ -57,7 +57,7 @@ const isInstallMoment = ({ proofCycleFlow, transition, memoryCtx }) => {
 };
 
 const isDisruptMoment = ({ userMessage, transition, memoryCtx, investigationFlow = null }) => {
-  if (investigationFlow?.skip_llm || investigationFlow?.active) return false;
+  if (investigationFlow?.active) return false;
   if (detectUncertaintySignal(userMessage)) return false;
   const msg = String(userMessage || "");
   const avoidance =
@@ -116,8 +116,8 @@ const resolveStructuralStep = ({
       step: STEPS.INSTALL,
       label: "Install the Flip",
       coach_directive:
-        `INSTALL phase — anchor today's move in the flip: "${String(flip).slice(0, 120)}". ` +
-        "Assign or reinforce ONE green rep aligned with success strategy. Proof logs matter.",
+        `INSTALL phase — assign ONE green rep that physically practices the flip: "${String(flip).slice(0, 120)}". ` +
+        "Rep must advance the active milestone — real-world behavior, not mirror/voice/generic visibility exercise. Proof logs matter.",
       example_line: `Today's install: one action that proves "${String(flip).slice(0, 80)}" is becoming real — not just understood.`,
       awareness,
     };

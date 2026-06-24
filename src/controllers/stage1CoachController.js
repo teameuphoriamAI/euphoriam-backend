@@ -7,8 +7,8 @@ const { normalizeDomain } = require("../constants/domains");
 const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { loadCoachPromptBundle } = require("../helpers/stage1Prompts");
-const { buildCoachUserContext } = require("../helpers/stage1CoachContext");
-const { buildCoachMemoryContext } = require("../helpers/stage1CoachMemoryContext");
+const { buildCoachUserContext } = require("../stage1/coach/context/userContext");
+const { buildCoachMemoryContext } = require("../stage1/coach/context/memory");
 const {
   recordCoachCheckin,
   listCoachHistory,
@@ -16,14 +16,14 @@ const {
   getOpenCoachSession,
   endCoachSession,
   findOpenSessionForDomain,
-} = require("../helpers/stage1CoachHistory");
-const { gatherCoachOpenPayload, resolveLastGreenRep } = require("../helpers/stage1CoachOpen");
-const { buildSessionSummaryFromCoachLog } = require("../helpers/stage1CoachSessionContinuity");
+} = require("../stage1/coach/persistence/history");
+const { gatherCoachOpenPayload, resolveLastGreenRep } = require("../stage1/coach/context/open");
+const { buildSessionSummaryFromCoachLog } = require("../stage1/coach/context/sessionContinuity");
 const {
   detectProgressSignals,
   maybeAutoLogProof,
   sanitizeCoachGreenRep,
-} = require("../helpers/stage1CoachProgress");
+} = require("../stage1/coach/utils/progress");
 const {
   recordCoachingMemoryTurn,
   finalizeCoachingMemorySession,
@@ -31,25 +31,26 @@ const {
   ensureCoachingMemory,
   serializeCoachingMemoryForCoach,
   syncProofLogsToCoachingMemory,
-} = require("../helpers/stage1CoachingMemory");
-const { indexCoachSession } = require("../helpers/stage1CoachVectorMemory");
+} = require("../stage1/coach/context/coachingMemory");
+const { indexCoachSession } = require("../stage1/coach/persistence/vectorMemory");
 const { DOMAIN_LABELS } = require("../constants/domains");
-const { sanitizeCoachUserFacingText, unwrapCoachAssistantMessage } = require("../helpers/stage1CoachNaturalLanguage");
-const { mergeBarriersIntoMemory } = require("../helpers/stage1CoachBarriers");
-const { resolveCoachingTransition } = require("../helpers/stage1CoachTransition");
-const { buildCoachConversationSignals } = require("../helpers/stage1CoachConversationSignals");
+const { sanitizeCoachUserFacingText, unwrapCoachAssistantMessage } = require("../stage1/coach/context/naturalLanguage");
+const { mergeBarriersIntoMemory } = require("../stage1/coach/signals/barriers");
+const { resolveCoachingTransition } = require("../stage1/coach/flows/transition");
+const { buildCoachConversationSignals } = require("../stage1/coach/signals/conversation");
 const {
   resolveProofCycleFlow,
   onGreenRepAssigned,
-} = require("../helpers/stage1CoachProofCycle");
+} = require("../stage1/coach/flows/proofCycle");
 const { inferGravityFromCoachState } = require("../helpers/stage1StructuralMap");
 const { buildStructuralCoachBlock } = require("../helpers/stage1StructuralFramework");
-const { resolveFirstSessionTurnFlow } = require("../helpers/stage1CoachFirstSession");
-const { resolveInvestigationTurnFlow } = require("../helpers/stage1CoachInvestigation");
-const { deriveEvolutionWritebackFromTurn } = require("../helpers/stage1CoachMilestoneRep");
-const { resolveStructuralCoachingFlow } = require("../helpers/stage1CoachStructuralFlow");
-const { resolveProofProgressionFlowAsync } = require("../helpers/stage1CoachProofDiagnosis");
-const { resolveActivationMomentFlow } = require("../helpers/stage1CoachActivationMoment");
+const { resolveFirstSessionTurnFlow } = require("../stage1/coach/signals/firstSession");
+const { resolveInvestigationTurnFlow } = require("../stage1/coach/signals/investigation");
+const { deriveEvolutionWritebackFromTurn } = require("../stage1/coach/utils/milestoneRep");
+const { resolveStructuralCoachingFlow } = require("../stage1/coach/flows/structural");
+const { resolveProofProgressionFlowAsync } = require("../stage1/coach/flows/proofDiagnosis");
+const { resolveActivationMomentFlow } = require("../stage1/coach/signals/activation");
+const { mergeFlowSignals } = require("../stage1/coach/signals/merge");
 
 const COACH_STATE = Object.freeze({ COACHING: "coaching", PROGRESS: "progress" });
 
@@ -312,14 +313,16 @@ const coachCheckin = async (req, res) => {
       Array.isArray(stage1.coach_session_log) ? stage1.coach_session_log : [],
       domain,
     );
+    const activeGoalContext = buildActiveGoalContext(map, domain);
     const preSignals = buildCoachConversationSignals({
       messages,
       userMessage,
       map,
       memoryCtx: coachMemoryContext,
       openSession: rawOpenSession,
+      goalContext: activeGoalContext,
+      proofCycleFlow: null,
     });
-    const activeGoalContext = buildActiveGoalContext(map, domain);
     const proofCycleFlow = resolveProofCycleFlow({
       stage1,
       domain,
@@ -329,6 +332,7 @@ const coachCheckin = async (req, res) => {
       openSession: rawOpenSession,
       map,
       goalContext: activeGoalContext,
+      memoryCtx: coachMemoryContext,
       reports_stagnation: preSignals.reports_stagnation,
       user_completed_current_rep: preSignals.user_completed_current_rep,
       rep_assigned_this_session: preSignals.has_active_session_rep,
@@ -375,6 +379,17 @@ const coachCheckin = async (req, res) => {
       goalContext: activeGoalContext,
     });
 
+    const proofProgressionFlow = await resolveProofProgressionFlowAsync({
+      userMessage,
+      proofSignals,
+      messages,
+      map,
+      goalContext: activeGoalContext,
+      memoryCtx: coachMemoryContext,
+      openSession: rawOpenSession,
+      proofCycleFlow,
+    });
+
     const activationMomentFlow = resolveActivationMomentFlow({
       messages,
       userMessage,
@@ -389,16 +404,6 @@ const coachCheckin = async (req, res) => {
       transition.coaching_brief.assign_green_rep = false;
       transition.coaching_brief.must_assign_green_rep = false;
     }
-
-    const proofProgressionFlow = await resolveProofProgressionFlowAsync({
-      userMessage,
-      proofSignals,
-      map,
-      goalContext: activeGoalContext,
-      memoryCtx: coachMemoryContext,
-      openSession: rawOpenSession,
-      proofCycleFlow,
-    });
 
     const structuralFlow = resolveStructuralCoachingFlow({
       messages,
@@ -425,278 +430,42 @@ const coachCheckin = async (req, res) => {
         `${transition.coaching_brief.instruction || ""} ${structuralFlow.coaching_directive}`.trim();
     }
 
-    if (proofCycleFlow.skip_llm && proofCycleFlow.assistant_override) {
-      const writebackHints = {};
-      if (proofCycleFlow.awaiting_proof_log) writebackHints.awaiting_proof_log = true;
-      if (proofCycleFlow.proof_integration_mode) writebackHints.proof_integration_mode = true;
-      if (proofCycleFlow.suggest_session_end) writebackHints.suggest_session_end = true;
-      const assistantReply = sanitizeCoachUserFacingText(proofCycleFlow.assistant_override, {
-        stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
-        noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
-        greenRep: null,
-      });
-      const sessionPhase = proofCycleFlow.session_phase || "coaching";
-      const coachState = proofCycleFlow.proof_integration_mode
-        ? COACH_STATE.PROGRESS
-        : COACH_STATE.COACHING;
-      const { nextStage1 } = persistCoachTurn({
-        stage1,
-        map:
-          transition.conversation_signals?.no_trusted_person
-            ? mergeBarriersIntoMemory(map, { no_trusted_person: true })
-            : map,
-        domain,
-        checkinState: coachState,
-        gravityRating: inferGravityFromCoachState(checkinState),
-        messages,
-        userMessage,
-        assistantMessage: assistantReply,
-        writebackHints,
-        greenRep: null,
-        proofCycle: proofCycleFlow.proof_cycle,
-        sessionPhase,
-        firstSessionFlow: firstSessionFlow.first_session_flow,
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: sessionPhase,
-        coach_state: coachState,
-        assistant_message: assistantReply,
-        green_rep: null,
-        writeback_hints: writebackHints,
-        checkin: {
-          current_state: checkinState,
-          awaiting_proof_log: Boolean(proofCycleFlow.awaiting_proof_log),
-          proof_integration_mode: Boolean(proofCycleFlow.proof_integration_mode),
-        },
-      });
-    }
-
-    if (activationMomentFlow.skip_llm && activationMomentFlow.assistant_override) {
-      const activationRep = activationMomentFlow.green_rep
-        ? sanitizeCoachGreenRep(activationMomentFlow.green_rep, {
-            map,
-            goalContext: activeGoalContext,
-            assignRequested: Boolean(activationMomentFlow.writeback_hints?.assign_new_green_rep),
-            allowNewRep: Boolean(activationMomentFlow.writeback_hints?.assign_new_green_rep),
-          })
-        : null;
-      const assistantReply = sanitizeCoachUserFacingText(activationMomentFlow.assistant_override, {
-        stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
-        noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
-        greenRep: activationRep,
-      });
-      const writebackHints = {
-        ...(activationMomentFlow.writeback_hints || {}),
-        assign_new_green_rep: Boolean(activationRep),
-      };
-      let nextProofCycle = proofCycleFlow.proof_cycle;
-      if (activationRep?.name) {
-        nextProofCycle = onGreenRepAssigned(
-          proofCycleFlow.proof_cycle,
-          activationRep.name,
-          proofCycleFlow.proof_cycle?.known_proof_ids || [],
-        );
+    const mergedConversationSignals = mergeFlowSignals(
+      transition.conversation_signals ||
+        transition.coaching_brief?.conversation_signals ||
+        {},
+      {
+        proofCycleFlow,
+        proofProgressionFlow,
+        activationMomentFlow,
+        investigationFlow,
+        structuralFlow,
+        firstSessionFlow,
+      },
+    );
+    transition.conversation_signals = mergedConversationSignals;
+    if (mergedConversationSignals.stop_discovery) {
+      transition.stop_discovery = true;
+      transition.discovery_complete = true;
+      if (transition.coaching_mode === "discovery") {
+        transition.coaching_mode = "coaching";
       }
-      const { nextStage1 } = persistCoachTurn({
-        stage1,
-        map:
-          transition.conversation_signals?.no_trusted_person
-            ? mergeBarriersIntoMemory(map, { no_trusted_person: true })
-            : map,
-        domain,
-        checkinState: COACH_STATE.COACHING,
-        gravityRating: inferGravityFromCoachState(checkinState),
-        messages,
-        userMessage,
-        assistantMessage: assistantReply,
-        writebackHints,
-        greenRep: activationRep,
-        proofCycle: nextProofCycle,
-        sessionPhase: "coaching",
-        structuralCoachingFlow: activationMomentFlow.structural_coaching_flow,
-        activationMomentFlow: activationMomentFlow.activation_moment_flow,
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: "coaching",
-        coach_state: COACH_STATE.COACHING,
-        assistant_message: assistantReply,
-        green_rep: activationRep,
-        writeback_hints: writebackHints,
-        checkin: { current_state: checkinState },
-      });
     }
-
-    if (proofProgressionFlow.skip_llm && proofProgressionFlow.assistant_override) {
-      const progressionRep = proofProgressionFlow.green_rep
-        ? sanitizeCoachGreenRep(proofProgressionFlow.green_rep, {
-            map,
-            goalContext: activeGoalContext,
-            assignRequested: true,
-            allowNewRep: true,
-          })
-        : null;
-      const assistantReply = sanitizeCoachUserFacingText(proofProgressionFlow.assistant_override, {
-        stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
-        noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
-        greenRep: progressionRep,
-      });
-      const writebackHints = {
-        ...(proofProgressionFlow.writeback_hints || {}),
-        assign_new_green_rep: Boolean(progressionRep),
-      };
-      let nextProofCycle = proofCycleFlow.proof_cycle;
-      if (progressionRep?.name) {
-        nextProofCycle = onGreenRepAssigned(
-          proofCycleFlow.proof_cycle,
-          progressionRep.name,
-          proofCycleFlow.proof_cycle?.known_proof_ids || [],
-        );
+    if (transition.coaching_brief) {
+      transition.coaching_brief.conversation_signals = mergedConversationSignals;
+      if (mergedConversationSignals.coaching_directive) {
+        transition.coaching_brief.instruction =
+          `${transition.coaching_brief.instruction || ""} ${mergedConversationSignals.coaching_directive}`.trim();
       }
-      const { nextStage1 } = persistCoachTurn({
-        stage1,
-        map:
-          transition.conversation_signals?.no_trusted_person
-            ? mergeBarriersIntoMemory(map, { no_trusted_person: true })
-            : map,
-        domain,
-        checkinState: COACH_STATE.COACHING,
-        gravityRating: inferGravityFromCoachState(checkinState),
-        messages,
-        userMessage,
-        assistantMessage: assistantReply,
-        writebackHints,
-        greenRep: progressionRep,
-        proofCycle: nextProofCycle,
-        sessionPhase: "coaching",
-        structuralCoachingFlow: proofProgressionFlow.structural_coaching_flow,
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: "coaching",
-        coach_state: COACH_STATE.COACHING,
-        assistant_message: assistantReply,
-        green_rep: progressionRep,
-        writeback_hints: writebackHints,
-        checkin: { current_state: checkinState },
-      });
-    }
-
-    if (firstSessionFlow.skip_llm && firstSessionFlow.assistant_override) {
-      const assistantReply = sanitizeCoachUserFacingText(firstSessionFlow.assistant_override, {
-        stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
-        noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
-        greenRep: null,
-      });
-      const { nextStage1 } = persistCoachTurn({
-        stage1,
-        map:
-          transition.conversation_signals?.no_trusted_person
-            ? mergeBarriersIntoMemory(map, { no_trusted_person: true })
-            : map,
-        domain,
-        checkinState: COACH_STATE.COACHING,
-        gravityRating: inferGravityFromCoachState(checkinState),
-        messages,
-        userMessage,
-        assistantMessage: assistantReply,
-        writebackHints: { first_session_turn: true },
-        greenRep: null,
-        proofCycle: proofCycleFlow.proof_cycle,
-        sessionPhase: "coaching",
-        firstSessionFlow: firstSessionFlow.first_session_flow,
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: "coaching",
-        coach_state: COACH_STATE.COACHING,
-        assistant_message: assistantReply,
-        green_rep: null,
-        writeback_hints: { first_session_turn: true },
-        checkin: { current_state: checkinState },
-      });
-    }
-
-    if (investigationFlow.skip_llm && investigationFlow.assistant_override) {
-      const assistantReply = sanitizeCoachUserFacingText(investigationFlow.assistant_override, {
-        stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
-        noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
-        greenRep: null,
-      });
-      const { nextStage1 } = persistCoachTurn({
-        stage1,
-        map:
-          transition.conversation_signals?.no_trusted_person
-            ? mergeBarriersIntoMemory(map, { no_trusted_person: true })
-            : map,
-        domain,
-        checkinState: COACH_STATE.COACHING,
-        gravityRating: inferGravityFromCoachState(checkinState),
-        messages,
-        userMessage,
-        assistantMessage: assistantReply,
-        writebackHints: { investigation_turn: true },
-        greenRep: null,
-        proofCycle: proofCycleFlow.proof_cycle,
-        sessionPhase: "coaching",
-        investigationFlow: investigationFlow.investigation_flow,
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: "coaching",
-        coach_state: COACH_STATE.COACHING,
-        assistant_message: assistantReply,
-        green_rep: null,
-        writeback_hints: { investigation_turn: true },
-        checkin: { current_state: checkinState },
-      });
-    }
-
-    if (structuralFlow.skip_llm && structuralFlow.assistant_override) {
-      const evolutionHints = structuralFlow.evolution_hints || {};
-      const assistantReply = sanitizeCoachUserFacingText(structuralFlow.assistant_override, {
-        stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
-        noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
-        greenRep: null,
-      });
-      const { nextStage1 } = persistCoachTurn({
-        stage1,
-        map:
-          transition.conversation_signals?.no_trusted_person
-            ? mergeBarriersIntoMemory(map, { no_trusted_person: true })
-            : map,
-        domain,
-        checkinState: COACH_STATE.COACHING,
-        gravityRating: inferGravityFromCoachState(checkinState),
-        messages,
-        userMessage,
-        assistantMessage: assistantReply,
-        writebackHints: {
-          structural_disruption_turn: true,
-          active_bottleneck: structuralFlow.active_bottleneck,
-          ...evolutionHints,
-        },
-        greenRep: null,
-        proofCycle: proofCycleFlow.proof_cycle,
-        sessionPhase: "coaching",
-        structuralCoachingFlow: structuralFlow.structural_coaching_flow,
-      });
-      await persistStage1ForUser(user.id, nextStage1);
-      return successResponse(res, "Coach reply", {
-        domain,
-        session_phase: "coaching",
-        coach_state: COACH_STATE.COACHING,
-        assistant_message: assistantReply,
-        green_rep: null,
-        writeback_hints: { structural_disruption_turn: true },
-        checkin: { current_state: checkinState },
-      });
+      if (proofProgressionFlow?.green_rep && mergedConversationSignals.assign_green_rep) {
+        transition.coaching_brief.assign_green_rep = true;
+        transition.coaching_brief.must_assign_green_rep = true;
+      }
+      if (activationMomentFlow?.assign_green_rep && activationMomentFlow?.green_rep) {
+        transition.coaching_brief.assign_green_rep = true;
+        transition.coaching_brief.must_assign_green_rep = true;
+        transition.coaching_brief.suggested_milestone_rep = activationMomentFlow.green_rep;
+      }
     }
 
     coachMemoryContext.coaching_transition = {
@@ -736,10 +505,12 @@ const coachCheckin = async (req, res) => {
       member_continuity: coachMemoryContext?.member_continuity || null,
       first_session: Boolean(firstSessionFlow.is_first_session),
       first_turn: Boolean(firstSessionFlow.is_first_turn),
-      reports_setback: Boolean(firstSessionFlow.is_first_turn && firstSessionFlow.skip_llm),
+      reports_setback: Boolean(firstSessionFlow.is_first_turn && firstSessionFlow.active),
       reports_stagnation: transition.conversation_signals?.reports_stagnation || false,
       solo_ladder_complete: transition.conversation_signals?.solo_ladder_complete || false,
-      assign_green_rep: Boolean(transition.coaching_brief?.assign_green_rep),
+      assign_green_rep:
+        Boolean(transition.coaching_brief?.assign_green_rep) &&
+        !transition.conversation_signals?.block_clarity_rep,
       awaiting_proof_log: Boolean(proofCycleFlow.awaiting_proof_log),
       proof_integration_mode: Boolean(proofCycleFlow.proof_integration_mode),
       suggest_session_end: Boolean(proofCycleFlow.suggest_session_end),
@@ -812,6 +583,8 @@ const coachCheckin = async (req, res) => {
     const writebackHints = { ...(result.writeback_hints || {}) };
     Object.assign(
       writebackHints,
+      proofProgressionFlow?.writeback_hints || {},
+      activationMomentFlow?.writeback_hints || {},
       deriveEvolutionWritebackFromTurn({
         userMessage,
         map,
@@ -859,7 +632,10 @@ const coachCheckin = async (req, res) => {
       else if (recovery.includes("fast")) writebackHints.cl_estimate = 3.5;
     }
 
-    let nextStructuralFlow = structuralFlow.structural_coaching_flow;
+    let nextStructuralFlow =
+      structuralFlow.structural_coaching_flow ||
+      proofProgressionFlow?.structural_coaching_flow ||
+      activationMomentFlow?.structural_coaching_flow;
     if (safeGreenRep?.name) {
       nextStructuralFlow = {
         ...(nextStructuralFlow || {}),

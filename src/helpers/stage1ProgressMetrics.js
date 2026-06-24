@@ -24,10 +24,6 @@ const enrichProgressMetricsFromMap = (map, progressMetrics) => {
     metrics.avoidance_caught_count = mappedCount;
   }
 
-  if (map?.map_resistance_complete && !metrics.milestones_completed) {
-    metrics.milestones_completed = 1;
-  }
-
   const labelledRecovery = [map?.recovery_speed, metrics.recovery_speed].find(
     (value) => value != null && /^(fast|moderate|slow)$/i.test(String(value).trim()),
   );

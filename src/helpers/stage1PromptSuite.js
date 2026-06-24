@@ -44,7 +44,7 @@ You MUST return all of:
 - failure_strategy: { title, rule, behaviours[] } — what the old structure predictably does toward this goal
 - top_3_avoidance_behaviours: exactly 3 specific sabotage behaviours (MUST match failure_strategy.behaviours)
 - success_strategy: { title, behaviour, belief?, success_rule?, behaviours[] } — opposite structure from Brain Prompt for this signature
-- daily_rep: { name, steps[], win_condition } — ONE green rep that interrupts failure strategy TODAY for this goal
+- daily_rep: { name, steps[], win_condition } — ONE green rep that physically embodies flip_rule toward this goal (real-world action, not mirror/voice/generic truth)
 - win_condition: observable proof (e.g. "Walk done. Not perfect. Done.")
 - recovery_speed: "Slow" | "Moderate" | "Fast" — how quickly they collapse/pull back after action
 - core_fear, perceived_risk, past_pattern, required_role: a concise SYNTHESIZED insight (your clinical interpretation of the pattern), 1 short sentence each. Always provide these by inferring from the whole transcript + signature — do NOT leave them null.
@@ -61,7 +61,7 @@ Rules:
 - If the domain is NOT "income" or "wealth", you MUST NOT mention money, pricing, invoices, sales, "financially visible", or income anywhere. (e.g. for a relationships goal: "avoid pricing conversations" → "avoid honest conversations"; "Be Financially Visible" → "Let yourself be seen and valued"; "name the number out loud" → "say what you actually feel".)
 - core_fear, perceived_risk, past_pattern and required_role must ALWAYS be filled with a synthesized insight (never null) drawn from this transcript and signature.
 - Anchor every field to ACTIVE_GOAL_CONTEXT (domain, goal, outcome, milestones).
-- daily_rep must come from the diagnosis — do NOT copy today_visible_action from goal onboarding unless it is clearly the green rep.
+- daily_rep must physically embody flip_rule — the member practices the new strategy in the real world toward the milestone, not a private visibility exercise.
 - success_strategy must be the structural opposite for this vortex, not a restatement of desired_outcome.
 - contradiction_statement, structure_takeover_moment, flip_belief, flip_rule and flip_90_day_projection MUST be written from THIS transcript and goal — never generic. These power the "What gets in the way" view.
 - flip_belief / flip_rule are the structural opposite of the vortex (the "code install"), aligned with success_strategy.belief.

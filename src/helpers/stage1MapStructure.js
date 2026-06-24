@@ -500,7 +500,7 @@ const enrichMapForClient = (map, opts = {}) => {
   const {
     buildCoachingHomeOverlay,
     applyCoachingToProgressMetrics,
-  } = require("./stage1CoachingHomeOverlay");
+  } = require("../stage1/coach/legacy/homeOverlay");
   const coaching_progress = buildCoachingHomeOverlay(normalized, {
     proof_logs: opts.proof_logs,
     coach_session_log: opts.coach_session_log,

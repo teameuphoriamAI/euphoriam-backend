@@ -182,7 +182,7 @@ const getDomain = async (req, res) => {
     const { enrichMapForClient } = require("../helpers/stage1MapStructure");
     const {
       ensureInitialDiagnosticOnStage1,
-    } = require("../helpers/stage1CoachingMemory");
+    } = require("../stage1/coach/context/coachingMemory");
 
     let stage1ForResponse = stage1;
     const { stage1: withDiagnostic, changed } = ensureInitialDiagnosticOnStage1(
@@ -687,7 +687,7 @@ const finalizeMapResistance = async (req, res) => {
 
     const {
       captureInitialDiagnosticIfNeeded,
-    } = require("../helpers/stage1CoachingMemory");
+    } = require("../stage1/coach/context/coachingMemory");
     const mapAfterMerge = (stage1.domain_maps || []).find(
       (m) => m.domain === domain,
     );

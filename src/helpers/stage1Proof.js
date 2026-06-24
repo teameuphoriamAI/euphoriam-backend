@@ -4,7 +4,7 @@ const { enrichProgressMetricsFromMap } = require("./stage1ProgressMetrics");
 const {
   appendProofToCoachingMemory,
   appendProgressLog,
-} = require("./stage1CoachingMemory");
+} = require("../stage1/coach/context/coachingMemory");
 
 const PROOF_TYPES = new Set(["action", "resistance", "recovery"]);
 const MAX_PROOF_LOGS = 200;

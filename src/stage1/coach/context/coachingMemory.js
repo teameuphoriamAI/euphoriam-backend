@@ -692,7 +692,10 @@ const serializeCoachingMemoryForCoach = (map, stage1, domain) => {
     coaching_summaries: (memory.coaching_summaries || []).slice(-8),
     resistance_history: (memory.resistance_history || []).slice(-12),
     green_rep_history: (memory.green_rep_history || []).slice(-12),
-    proof_logs: (memory.proof_logs || []).slice(0, 15),
+    proof_logs: (memory.proof_logs || []).slice(0, 15).map((p) => ({
+      ...p,
+      action: String(p?.action || "").slice(0, 400),
+    })),
     progress_logs: (memory.progress_logs || []).slice(-15),
     diagnostic_observations: (memory.diagnostic_observations || []).slice(-10),
     resistance_evolution: listResistanceEvolution(memory),

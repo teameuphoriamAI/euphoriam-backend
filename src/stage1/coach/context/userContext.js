@@ -7,7 +7,9 @@ const { serializeCoachingMemoryForCoach } = require("./coachingMemory");
 const { buildResistanceEvolutionNarrative } = require("./naturalLanguage");
 
 const MAX_TRANSCRIPT_MESSAGES = 16;
+const MAX_COACH_AI_MESSAGES = 24;
 const MAX_MESSAGE_CHARS = 900;
+const MAX_PROOF_ACTION_CHARS = 400;
 
 const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) => {
   if (!Array.isArray(transcript)) return [];
@@ -16,6 +18,25 @@ const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) =>
     content: String(m?.content || "").slice(0, MAX_MESSAGE_CHARS),
   }));
 };
+
+/** Cap live coach thread sent to Python — full history stays in DB. */
+const excerptCoachMessages = (messages, maxMessages = MAX_COACH_AI_MESSAGES) =>
+  excerptTranscript(messages, maxMessages);
+
+/** Strip bloated fields duplicated in USER_COACH_CONTEXT / COACH_MEMORY_CONTEXT. */
+const slimDomainMapForCoach = (map) => {
+  if (!map || typeof map !== "object") return {};
+  const {
+    coaching_memory: _coachingMemory,
+    map_resistance_transcript: _transcript,
+    structural_map: _structuralMap,
+    structural_map_history: _structuralHistory,
+    ...rest
+  } = map;
+  return rest;
+};
+
+const trimProofAction = (action) => String(action || "").slice(0, MAX_PROOF_ACTION_CHARS);
 
 const serializeUserSessions = (sessions) =>
   (sessions || []).slice(0, 6).map((s) => ({
@@ -119,7 +140,7 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
       "Obey COACH_CHECKIN flags. Product coaching voice is in Coach Brain Prompt.",
     progress_metrics: map.progress_metrics || null,
     recent_proof_logs: proofLogs.map((p) => ({
-      action: p.action,
+      action: trimProofAction(p.action),
       type: p.type,
       created_at: p.created_at,
       green_rep_name: p.green_rep_name || null,
@@ -143,6 +164,9 @@ const buildCoachUserContext = async (user, stage1, map, domain) => {
 module.exports = {
   buildCoachUserContext,
   excerptTranscript,
+  excerptCoachMessages,
+  slimDomainMapForCoach,
+  trimProofAction,
   serializeUserSessions,
   serializeCoachHistory,
   serializeMapResistance,

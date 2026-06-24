@@ -7,7 +7,7 @@ const { normalizeDomain } = require("../constants/domains");
 const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { loadCoachPromptBundle } = require("../helpers/stage1Prompts");
-const { buildCoachUserContext } = require("../stage1/coach/context/userContext");
+const { buildCoachUserContext, excerptCoachMessages, slimDomainMapForCoach } = require("../stage1/coach/context/userContext");
 const { buildCoachMemoryContext } = require("../stage1/coach/context/memory");
 const {
   recordCoachCheckin,
@@ -529,13 +529,15 @@ const coachCheckin = async (req, res) => {
       suggested_milestone_rep: transition.coaching_brief?.suggested_milestone_rep || null,
     };
 
+    const aiMessages = excerptCoachMessages(messages);
+
     const result = await aiService.coachReply({
       user_id: user.id,
-      domain_map: map,
+      domain_map: slimDomainMapForCoach(map),
       active_goal_context: buildActiveGoalContext(map, domain),
       user_coach_context,
       checkin,
-      messages,
+      messages: aiMessages,
       user_message: userMessage,
       prompts,
     });
@@ -732,14 +734,14 @@ const frictionRescue = async (req, res) => {
     });
 
     const result = await aiService.frictionRescue({
-      domain_map: map,
+      domain_map: slimDomainMapForCoach(map),
       active_goal_context: buildActiveGoalContext(map, domain),
       user_coach_context,
       checkin: {
         current_state: req.body?.state || "high_gravity",
         gravity_rating: req.body?.gravity_rating,
       },
-      messages: req.body?.messages || [],
+      messages: excerptCoachMessages(req.body?.messages || []),
       user_message: req.body?.message,
       prompts,
     });

@@ -5,39 +5,9 @@ const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance"
 const { buildActiveGoalContext } = require("./stage1GoalContext");
 const { loadMapResistancePromptBundle } = require("./stage1Prompts");
 const { validateMapResistanceLastAnswer, buildInvalidAnswerReaskTurn, buildValidAnswerAdvanceTurn, buildCompletionTurn } = require("./stage1MapResistanceAnswerValidation");
-const { buildMapResistanceResumePayload, progressFromTranscript } = require("./stage1MapResistanceResume");
+const { resolveMapResistanceResume } = require("./stage1MapResistanceResume");
 const { persistStage1ForUser } = require("./stage1Repository");
 const { upsertDomainMap } = require("./stage1State");
-
-function resumePayloadFromTranscript(transcript, domain, targetCount) {
-  const prog = progressFromTranscript(transcript, targetCount);
-  const lastMsg = transcript[transcript.length - 1];
-  return {
-    nextMessage: lastMsg?.role === "assistant" ? lastMsg : null,
-    transcript,
-    messages: transcript,
-    mode: "map_resistance",
-    targetCount,
-    answeredCount: prog.answeredCount,
-    pendingQuestion: prog.pendingQuestion,
-    progress: {
-      answered: prog.answered,
-      total: prog.total,
-      currentQuestion: prog.currentQuestion,
-    },
-    intakeState: {
-      transcript,
-      mode: "map_resistance",
-      activeDomain: domain,
-      answeredCount: prog.answeredCount,
-      lastQuestionNumber: prog.lastQuestionNumber,
-      pendingQuestion: prog.pendingQuestion,
-    },
-    finalize_ready: prog.finalizeReady,
-    status: "resumable",
-    hasIncompleteChat: true,
-  };
-}
 
 /**
  * Map Resistance chat turn via Python AI service (same response shape as diagnostics/chatbot-freeform).
@@ -47,18 +17,14 @@ const mapResistanceChatViaPython = async (req, res, { user, domain, map, stage1 
   const activeGoalContext = buildActiveGoalContext(map, domain);
   const targetCount = req.body?.targetCount || MAP_RESISTANCE_TARGET_QUESTIONS;
 
-  if (messages.length === 0 && !map.map_resistance_complete) {
-    let resume = await buildMapResistanceResumePayload(user.id, domain, targetCount);
-    if (!resume?.transcript?.length) {
-      const saved = map.map_resistance_transcript;
-      if (
-        stage1.map_resistance_in_progress &&
-        Array.isArray(saved) &&
-        saved.length > 0
-      ) {
-        resume = resumePayloadFromTranscript(saved, domain, targetCount);
-      }
-    }
+  if (messages.length === 0) {
+    const resume = await resolveMapResistanceResume(
+      user.id,
+      domain,
+      map,
+      stage1,
+      targetCount,
+    );
     if (resume?.transcript?.length) {
       const last = resume.transcript[resume.transcript.length - 1];
       if (last?.role === "assistant") {

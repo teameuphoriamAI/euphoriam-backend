@@ -356,6 +356,9 @@ const recordCoachingMemoryTurn = (
     entry.current_success_strategy =
       typeof success === "object" ? success : { behaviour: String(success) };
   }
+  if (hints.active_bottleneck) entry.active_bottleneck = hints.active_bottleneck;
+  if (hints.progression_stage) entry.progression_stage = hints.progression_stage;
+  if (hints.removed_bottleneck) entry.removed_bottleneck = String(hints.removed_bottleneck);
   if (hints.session_summary) entry.session_summary = String(hints.session_summary);
   if (hints.coaching_insights) {
     const insights = Array.isArray(hints.coaching_insights)
@@ -397,6 +400,20 @@ const recordCoachingMemoryTurn = (
   if (active_goal_context?.current_milestone) {
     entry.milestone_focus =
       entry.milestone_focus || active_goal_context.current_milestone;
+  }
+
+  if (entry.messages.length >= 2 && (entry.turn_count || 0) >= 2) {
+    try {
+      const { buildSessionSummaryFromCoachLog } = require("./stage1CoachSessionContinuity");
+      const rolling = buildSessionSummaryFromCoachLog({
+        messages: entry.messages,
+        green_rep_last: entry.green_rep_assigned,
+        progress_integration: null,
+      });
+      if (rolling) entry.session_summary = rolling;
+    } catch {
+      /* optional */
+    }
   }
 
   let observations = [...memory.diagnostic_observations];

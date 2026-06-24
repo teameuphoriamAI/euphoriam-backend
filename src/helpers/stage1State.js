@@ -203,6 +203,7 @@ const buildHomeDashboard = (stage1) => {
     buildCoachingHomeOverlay,
     applyCoachingToProgressMetrics,
   } = require("./stage1CoachingHomeOverlay");
+  const { buildSuggestedTraining } = require("./stage1TrainingRecommendation");
   const coaching_progress = buildCoachingHomeOverlay(mapWithMetrics, {
     proof_logs: proof_logs_all,
     coach_session_log: stage1.coach_session_log || [],
@@ -247,6 +248,12 @@ const buildHomeDashboard = (stage1) => {
     signature_id: map.signature_id || null,
     recovery_speed: map.recovery_speed || progress_metrics.recovery_speed || null,
     coaching_progress,
+    suggested_training:
+      map.suggested_training ||
+      buildSuggestedTraining({
+        map,
+        domain: primary,
+      }),
     initial_diagnostic_snapshot: map.coaching_memory?.initial_diagnostic
       ? {
           captured_at: map.coaching_memory.initial_diagnostic.captured_at,

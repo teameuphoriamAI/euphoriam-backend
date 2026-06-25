@@ -1,6 +1,8 @@
 const crypto = require("crypto");
 const { sequelize } = require("../config/sequelize");
 const { withDbSlot } = require("../config/sequelize");
+const { Chat } = require("../models/chatModel");
+const { ChatType } = require("../utils/types");
 const {
   MAX_DIAGNOSTICS,
   ACCESS_WINDOW_DAYS,
@@ -273,6 +275,64 @@ const listFunnelDiagnostics = async (row) => {
   });
 };
 
+const funnelChatBelongsToAccess = (chat, funnelAccess) => {
+  if (!chat || !funnelAccess) return false;
+  const d = chat.data || {};
+  if (d.funnel_access_id) {
+    return d.funnel_access_id === funnelAccess.id;
+  }
+  return (
+    Boolean(d.email) &&
+    String(d.email).toLowerCase() === String(funnelAccess.email).toLowerCase()
+  );
+};
+
+/** Latest in-progress funnel diagnostic chat for this access row (if any). */
+const findLatestOpenFunnelChat = async (funnelAccess) => {
+  const rows = await withDbSlot(() =>
+    Chat.findAll({
+      where: {
+        chatType: ChatType.DIAGNOSTIC,
+        isChatEnded: false,
+      },
+      order: [["updatedAt", "DESC"]],
+      limit: 50,
+    }),
+  );
+  return rows.find((c) => funnelChatBelongsToAccess(c, funnelAccess)) || null;
+};
+
+/** End duplicate in-progress funnel chats, keeping the active session only. */
+const abandonOtherOpenFunnelChats = async (funnelAccess, keepChatId) => {
+  const keep = Number(keepChatId);
+  if (!Number.isFinite(keep)) return;
+
+  const rows = await withDbSlot(() =>
+    Chat.findAll({
+      where: {
+        chatType: ChatType.DIAGNOSTIC,
+        isChatEnded: false,
+      },
+      order: [["updatedAt", "DESC"]],
+      limit: 100,
+    }),
+  );
+
+  const now = new Date().toISOString();
+  for (const chat of rows) {
+    if (Number(chat.id) === keep) continue;
+    if (!funnelChatBelongsToAccess(chat, funnelAccess)) continue;
+    await chat.update({
+      isChatEnded: true,
+      data: {
+        ...(chat.data || {}),
+        abandoned_duplicate: true,
+        abandoned_at: now,
+      },
+    });
+  }
+};
+
 module.exports = {
   ensureFunnelAccess,
   getFunnelAccessById,
@@ -284,4 +344,7 @@ module.exports = {
   resolveFunnelAccessFromToken,
   listFunnelDiagnostics,
   buildFunnelLoginLink,
+  funnelChatBelongsToAccess,
+  findLatestOpenFunnelChat,
+  abandonOtherOpenFunnelChats,
 };

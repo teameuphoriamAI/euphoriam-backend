@@ -4,6 +4,7 @@ const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { Discovery } = require("../models/discoveryModel");
 const { DiscoveryChat } = require("../models/discoveryChat");
+const { Chat } = require("../models/chatModel");
 const { Prompt, PromptHistory } = require("../models/promptModel");
 const { UserSession } = require("../models/userSessionModel");
 const { successResponse, errorResponse } = require("../utils/response");
@@ -18,7 +19,7 @@ const { cleanTranscriptText, invalidateLatestPromptCache } = require("../helpers
 const { PromptType, UserStatus, UserRole } = require("../utils/types");
 const { getMarketResearchData, getMarketResearchRows } = require("../helpers/marketResearchAggregator");
 const openai = require("../config/openai");
-const { withDbSlot } = require("../config/sequelize");
+const { withDbSlot, sequelize } = require("../config/sequelize");
 
 const bustPromptCache = (type) => {
   if (!type) return;
@@ -99,7 +100,29 @@ const deleteUser = async (req, res) => {
       return errorResponse(res, "Admin users cannot be deleted", 403);
     }
 
-    // Optional: delete related data
+    // Delete funnel Q&A chats first (while funnel_access rows still exist for the subquery).
+    const normalizedEmail = String(user.email || "").trim().toLowerCase();
+    if (normalizedEmail) {
+      await withDbSlot(() =>
+        sequelize.query(
+          `DELETE FROM chat
+           WHERE "userId" = :userId
+              OR LOWER(data->>'email') = :email
+              OR data->>'funnel_access_id' IN (
+                SELECT id::text FROM funnel_access WHERE LOWER(email) = :email
+              )`,
+          { replacements: { userId: user.id, email: normalizedEmail } },
+        ),
+      );
+      await withDbSlot(() =>
+        sequelize.query(`DELETE FROM funnel_access WHERE LOWER(email) = :email`, {
+          replacements: { email: normalizedEmail },
+        }),
+      );
+    } else {
+      await Chat.destroy({ where: { userId: user.id } });
+    }
+
     await Diagnostic.destroy({
       where: {
         [Op.or]: [{ email: user.email }, { userId: user.id }],

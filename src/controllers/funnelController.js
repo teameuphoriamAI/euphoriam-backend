@@ -1,9 +1,10 @@
 const { Chat } = require("../models/chatModel");
+const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
 const { withDbSlot } = require("../config/sequelize");
 const { successResponse, errorResponse } = require("../utils/response");
 const { ChatType } = require("../utils/types");
-const { signFunnelSession } = require("../helpers/funnelToken");
+const { generateFunnelSessionToken } = require("../utils/funnelToken");
 const {
   ensureFunnelAccess,
   resolveFunnelAccessFromToken,
@@ -11,6 +12,9 @@ const {
   computeAccessStatus,
   issueSessionForAccess,
   listFunnelDiagnostics,
+  findLatestOpenFunnelChat,
+  funnelChatBelongsToAccess,
+  abandonOtherOpenFunnelChats,
 } = require("../helpers/funnelAccess");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
@@ -53,6 +57,27 @@ const listDiagnostics = async (req, res) => {
 
 /** POST /api/funnel/start-diagnostic */
 const startDiagnostic = async (req, res) => {
+  const forceNew = req.body?.force_new === true;
+  const email = req.funnelAccess.email;
+
+  if (!forceNew) {
+    const existing = await findLatestOpenFunnelChat(req.funnelAccess);
+    if (existing) {
+      await abandonOtherOpenFunnelChats(req.funnelAccess, existing.id);
+      const session_token = generateFunnelSessionToken({
+        funnel_access_id: req.funnelAccess.id,
+        email,
+        chat_id: existing.id,
+      });
+      return successResponse(res, "Diagnostic session resumed", {
+        session_token,
+        chat_id: existing.id,
+        email,
+        resumed: true,
+      });
+    }
+  }
+
   const status = computeAccessStatus(req.funnelAccess);
   if (!status.can_start_new) {
     return errorResponse(
@@ -65,10 +90,13 @@ const startDiagnostic = async (req, res) => {
     );
   }
 
-  const email = req.funnelAccess.email;
+  const appUser = await withDbSlot(() =>
+    User.findOne({ where: { email } }),
+  );
+
   const chat = await withDbSlot(() =>
     Chat.create({
-      userId: null,
+      userId: appUser?.id ?? null,
       chatType: ChatType.DIAGNOSTIC,
       isChatEnded: false,
       data: {
@@ -81,7 +109,9 @@ const startDiagnostic = async (req, res) => {
     }),
   );
 
-  const session_token = signFunnelSession({
+  await abandonOtherOpenFunnelChats(req.funnelAccess, chat.id);
+
+  const session_token = generateFunnelSessionToken({
     funnel_access_id: req.funnelAccess.id,
     email,
     chat_id: chat.id,
@@ -91,6 +121,7 @@ const startDiagnostic = async (req, res) => {
     session_token,
     chat_id: chat.id,
     email,
+    resumed: false,
   });
 };
 
@@ -103,14 +134,11 @@ const socketSession = async (req, res) => {
   if (!chat) return errorResponse(res, "Chat not found", 404);
 
   const data = chat.data || {};
-  if (
-    data.funnel_access_id &&
-    data.funnel_access_id !== req.funnelAccess.id
-  ) {
+  if (!funnelChatBelongsToAccess(chat, req.funnelAccess)) {
     return errorResponse(res, "Chat does not belong to this funnel user", 403);
   }
 
-  const session_token = signFunnelSession({
+  const session_token = generateFunnelSessionToken({
     funnel_access_id: req.funnelAccess.id,
     email: req.funnelAccess.email,
     chat_id: chatId,
@@ -133,15 +161,27 @@ const listChats = async (req, res) => {
     }),
   );
 
+  const openForAccess = rows.filter(
+    (c) =>
+      !c.isChatEnded &&
+      funnelChatBelongsToAccess({ data: c.data || {} }, req.funnelAccess),
+  );
+  if (openForAccess.length > 1) {
+    const keepId = openForAccess[0].id;
+    await abandonOtherOpenFunnelChats(req.funnelAccess, keepId);
+    for (const c of rows) {
+      if (
+        !c.isChatEnded &&
+        funnelChatBelongsToAccess({ data: c.data || {} }, req.funnelAccess) &&
+        c.id !== keepId
+      ) {
+        c.isChatEnded = true;
+      }
+    }
+  }
+
   const chats = rows
-    .filter((c) => {
-      const d = c.data || {};
-      return (
-        d.funnel_access_id === req.funnelAccess.id ||
-        (d.email &&
-          String(d.email).toLowerCase() === req.funnelAccess.email.toLowerCase())
-      );
-    })
+    .filter((c) => funnelChatBelongsToAccess({ data: c.data || {} }, req.funnelAccess))
     .map((c) => {
       const d = c.data || {};
       const transcript = Array.isArray(d.transcript) ? d.transcript : [];
@@ -165,10 +205,7 @@ const getChat = async (req, res) => {
   if (!chat) return errorResponse(res, "Chat not found", 404);
 
   const data = chat.data || {};
-  if (
-    data.funnel_access_id &&
-    data.funnel_access_id !== req.funnelAccess.id
-  ) {
+  if (!funnelChatBelongsToAccess(chat, req.funnelAccess)) {
     return errorResponse(res, "Forbidden", 403);
   }
 

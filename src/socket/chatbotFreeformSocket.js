@@ -291,45 +291,40 @@ const persistFunnelChatTranscript = async (session) => {
     return;
   }
   try {
+    const chat = await Chat.findByPk(session.funnel_chat_id);
+    if (!chat) {
+      console.warn(
+        "[funnel socket] persist skipped: chat %s not found",
+        session.funnel_chat_id,
+      );
+      return;
+    }
+    if (
+      String(chat.data?.funnel_access_id ?? "") !==
+      String(session.funnel_access_id ?? "")
+    ) {
+      console.warn("[funnel socket] persist skipped: funnel_access_id mismatch");
+      return;
+    }
+
     const userName = session.email.split("@")[0] || "User";
     let appUser = await User.findOne({ where: { email: session.email } });
     if (!appUser) {
       appUser = await User.create({ email: session.email, name: userName });
     }
-    const chatType = session.mode === "discovery" ? "Discovery" : "Diagnostic";
-    const saved = await saveChatIncrementally({
-      userId: appUser.id,
-      diagnosticId: session.existingDiagnostic?.id || null,
-      discoveryId: null,
-      chatType,
-      transcript: toSave,
-      isChatEnded: false,
-      existingChatId: session.funnel_chat_id,
-    });
 
-    // Recovery path: if token points to a deleted/missing chat row, create a fresh funnel chat
-    // so refresh can restore instead of restarting from Q1 every time.
-    if (!saved) {
-      const oldChatId = session.funnel_chat_id;
-      const fallback = await Chat.create({
-        userId: appUser.id,
-        chatType: "Diagnostic",
-        isChatEnded: false,
-        data: {
-          transcript: toSave,
-          funnelMode: true,
-          funnel_access_id: session.funnel_access_id,
-          report_type: "invisible_red_line",
-          startedAt: new Date().toISOString(),
-          lastUpdated: new Date().toISOString(),
-        },
-      });
-      session.funnel_chat_id = fallback.id;
-      console.warn(
-        "[funnel socket] persist recovered by creating fallback chat",
-        { oldChatId, newChatId: fallback.id }
-      );
-    }
+    await chat.update({
+      userId: appUser.id,
+      data: {
+        ...(chat.data || {}),
+        email: session.email,
+        funnel_access_id: session.funnel_access_id,
+        phase: chat.data?.phase || "funnel",
+        transcript: toSave,
+        targetCount: chat.data?.targetCount || session.targetCount || 25,
+        lastUpdated: new Date().toISOString(),
+      },
+    });
   } catch (err) {
     console.error("[funnel socket] persist transcript failed:", err);
   }
@@ -351,7 +346,11 @@ const tryRestoreFunnelTranscript = async (socket, session) => {
       return false;
     }
     const owner = await User.findOne({ where: { email: session.email } });
-    if (!owner || chat.userId !== owner.id) {
+    if (
+      chat.userId != null &&
+      owner &&
+      Number(chat.userId) !== Number(owner.id)
+    ) {
       console.warn("[funnel socket] restore skipped: chat owner mismatch");
       return false;
     }

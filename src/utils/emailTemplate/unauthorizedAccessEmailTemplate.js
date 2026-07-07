@@ -40,7 +40,7 @@ const unauthorizedAccessEmailTemplate = (userName) => {
               <td align="center" class="logo-container" style="padding-bottom: 30px;">
                 <img
                   src="${logoUrl}"
-                  alt="Euphoraum-AI Logo"
+                  alt="Euphoriam-AI Logo"
                   width="110"
                   style="display: block; max-width: 100%; height: auto; border: 0;"
                 />
@@ -76,7 +76,7 @@ const unauthorizedAccessEmailTemplate = (userName) => {
             <!-- Footer -->
             <tr>
               <td style="font-size: 14px; color: #888888; text-align: center; padding-top: 40px;">
-                — The Euphoraum-AI Team
+                — The Euphoriam-AI Team
               </td>
             </tr>
 

@@ -154,28 +154,28 @@ const findDuplicateDiagnosticEmails = async () => {
   return rows;
 };
 
-const ensureDiagnosticEmailUnique = async () => {
-  const duplicates = await findDuplicateDiagnosticEmails();
-  if (duplicates.length) {
-    const sample = duplicates
-      .slice(0, 5)
-      .map((d) => `${d.email} (${d.count})`)
-      .join(", ");
-    throw new Error(
-      `Duplicate diagnostic emails found. Please dedupe before starting. Examples: ${sample}`
-    );
-  }
-
+const dropDiagnosticEmailUniqueConstraint = async () => {
+  // Funnel users may have up to 3 IRL reports per email — no global unique on email.
   try {
-    await sequelize.query(
-      'ALTER TABLE "diagnostics" ADD CONSTRAINT "diagnostics_email_unique" UNIQUE ("email");'
-    );
+    await sequelize.query(`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN (
+          SELECT c.conname
+          FROM pg_constraint c
+          JOIN pg_class t ON c.conrelid = t.oid
+          WHERE t.relname = 'diagnostics'
+            AND c.contype = 'u'
+            AND pg_get_constraintdef(c.oid) ILIKE '%email%'
+        ) LOOP
+          EXECUTE format('ALTER TABLE diagnostics DROP CONSTRAINT IF EXISTS %I', r.conname);
+        END LOOP;
+      END $$;
+    `);
+    console.log("[initDb] diagnostics.email unique constraint removed (if present)");
   } catch (err) {
-    // 42710 = duplicate_object, 42P07 = duplicate_table/index
-    const code = err?.original?.code;
-    if (code !== "42710" && code !== "42P07") {
-      throw err;
-    }
+    console.log("dropDiagnosticEmailUniqueConstraint skipped:", err.message);
   }
 };
 
@@ -186,22 +186,35 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
       console.log("Database connection established successfully");
       break; // Success, exit retry loop
     } catch (error) {
-      const isConnectionError = 
+      const errCode = error.original?.code || error.parent?.code;
+      const isConnectionLimitError =
         error.message?.includes("MaxClientsInSessionMode") ||
         error.message?.includes("max clients reached") ||
-        error.original?.code === "XX000";
-      
-      if (isConnectionError && i < retries - 1) {
+        errCode === "XX000";
+      const isDnsError =
+        error.name === "SequelizeHostNotFoundError" ||
+        errCode === "ENOTFOUND" ||
+        error.message?.includes("ENOTFOUND");
+
+      const isRetryable = isConnectionLimitError || isDnsError;
+
+      if (isRetryable && i < retries - 1) {
         // Exponential backoff: 10s, 20s, 30s, 40s, 50s
         const delay = initialDelay * (i + 1);
-        console.log(`\n⚠️  Connection limit reached. Database connections are still in use.`);
-        console.log(`   Waiting ${delay/1000}s before retry ${i + 1}/${retries}...`);
-        console.log(`   Tip: Check your Supabase/Neon dashboard for active connections.`);
+        if (isDnsError) {
+          console.log(`\n⚠️  Database host lookup failed (${errCode || "DNS"}).`);
+          console.log(`   Waiting ${delay / 1000}s before retry ${i + 1}/${retries}...`);
+          console.log(`   Tip: Check internet/VPN, or copy a fresh connection string from Supabase.`);
+        } else {
+          console.log(`\n⚠️  Connection limit reached. Database connections are still in use.`);
+          console.log(`   Waiting ${delay / 1000}s before retry ${i + 1}/${retries}...`);
+          console.log(`   Tip: Check your Supabase/Neon dashboard for active connections.`);
+        }
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
-      
-      if (isConnectionError && i === retries - 1) {
+
+      if (isConnectionLimitError && i === retries - 1) {
         console.error("\n❌ Failed to connect after all retries.");
         console.error("   All database connections are currently in use.");
         console.error("   Solutions:");
@@ -210,8 +223,17 @@ const initDb = async (retries = 5, initialDelay = 10000) => {
         console.error("   3. Restart your database instance (if possible)");
         console.error("   4. Consider upgrading your database plan for more connections");
       }
-      
-      throw error; // Re-throw if not a connection error or out of retries
+
+      if (isDnsError && i === retries - 1) {
+        console.error("\n❌ Failed to resolve database host after all retries.");
+        console.error("   Solutions:");
+        console.error("   1. Check your internet connection and disable VPN/proxy if enabled");
+        console.error("   2. Flush DNS cache: sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder");
+        console.error("   3. In Supabase → Project Settings → Database, copy a fresh pooler URL into DATABASE_URL");
+        console.error("   4. Confirm the Supabase project is not paused or deleted");
+      }
+
+      throw error; // Re-throw if not retryable or out of retries
     }
   }
   // Register models and associations before sync
@@ -1418,9 +1440,9 @@ RULES:
   }
 
   try {
-  await ensureDiagnosticEmailUnique();
+  await dropDiagnosticEmailUniqueConstraint();
   } catch (err) {
-    console.log("ensureDiagnosticEmailUnique skipped:", err.message);
+    console.log("dropDiagnosticEmailUniqueConstraint skipped:", err.message);
   }
 
   console.log("Database connected and synced");

@@ -3,7 +3,7 @@ require("dotenv").config();
 const supportEmail = process.env.SUPPORT_EMAIL;
 const logoUrl = process.env.LOGO_URL;
 
-const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
+const diagnosticReportEmail = (userName, generatedBy = "Euphoriam-AI") => {
   return `
   <!DOCTYPE html>
   <html lang="en">
@@ -43,7 +43,7 @@ const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
               <td align="center" class="logo-container" style="padding-bottom: 30px;">
                 <img
                   src="${logoUrl}"
-                  alt="Euphoraum-AI Logo"
+                  alt="Euphoriam-AI Logo"
                   width="110"
                   style="display: block; max-width: 100%; height: auto; border: 0; background-color: transparent !important; background: transparent !important;"
                 />
@@ -95,7 +95,7 @@ const diagnosticReportEmail = (userName, generatedBy = "Euphoraum-AI") => {
             <!-- Footer -->
             <tr>
               <td style="font-size: 14px; color: #888888; text-align: center; padding-top: 40px;">
-                — The Euphoraum-AI Team
+                — The Euphoriam-AI Team
               </td>
             </tr>
 

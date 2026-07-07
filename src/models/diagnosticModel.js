@@ -23,7 +23,6 @@ const Diagnostic = sequelize.define(
       validate: {
         isEmail: true,
       },
-      unique: true,
     },
     pdfUrl: { type: DataTypes.STRING, allowNull: true },
     report: { type: DataTypes.STRING, allowNull: true },

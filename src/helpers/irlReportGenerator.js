@@ -370,6 +370,11 @@ const generateInvisibleRedLineReport = async ({
     content:
       "When writing questions in the report, use plain, beginner-friendly language. Assume the reader has no prior knowledge. Keep questions short, concrete, and free of technical jargon.",
   };
+  const noAbbreviationsSystemMessage = {
+    role: "system",
+    content:
+      "Never use internal framework abbreviations or codes in the user-facing report. Spell everything out in full everyday words: Emotional Origin (not EO), Quantum Genius Codes (not QGC), Consciousness Level (not CL), Not Safe (not NS), Purpose (not P), Failure (not F), etc. Do not include METRICS_JSON_START, METRICS_JSON_END, or any machine-readable JSON blocks.",
+  };
   const userMessage = { role: "user", content: userContent };
 
   // 3. Call GPT-4o — quality matters, not speed
@@ -381,6 +386,7 @@ const generateInvisibleRedLineReport = async ({
         systemMessage,
         antiMarkerSystemMessage,
         plainLanguageQuestionSystemMessage,
+        noAbbreviationsSystemMessage,
         userMessage,
       ],
       temperature: 0.4,
@@ -428,6 +434,7 @@ const generateInvisibleRedLineReport = async ({
           systemMessage,
           antiMarkerSystemMessage,
           plainLanguageQuestionSystemMessage,
+          noAbbreviationsSystemMessage,
           userMessage,
           { role: "assistant", content: reportText },
           { role: "user", content: retryUser },

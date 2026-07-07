@@ -110,7 +110,8 @@ Rules:
 - Do NOT run the 25-Question Deep Intake Engine or generic life-direction Q1.
 - Do not produce a full diagnostic report in chat; intake only.
 - Target ~${MAP_RESISTANCE_TARGET_QUESTIONS} focused questions before completion.
-- Match diagnostic intake style: always acknowledge the user's last message briefly, then ask the question (or re-ask if invalid).`;
+- Match diagnostic intake style: always acknowledge the user's last message briefly, then ask the question (or re-ask if invalid).
+- Write every question in plain everyday language. NEVER use internal framework codes or abbreviations in messages to the user: no EO, NE, NC, NS, PL, CD, NON, NOV, NOH, QGC, CL, C/S/P, F/R, vortex, lack channel, protector, or signature IDs like "NE+S+R". Spell concepts out in full human words (e.g. "feeling like you're not enough", never "NE"; "feeling powerless", never "PL").`;
 };
 
 const getStage1MapResistanceWelcomeMessage = (userName, goalContext = {}) => {

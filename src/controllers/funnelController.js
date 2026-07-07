@@ -12,14 +12,15 @@ const {
   computeAccessStatus,
   issueSessionForAccess,
   listFunnelDiagnostics,
-  findLatestOpenFunnelChat,
+  findLatestInProgressFunnelChat,
   funnelChatBelongsToAccess,
   abandonOtherOpenFunnelChats,
 } = require("../helpers/funnelAccess");
 const { generateDiagnosticPdf } = require("../utils/diagnosticPdf");
 const { uploadBufferToSupabase } = require("../utils/storage");
 const { sendEmail } = require("../utils/email");
-const { diagnosticReportEmail } = require("../utils/emailTemplate/initialDignosticReport");
+const { irlReportEmail } = require("../utils/emailTemplate/irlReportEmail");
+const { sanitizeUserFacingReportText } = require("../helpers/userFacingReportSanitizer");
 const fs = require("fs").promises;
 
 /** GET /api/funnel/access-status */
@@ -61,7 +62,7 @@ const startDiagnostic = async (req, res) => {
   const email = req.funnelAccess.email;
 
   if (!forceNew) {
-    const existing = await findLatestOpenFunnelChat(req.funnelAccess);
+    const existing = await findLatestInProgressFunnelChat(req.funnelAccess);
     if (existing) {
       await abandonOtherOpenFunnelChats(req.funnelAccess, existing.id);
       const session_token = generateFunnelSessionToken({
@@ -233,8 +234,9 @@ const getReport = async (req, res) => {
   }
 
   const data = diagnostic.data || {};
-  const reportHtml =
-    data.aiReport || data.report || data.irl_report || diagnostic.report || "";
+  const rawReport =
+    data.irlReport || data.aiReport || data.report || data.irl_report || diagnostic.report || "";
+  const reportHtml = sanitizeUserFacingReportText(rawReport);
 
   if (req.query.format === "pdf" && diagnostic.pdfUrl) {
     return res.redirect(diagnostic.pdfUrl);
@@ -260,22 +262,28 @@ const completeDiagnostic = async ({
   transcript = [],
   reportText = "",
   metrics = {},
+  structuredPacket = null,
   chat_id = null,
 }) => {
   const userName = email?.split("@")[0] || "User";
+  const sanitizedReport = sanitizeUserFacingReportText(reportText);
   const diagnostic = await withDbSlot(() =>
     Diagnostic.create({
       email,
       funnel_access_id: funnel_access_id || null,
-      title: `Euphoriam Diagnostic — ${userName}`,
+      report_type: "invisible_red_line",
+      title: `Your Hidden Structure Map — ${userName}`,
       data: {
         diagnosticVersion: 3,
         generatedAt: new Date(),
         profile: { name: userName, email },
         metrics,
         intakeTranscript: transcript,
-        aiReport: reportText,
+        aiReport: sanitizedReport,
+        irlReport: sanitizedReport,
+        structuredPacket: structuredPacket || {},
         funnelMode: true,
+        report_type: "invisible_red_line",
       },
     }),
   );
@@ -315,8 +323,8 @@ const completeDiagnostic = async ({
       try {
         await sendEmail(
           email,
-          "Your Diagnostic Report – Euphoriam AI",
-          diagnosticReportEmail(userName),
+          "Your Hidden Structure Map – Euphoriam AI",
+          irlReportEmail(userName),
           pdfPath,
         );
       } catch (emailErr) {
@@ -346,7 +354,7 @@ const completeDiagnostic = async ({
   return {
     diagnostic_id: diagnostic.id,
     pdf_url: pdfUrl,
-    report_text: reportText,
+    report_text: sanitizedReport,
   };
 };
 

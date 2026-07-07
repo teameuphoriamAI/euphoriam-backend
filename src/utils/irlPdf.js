@@ -14,6 +14,7 @@ const {
   IRL_REPORT_SUBTITLE_V22,
   IRL_PDF_SNAPSHOT_CARD_HEADING,
 } = require("../constants/irlBranding");
+const { sanitizeUserFacingReportText } = require("../helpers/userFacingReportSanitizer");
 
 const ensureDir = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
@@ -304,7 +305,7 @@ const generateIrlReportPdf = async (diagnostic) =>
 
       const data = diagnostic.data || {};
       const profile = data.profile || {};
-      const irlReport = data.irlReport || data.aiReport || "";
+      const irlReport = sanitizeUserFacingReportText(data.irlReport || data.aiReport || "");
       const structuredPacket = data.structuredPacket || {};
       const dp = structuredPacket.diagnostic_packet || {};
       const cp = structuredPacket.constraint_packet || {};

@@ -3,7 +3,12 @@ require("dotenv").config();
 const supportEmail = process.env.SUPPORT_EMAIL;
 const logoUrl = process.env.LOGO_URL;
 
-const otpEmailTemplate = (userName, otp, purpose = "verification", expiresIn = "10 minutes") => {
+const otpEmailTemplate = (
+  userName,
+  otp,
+  purpose = "verification",
+  expiresIn = "10 minutes",
+) => {
   return `
   <!DOCTYPE html>
   <html lang="en">
@@ -46,7 +51,7 @@ const otpEmailTemplate = (userName, otp, purpose = "verification", expiresIn = "
               <td align="center" class="logo-container" style="padding-bottom: 30px;">
                 <img
                   src="${logoUrl}"
-                  alt="Euphoraum-AI Logo"
+                  alt="Euphoriam-AI Logo"
                   width="110"
                   style="display: block; max-width: 100%; height: auto; border: 0; background-color: transparent !important; background: transparent !important;"
                 />
@@ -117,7 +122,7 @@ const otpEmailTemplate = (userName, otp, purpose = "verification", expiresIn = "
             <!-- Footer -->
             <tr>
               <td style="font-size: 14px; color: #888888; text-align: center; padding-top: 40px;">
-                — The Euphoraum-AI Team
+                — The Euphoriam-AI Team
               </td>
             </tr>
 

@@ -1,22 +1,38 @@
 // import { kajabi } from "../config/kajabi.js";
-import { createKajabiClient } from "../config/kajabi.js";
+import {
+  createKajabiClient,
+  KajabiUnavailableError,
+  withKajabiRetry,
+} from "../config/kajabi.js";
 import { successResponse, errorResponse } from "../utils/response.js";
+
+const logKajabiError = (label, err) => {
+  console.error(label, {
+    message: err?.message,
+    code: err?.code || err?.cause?.code,
+    status: err?.response?.status,
+    detail: err?.response?.data,
+  });
+};
 
 export async function getCustomerByEmail(email) {
   try {
-    const kajabi = await createKajabiClient();
+    return await withKajabiRetry(async () => {
+      const kajabi = await createKajabiClient();
 
-    const res = await kajabi.get("/customers", {
-      params: {
-        "filter[email_contains]": email,
-        "fields[customers]": "name,email",
-        "page[size]": 1,
-      },
+      const res = await kajabi.get("/customers", {
+        params: {
+          "filter[email_contains]": email,
+          "fields[customers]": "name,email",
+          "page[size]": 1,
+        },
+      });
+      const customers = res.data?.data || [];
+      return customers.length > 0 ? customers[0] : null;
     });
-    const customers = res.data?.data || [];
-    return customers.length > 0 ? customers[0] : null;
   } catch (err) {
-    console.error("Error fetching Kajabi customer:", err.response?.data || err);
+    if (err instanceof KajabiUnavailableError) throw err;
+    logKajabiError("Error fetching Kajabi customer:", err);
     throw err;
   }
 }
@@ -1073,33 +1089,40 @@ const summarizeCourseAssessments = (courseAssessments) => {
  * titles only. Avoids per-course posts and assessment progress (major latency).
  */
 export async function buildKajabiMembershipContext({ email }) {
-  const customerInfo = await getCustomerByEmail(email);
-  if (!customerInfo) {
-    console.warn("No customer found for email", email);
-    return null;
+  try {
+    const customerInfo = await getCustomerByEmail(email);
+    if (!customerInfo) {
+      console.warn("No customer found for email", email);
+      return null;
+    }
+
+    const customerDetails = await withKajabiRetry(() =>
+      getCustomerFullDetails(customerInfo.id),
+    );
+    const customerData = customerDetails.data;
+    const rel = customerData?.relationships || {};
+
+    const offerIds = rel.offers?.data?.map((o) => o.id) || [];
+    const productIds = rel.products?.data?.map((p) => p.id) || [];
+
+    const [offers, products] = await Promise.all([
+      Promise.all(offerIds.map((id) => withKajabiRetry(() => getOfferById(id)))),
+      Promise.all(productIds.map((id) => withKajabiRetry(() => getProductById(id)))),
+    ]);
+
+    const normalizedProducts = products.map(normalizeKajabiProduct);
+    const normalizedOffers = offers.map(normalizeKajabiOffer);
+
+    return {
+      diagnosticContext: {
+        products: normalizedProducts,
+        offers: normalizedOffers,
+      },
+    };
+  } catch (err) {
+    if (err instanceof KajabiUnavailableError) throw err;
+    throw err;
   }
-
-  const customerDetails = await getCustomerFullDetails(customerInfo.id);
-  const customerData = customerDetails.data;
-  const rel = customerData?.relationships || {};
-
-  const offerIds = rel.offers?.data?.map((o) => o.id) || [];
-  const productIds = rel.products?.data?.map((p) => p.id) || [];
-
-  const [offers, products] = await Promise.all([
-    Promise.all(offerIds.map((id) => getOfferById(id))),
-    Promise.all(productIds.map((id) => getProductById(id))),
-  ]);
-
-  const normalizedProducts = products.map(normalizeKajabiProduct);
-  const normalizedOffers = offers.map(normalizeKajabiOffer);
-
-  return {
-    diagnosticContext: {
-      products: normalizedProducts,
-      offers: normalizedOffers,
-    },
-  };
 }
 
 // this function gives the full kajabi context for a given customer email

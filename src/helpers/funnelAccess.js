@@ -9,6 +9,7 @@ const {
   LINK_VALIDITY_DAYS,
 } = require("./funnelConstants");
 const { signFunnelSession, verifyFunnelSession } = require("./funnelToken");
+const { funnelIntakeTranscriptComplete } = require("../utils/funnelTranscriptProgress");
 
 const addDays = (date, days) => {
   const d = new Date(date);
@@ -18,6 +19,8 @@ const addDays = (date, days) => {
 
 const mapRow = (row) => {
   if (!row) return null;
+  const metadata =
+    row.metadata && typeof row.metadata === "object" ? row.metadata : {};
   return {
     id: row.id,
     email: row.email,
@@ -30,8 +33,16 @@ const mapRow = (row) => {
     report_generated_count: Number(row.report_generated_count) || 0,
     is_blocked: Boolean(row.is_blocked),
     block_reason: row.block_reason,
-    metadata: row.metadata || {},
+    metadata,
   };
+};
+
+/** Per-user cap from metadata.max_diagnostics, else global MAX_DIAGNOSTICS. */
+const resolveMaxDiagnostics = (row) => {
+  const raw = row?.metadata?.max_diagnostics;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  return MAX_DIAGNOSTICS;
 };
 
 const getFunnelAccessById = async (id) => {
@@ -170,7 +181,8 @@ const computeAccessStatus = (row) => {
   }
 
   const completed = Number(row.diagnostics_completed_count) || 0;
-  const diagnostics_remaining = Math.max(0, MAX_DIAGNOSTICS - completed);
+  const maxDiagnostics = resolveMaxDiagnostics(row);
+  const diagnostics_remaining = Math.max(0, maxDiagnostics - completed);
 
   let days_remaining = 0;
   if (row.expires_at) {
@@ -190,6 +202,7 @@ const computeAccessStatus = (row) => {
       valid: true,
       email,
       diagnostics_remaining: 0,
+      max_diagnostics: maxDiagnostics,
       days_remaining,
       can_start_new: false,
       reason: "limit_reached",
@@ -200,6 +213,7 @@ const computeAccessStatus = (row) => {
     valid: true,
     email,
     diagnostics_remaining,
+    max_diagnostics: maxDiagnostics,
     days_remaining,
     can_start_new: true,
     reason: null,
@@ -287,7 +301,42 @@ const funnelChatBelongsToAccess = (chat, funnelAccess) => {
   );
 };
 
-/** Latest in-progress funnel diagnostic chat for this access row (if any). */
+const funnelChatHasDiagnostic = (chat) => {
+  if (!chat) return false;
+  if (chat.dignosticId) return true;
+  const d = chat.data || {};
+  return Boolean(d.diagnostic_id);
+};
+
+const funnelChatTargetCount = (chat) => {
+  const cap = Number(chat?.data?.targetCount);
+  return Number.isFinite(cap) && cap > 0 ? cap : 25;
+};
+
+const funnelChatTranscript = (chat) =>
+  Array.isArray(chat?.data?.transcript) ? chat.data.transcript : [];
+
+/** True when Q1–Q25 intake is structurally complete (substantive Q25 answer). */
+const isFunnelChatIntakeComplete = (chat) =>
+  funnelIntakeTranscriptComplete(
+    funnelChatTranscript(chat),
+    funnelChatTargetCount(chat),
+  );
+
+/** In-progress = open, no linked report, and intake not yet complete. */
+const isFunnelChatInProgress = (chat) => {
+  if (!chat || chat.isChatEnded) return false;
+  if (funnelChatHasDiagnostic(chat)) return false;
+  return !isFunnelChatIntakeComplete(chat);
+};
+
+const repairFunnelChatEndedState = async (chat) => {
+  if (!chat || chat.isChatEnded || !funnelChatHasDiagnostic(chat)) return chat;
+  await chat.update({ isChatEnded: true });
+  return chat;
+};
+
+/** Latest open funnel chat (any stage) for this access row. */
 const findLatestOpenFunnelChat = async (funnelAccess) => {
   const rows = await withDbSlot(() =>
     Chat.findAll({
@@ -299,7 +348,38 @@ const findLatestOpenFunnelChat = async (funnelAccess) => {
       limit: 50,
     }),
   );
-  return rows.find((c) => funnelChatBelongsToAccess(c, funnelAccess)) || null;
+  for (const c of rows) {
+    if (!funnelChatBelongsToAccess(c, funnelAccess)) continue;
+    if (funnelChatHasDiagnostic(c)) {
+      await repairFunnelChatEndedState(c);
+      continue;
+    }
+    return c;
+  }
+  return null;
+};
+
+/** Latest in-progress funnel chat (Q1–Q24) — used when opening /free-qa without chat_id. */
+const findLatestInProgressFunnelChat = async (funnelAccess) => {
+  const rows = await withDbSlot(() =>
+    Chat.findAll({
+      where: {
+        chatType: ChatType.DIAGNOSTIC,
+        isChatEnded: false,
+      },
+      order: [["updatedAt", "DESC"]],
+      limit: 50,
+    }),
+  );
+  for (const c of rows) {
+    if (!funnelChatBelongsToAccess(c, funnelAccess)) continue;
+    if (funnelChatHasDiagnostic(c)) {
+      await repairFunnelChatEndedState(c);
+      continue;
+    }
+    if (isFunnelChatInProgress(c)) return c;
+  }
+  return null;
 };
 
 /** End duplicate in-progress funnel chats, keeping the active session only. */
@@ -322,6 +402,7 @@ const abandonOtherOpenFunnelChats = async (funnelAccess, keepChatId) => {
   for (const chat of rows) {
     if (Number(chat.id) === keep) continue;
     if (!funnelChatBelongsToAccess(chat, funnelAccess)) continue;
+    if (!isFunnelChatInProgress(chat)) continue;
     await chat.update({
       isChatEnded: true,
       data: {
@@ -340,11 +421,16 @@ module.exports = {
   getFunnelAccessByEmail,
   markFirstAccess,
   computeAccessStatus,
+  resolveMaxDiagnostics,
   issueSessionForAccess,
   resolveFunnelAccessFromToken,
   listFunnelDiagnostics,
   buildFunnelLoginLink,
   funnelChatBelongsToAccess,
   findLatestOpenFunnelChat,
+  findLatestInProgressFunnelChat,
+  funnelChatHasDiagnostic,
+  isFunnelChatInProgress,
+  isFunnelChatIntakeComplete,
   abandonOtherOpenFunnelChats,
 };

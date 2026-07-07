@@ -12,7 +12,9 @@ const {
   discoveryReportEmail,
 } = require("../utils/emailTemplate/initialDiscoveryReport");
 const { saveChatIncrementally } = require("./chatController");
-const { MAP_RESISTANCE_TARGET_QUESTIONS } = require("../constants/mapResistance");
+const {
+  MAP_RESISTANCE_TARGET_QUESTIONS,
+} = require("../constants/mapResistance");
 const { otpEmailTemplate } = require("../utils/emailTemplate/verifyOTP");
 const {
   buildFinalReportPrompt,
@@ -122,37 +124,72 @@ const normalizeSignatureId = (value) => {
  * Uses a lightweight Kajabi probe (customer + offer/product titles only) so signup
  * and funnel redirect are not blocked on full course/assessment hydration.
  */
+const clubStatusFromStoredMembership = (membership = {}) => ({
+  club: Boolean(membership.isCreatorClub),
+  bronze: Boolean(membership.isCreatorClubBronze),
+  silver: Boolean(membership.isCreatorClubSilver),
+  accelerate: Boolean(membership.isCreatorClubAccelerate),
+});
+
+const diagnosticContextFromStoredMembership = (membership = {}) => ({
+  products: Array.isArray(membership.products) ? membership.products : [],
+  offers: Array.isArray(membership.offers) ? membership.offers : [],
+});
+
+const hasPaidMembership = (clubStatus) =>
+  clubStatus &&
+  typeof clubStatus === "object" &&
+  (clubStatus.club ||
+    clubStatus.bronze ||
+    clubStatus.silver ||
+    clubStatus.accelerate);
+
 const checkCreatorClubByEmail = async ({ email }) => {
   console.log("Checking Creator Club membership for email:", email);
 
-  const result = await buildKajabiMembershipContext({ email });
+  try {
+    const result = await buildKajabiMembershipContext({ email });
 
-  if (!result) {
-    console.warn(
-      " No diagnostic context available — user not found in Kajabi",
-      {
-        email,
-      },
-    );
+    if (!result) {
+      console.warn(
+        " No diagnostic context available — user not found in Kajabi",
+        {
+          email,
+        },
+      );
+
+      return {
+        clubStatus: false,
+        diagnosticContext: null,
+        reason: "CUSTOMER_NOT_FOUND",
+      };
+    }
+
+    const { diagnosticContext } = result;
+
+    const { isCreatorClubMember } = require("./userController"); // lazy load
+    console.log("diagnosticContext", diagnosticContext);
+
+    const clubStatus = isCreatorClubMember(diagnosticContext);
 
     return {
-      clubStatus: false,
-      diagnosticContext: null,
-      reason: "CUSTOMER_NOT_FOUND",
+      clubStatus,
+      diagnosticContext,
     };
+  } catch (err) {
+    if (err?.code === "KAJABI_UNAVAILABLE") {
+      console.warn(
+        "[checkCreatorClubByEmail] Kajabi unreachable:",
+        err.message,
+      );
+      return {
+        clubStatus: false,
+        diagnosticContext: null,
+        reason: "KAJABI_UNAVAILABLE",
+      };
+    }
+    throw err;
   }
-
-  const { diagnosticContext } = result;
-
-  const { isCreatorClubMember } = require("./userController"); // lazy load
-  console.log("diagnosticContext", diagnosticContext);
-
-  const clubStatus = isCreatorClubMember(diagnosticContext);
-
-  return {
-    clubStatus,
-    diagnosticContext,
-  };
 };
 
 const findOrCreateCreatorUser = async (req, res) => {
@@ -162,22 +199,41 @@ const findOrCreateCreatorUser = async (req, res) => {
 
     email = email.toLowerCase().trim();
     name = name?.trim();
-  // Find user
-  let user = await User.findOne({ where: { email } });
+    // Find user
+    let user = await User.findOne({ where: { email } });
 
-  if (user && user.status === UserStatus.BLOCK) {
-    return errorResponse(res, "Account is blocked", 400);
+    if (user && user.status === UserStatus.BLOCK) {
+      return errorResponse(res, "Account is blocked", 400);
+    }
+    // 🔍 Check Kajabi membership FIRST (fall back to stored membership if Kajabi is down)
+    let { clubStatus, diagnosticContext, reason } =
+      await checkCreatorClubByEmail({
+        email,
+      });
 
-  }
-    // 🔍 Check Kajabi membership FIRST
-    const { clubStatus, diagnosticContext } = await checkCreatorClubByEmail({
-      email,
-    });
+    if (reason === "KAJABI_UNAVAILABLE") {
+      const cachedStatus = user?.membership
+        ? clubStatusFromStoredMembership(user.membership)
+        : null;
+      if (cachedStatus && hasPaidMembership(cachedStatus)) {
+        clubStatus = cachedStatus;
+        diagnosticContext = diagnosticContextFromStoredMembership(
+          user.membership,
+        );
+        console.warn(
+          "[findOrCreateCreatorUser] Using cached membership — Kajabi unreachable",
+          { email },
+        );
+      } else {
+        return errorResponse(
+          res,
+          "Unable to verify membership right now. Please try again in a moment.",
+          503,
+        );
+      }
+    }
 
-    const isPaid =
-      clubStatus &&
-      typeof clubStatus === "object" &&
-      (clubStatus.club || clubStatus.bronze || clubStatus.silver);
+    const isPaid = hasPaidMembership(clubStatus);
 
     if (!isPaid) {
       const { buildFreeFunnelCheckUserResult } = require("./funnelController");
@@ -187,7 +243,7 @@ const findOrCreateCreatorUser = async (req, res) => {
     if (user && name) {
       return errorResponse(res, "Account already created", 400);
     }
-  
+
     // New user= must provide name
     if (!user) {
       if (!name) {
@@ -443,7 +499,7 @@ const buildDiscoveryEmail = ({ transcript = [], email }) => {
         ${body || "No messages captured."}
       </div>
       <p>If you’d like to continue, start a new chat and we’ll build on this.</p>
-      <p style="margin-top:20px;">— Euphoraum AI</p>
+      <p style="margin-top:20px;">— Euphoriam AI</p>
     </body>
   </html>
   `;
@@ -3914,7 +3970,7 @@ const handleDiagnosticFinalize = async ({
           try {
             await sendEmail(
               email,
-              "Your Diagnostic Report – Euphoraum-AI",
+              "Your Diagnostic Report – Euphoriam-AI",
               diagnosticReportEmail(userName),
               pdfPath,
             );
@@ -5001,7 +5057,7 @@ Remember: ONE unique question that hasn't been asked before. Target the specific
           try {
             await sendEmail(
               email,
-              "Your Diagnostic Report – Euphoraum-AI",
+              "Your Diagnostic Report – Euphoriam-AI",
               diagnosticReportEmail(userNameForBackground),
               pdfPath,
             );
@@ -5136,7 +5192,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     diagnosticMetrics,
     incompleteChatId,
   } = diagState;
-  const hasExistingReport = stage1MapResistance ? false : Boolean(existingReport);
+  const hasExistingReport = stage1MapResistance
+    ? false
+    : Boolean(existingReport);
 
   // Load metrics for discovery/diagnostic
   discoveryRes = await loadLatestDiscoveryMetrics(
@@ -5195,7 +5253,9 @@ const chatbotDiagnosticFreeform = async (req, res) => {
     const goalCtx = req.body?.activeGoalContext || {};
     const domain = stage1ActiveDomain || goalCtx.active_domain;
     const target = req.body?.targetCount || MAP_RESISTANCE_TARGET_QUESTIONS;
-    const { getStage1MapResistanceWelcomeMessage } = require("../helpers/stage1GoalContext");
+    const {
+      getStage1MapResistanceWelcomeMessage,
+    } = require("../helpers/stage1GoalContext");
     const { Chat } = require("../models/chatModel");
 
     let mapTranscript = [];
@@ -5732,8 +5792,7 @@ Take your time and share what feels true for you.`;
         incompleteChatId = mrChat.id;
       }
     }
-    hasIncompleteChat =
-      transcriptInternal2.length > 0 && !isCompleted2;
+    hasIncompleteChat = transcriptInternal2.length > 0 && !isCompleted2;
   } else {
     hasIncompleteChat =
       transcriptInternal2 &&
@@ -5925,7 +5984,9 @@ Take your time and share what feels true for you.`;
   if (stage1MapResistance && req.body?.activeGoalContext) {
     introText = introPageText || introText;
   }
-  targetCountForRun = stage1MapResistance ? targetCount || MAP_RESISTANCE_TARGET_QUESTIONS : targetCount;
+  targetCountForRun = stage1MapResistance
+    ? targetCount || MAP_RESISTANCE_TARGET_QUESTIONS
+    : targetCount;
 
   // Check if this is the first user interaction (no user messages in transcript)
   const isFirstUserInteraction =

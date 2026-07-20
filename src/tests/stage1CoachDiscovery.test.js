@@ -1,6 +1,6 @@
-const { resolveCoachTurn, COACH_STATE } = require("../helpers/stage1CoachStateMachine");
-const { initCheckInProgress } = require("../helpers/stage1CoachCheckInFlow");
-const { detectStruggleSetback } = require("../helpers/stage1CoachDiscovery");
+const { resolveCoachTurn, COACH_STATE } = require("../stage1/coach/legacy/stateMachine");
+const { initCheckInProgress } = require("../stage1/coach/legacy/checkInFlow");
+const { detectStruggleSetback } = require("../stage1/coach/signals/discovery");
 
 describe("stage1CoachDiscovery routing", () => {
   test("detects setback without proof", () => {

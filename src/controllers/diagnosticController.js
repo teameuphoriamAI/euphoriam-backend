@@ -144,7 +144,25 @@ const hasPaidMembership = (clubStatus) =>
     clubStatus.silver ||
     clubStatus.accelerate);
 
+const {
+  isLocalDevGrantUc,
+  LOCAL_DEV_CLUB_STATUS,
+  localDevMembershipPayload,
+  localDevDiagnosticContext,
+} = require("../helpers/localDevMembership");
+
 const checkCreatorClubByEmail = async ({ email }) => {
+  if (isLocalDevGrantUc()) {
+    console.warn(
+      "[checkCreatorClubByEmail] LOCAL_DEV_GRANT_UC — treating as Creator Club Bronze (no Kajabi lookup)",
+      { email },
+    );
+    return {
+      clubStatus: { ...LOCAL_DEV_CLUB_STATUS },
+      diagnosticContext: localDevDiagnosticContext(),
+    };
+  }
+
   console.log("Checking Creator Club membership for email:", email);
 
   try {
@@ -253,28 +271,32 @@ const findOrCreateCreatorUser = async (req, res) => {
       user = await User.create({
         email,
         name,
-        membership: {
-          isCreatorClub: clubStatus.club,
-          isCreatorClubBronze: clubStatus.bronze,
-          isCreatorClubSilver: clubStatus.silver,
-          isCreatorClubAccelerate: clubStatus.accelerate,
-          lastUpdated: new Date().toISOString(),
-          products: diagnosticContext.products || [],
-          offers: diagnosticContext.offers || [],
-        },
+        membership: isLocalDevGrantUc()
+          ? localDevMembershipPayload()
+          : {
+              isCreatorClub: clubStatus.club,
+              isCreatorClubBronze: clubStatus.bronze,
+              isCreatorClubSilver: clubStatus.silver,
+              isCreatorClubAccelerate: clubStatus.accelerate,
+              lastUpdated: new Date().toISOString(),
+              products: diagnosticContext.products || [],
+              offers: diagnosticContext.offers || [],
+            },
       });
     } else {
       //  Existing user = update membership
       await user.update({
-        membership: {
-          isCreatorClub: clubStatus.club,
-          isCreatorClubBronze: clubStatus.bronze,
-          isCreatorClubSilver: clubStatus.silver,
-          isCreatorClubAccelerate: clubStatus.accelerate,
-          lastUpdated: new Date().toISOString(),
-          products: diagnosticContext.products || [],
-          offers: diagnosticContext.offers || [],
-        },
+        membership: isLocalDevGrantUc()
+          ? localDevMembershipPayload()
+          : {
+              isCreatorClub: clubStatus.club,
+              isCreatorClubBronze: clubStatus.bronze,
+              isCreatorClubSilver: clubStatus.silver,
+              isCreatorClubAccelerate: clubStatus.accelerate,
+              lastUpdated: new Date().toISOString(),
+              products: diagnosticContext.products || [],
+              offers: diagnosticContext.offers || [],
+            },
       });
     }
 

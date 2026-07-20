@@ -4,8 +4,8 @@ const {
   resolveAvoidanceRuleFromAnswer,
   handleWoundFlipTurn,
   enterFlipLeverage,
-} = require("../helpers/stage1CoachWoundFlip");
-const { initProgressIntegration } = require("../helpers/stage1CoachProgress");
+} = require("../stage1/coach/legacy/woundFlip");
+const { initProgressIntegration } = require("../stage1/coach/utils/progress");
 
 describe("stage1CoachWoundFlip", () => {
   test("detects 24/7 avoidance rule", () => {

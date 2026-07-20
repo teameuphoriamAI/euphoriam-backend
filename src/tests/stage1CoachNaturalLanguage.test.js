@@ -3,8 +3,8 @@ const {
   sanitizeCoachUserFacingText,
   isSubstantiveCheckInAnswer,
   inferCoachingPhase,
-} = require("../helpers/stage1CoachNaturalLanguage");
-const { detectProgressSignals } = require("../helpers/stage1CoachProgress");
+} = require("../stage1/coach/context/naturalLanguage");
+const { detectProgressSignals } = require("../stage1/coach/utils/progress");
 
 describe("stage1CoachNaturalLanguage", () => {
   test("opening is conversational not a report", () => {
@@ -30,9 +30,9 @@ describe("stage1CoachNaturalLanguage", () => {
     expect(msg).not.toContain("Current Goal:");
     expect(msg).not.toContain("Current Milestone:");
     expect(msg).not.toContain("Recent Patterns:");
-    expect(msg).toMatch(/Remember we're working on/i);
+    expect(msg).toMatch(/We're still on/i);
     expect(msg).toMatch(/outreach/i);
-    expect(msg).toMatch(/How are things going today/i);
+    expect(msg).toMatch(/What happened since our last session/i);
   });
 
   test("sanitizes framework jargon from coach text", () => {

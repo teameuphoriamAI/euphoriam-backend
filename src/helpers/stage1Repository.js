@@ -121,15 +121,26 @@ const domainMapToRowFields = (map) => {
 
 const ensureMetaRow = async (userId) => {
   let meta = await withDbSlot(() => UserStage1Meta.findByPk(userId));
-  if (!meta) {
-    meta = await withDbSlot(() =>
-      UserStage1Meta.create({
-        userId,
-        activeDomains: [],
+  if (meta) return meta;
+
+  try {
+    const [row] = await withDbSlot(() =>
+      UserStage1Meta.findOrCreate({
+        where: { userId },
+        defaults: { userId, activeDomains: [] },
       }),
     );
+    return row;
+  } catch (err) {
+    if (
+      err?.name === "SequelizeUniqueConstraintError" ||
+      /unique/i.test(err?.message || "")
+    ) {
+      meta = await withDbSlot(() => UserStage1Meta.findByPk(userId));
+      if (meta) return meta;
+    }
+    throw err;
   }
-  return meta;
 };
 
 /** In-process lock to prevent concurrent legacy migrations for the same user. */

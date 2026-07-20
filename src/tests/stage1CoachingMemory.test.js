@@ -3,7 +3,7 @@ const {
   captureInitialDiagnosticIfNeeded,
   recordCoachingMemoryTurn,
   serializeCoachingMemoryForCoach,
-} = require("../helpers/stage1CoachingMemory");
+} = require("../stage1/coach/context/coachingMemory");
 const { defaultDomainMap } = require("../helpers/stage1State");
 
 describe("stage1CoachingMemory", () => {

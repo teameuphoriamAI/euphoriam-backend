@@ -13,17 +13,21 @@ const fetchContent = async (type) => {
  * Templates, fallbacks, and JSON guardrails are hardcoded in stage1PromptSuite.js / prompts.py.
  */
 const loadCoachPromptBundle = async () => {
-  const [coachBrain, brain, dailyCoach, friction] = await Promise.all([
+  const [coachBrain, brain, dailyCoach, friction, coachOpening, goalIntake] = await Promise.all([
     fetchContent(PromptType.COACHBRAINPROMPT),
     fetchContent(PromptType.BRAINPROMPT),
     fetchContent(PromptType.STAGE1_DAILY_COACH),
     fetchContent(PromptType.STAGE1_FRICTION_RESCUE),
+    fetchContent(PromptType.STAGE1_COACH_OPENING),
+    fetchContent(PromptType.STAGE1_GOAL_INTAKE),
   ]);
   return {
     coach_brain_prompt: coachBrain,
     brain_prompt: brain,
     stage1_daily_coach: dailyCoach,
     stage1_friction_rescue: friction,
+    stage1_coach_opening: coachOpening,
+    stage1_goal_intake: goalIntake,
   };
 };
 

@@ -3,7 +3,7 @@ const {
   advanceCheckInConversation,
   initCheckInProgress,
   inferCheckInProgressFromMessages,
-} = require("../helpers/stage1CoachCheckInFlow");
+} = require("../stage1/coach/legacy/checkInFlow");
 
 describe("stage1CoachCheckInFlow", () => {
   test("opening has human greeting and exactly one question", () => {
@@ -24,8 +24,8 @@ describe("stage1CoachCheckInFlow", () => {
     expect(msg).toContain("Generate $12/hour");
     expect(msg).not.toContain("Current Goal:");
     expect(msg).not.toContain("Outreach Practice");
-    expect(msg).toMatch(/How are things going today/i);
-    expect(msg).toMatch(/Remember we're working on/i);
+    expect(msg).toMatch(/What's been true since the map/i);
+    expect(msg).toMatch(/interrupt that pattern/i);
     expect(msg).not.toContain("Did you complete");
   });
 

@@ -90,6 +90,12 @@ const recordCoachCheckin = (stage1, payload) => {
       ...payload.activation_moment_flow,
     };
   }
+  if (payload.session_intake && typeof payload.session_intake === "object") {
+    current.session_intake = {
+      ...(current.session_intake || {}),
+      ...payload.session_intake,
+    };
+  }
 
   if (Array.isArray(messages) && messages.length > 0) {
     const incoming = messages
@@ -302,9 +308,27 @@ const getOpenCoachSession = (stage1, domain) => {
           ? "check_in"
           : open.phase || (hasUser ? "coaching" : "check_in");
 
+  const certPhases = new Set([
+    "intention",
+    "emotional_checkin",
+    "explore",
+    "resistance_probe",
+    "integration",
+  ]);
+  const certSessionPhase = certPhases.has(String(open.phase || ""))
+    ? open.phase
+    : null;
+
   return {
     id: open.id,
     phase,
+    cert_session_phase: certSessionPhase,
+    session_intake:
+      open.session_intake && typeof open.session_intake === "object"
+        ? { ...open.session_intake }
+        : null,
+    started_at: open.started_at || null,
+    updated_at: open.updated_at || null,
     awaiting_user:
       (checkInActive || progressActive) && msgs.some((m) => m.role === "assistant"),
     check_in_progress: progress || null,

@@ -1,6 +1,6 @@
-const { resolveCoachTurn, COACH_STATE } = require("../helpers/stage1CoachStateMachine");
-const { initCheckInProgress } = require("../helpers/stage1CoachCheckInFlow");
-const { buildProgressIntegrationFromContinuity } = require("../helpers/stage1CoachProgress");
+const { resolveCoachTurn, COACH_STATE } = require("../stage1/coach/legacy/stateMachine");
+const { initCheckInProgress } = require("../stage1/coach/legacy/checkInFlow");
+const { buildProgressIntegrationFromContinuity } = require("../stage1/coach/utils/progress");
 
 const careerMap = {
   domain: "income",

@@ -1,4 +1,4 @@
-const { resolveCoachingTransition } = require("../helpers/stage1CoachTransition");
+const { resolveCoachingTransition } = require("../stage1/coach/flows/transition");
 
 const richMemoryContext = () => ({
   failure_strategy: "Delay disguised as refinement",

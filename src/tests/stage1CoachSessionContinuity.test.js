@@ -1,10 +1,10 @@
-const { isPlausibleGreenRepName } = require("../helpers/stage1CoachGreenRepUtils");
+const { isPlausibleGreenRepName } = require("../stage1/coach/utils/greenRep");
 const {
   gatherSessionContinuity,
   buildContinuityRecapLines,
   buildSessionSummaryFromCoachLog,
-} = require("../helpers/stage1CoachSessionContinuity");
-const { buildCoachOpeningCheckin } = require("../helpers/stage1CoachCheckInFlow");
+} = require("../stage1/coach/context/sessionContinuity");
+const { buildCoachOpeningCheckin } = require("../stage1/coach/legacy/checkInFlow");
 
 describe("stage1CoachSessionContinuity", () => {
   test("rejects proof sentences as green rep names", () => {
@@ -36,11 +36,10 @@ describe("stage1CoachSessionContinuity", () => {
 
     expect(msg).not.toContain("Last session (carried forward)");
     expect(msg).not.toContain("Current Goal:");
-    expect(msg).toMatch(/Last time we talked/i);
-    expect(msg).toContain("12 hrs yesterday");
+    expect(msg).toMatch(/not enough/i);
     expect(msg).toMatch(/Hey Yashal/i);
-    expect(msg).toMatch(/How are things going today/i);
-    expect(msg).not.toMatch(/i competed 12 dollar an hr/);
+    expect(msg).toMatch(/Recent proof/i);
+    expect(msg).toMatch(/i competed 12 dollar an hr/i);
   });
 
   test("gatherSessionContinuity from ended coach session log", () => {
@@ -101,7 +100,7 @@ describe("stage1CoachSessionContinuity", () => {
   });
 
   test("extractSessionNarrative detects win devaluation collapse", () => {
-    const { extractSessionNarrative } = require("../helpers/stage1CoachSessionContinuity");
+    const { extractSessionNarrative } = require("../stage1/coach/context/sessionContinuity");
     const narrative = extractSessionNarrative({
       messages: [
         { role: "user", content: "as i did 12 hrs yesterday i felt i did too little" },

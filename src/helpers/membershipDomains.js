@@ -37,6 +37,9 @@ const productTitles = (membership) => {
 
 /** Resolve paid tier from users.membership (Kajabi sync) and product titles. */
 const getTier = (user) => {
+  const { isLocalDevGrantUc } = require("./localDevMembership");
+  if (isLocalDevGrantUc()) return TIERS.BRONZE;
+
   const m = parseMembership(user);
   const titles = productTitles(m);
 

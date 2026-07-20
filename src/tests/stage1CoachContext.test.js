@@ -1,4 +1,4 @@
-const { buildCoachUserContext } = require("../helpers/stage1CoachContext");
+const { buildCoachUserContext } = require("../stage1/coach/context/userContext");
 const { emptyStage1State, defaultDomainMap } = require("../helpers/stage1State");
 
 jest.mock("../helpers/euphoriamChatbot", () => ({

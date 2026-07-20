@@ -1,7 +1,7 @@
 const {
   buildCoachingHomeOverlay,
   applyCoachingToProgressMetrics,
-} = require("../helpers/stage1CoachingHomeOverlay");
+} = require("../stage1/coach/legacy/homeOverlay");
 
 describe("stage1CoachingHomeOverlay", () => {
   test("builds coaching layer without touching baseline fields", () => {

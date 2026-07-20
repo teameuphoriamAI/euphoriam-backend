@@ -51,6 +51,11 @@ const { resolveStructuralCoachingFlow } = require("../stage1/coach/flows/structu
 const { resolveProofProgressionFlowAsync } = require("../stage1/coach/flows/proofDiagnosis");
 const { resolveActivationMomentFlow } = require("../stage1/coach/signals/activation");
 const { mergeFlowSignals } = require("../stage1/coach/signals/merge");
+const {
+  resolveSessionIntakeFlow,
+  buildIntentionOpening,
+  SESSION_PHASES,
+} = require("../stage1/coach/flows/sessionIntake");
 
 const COACH_STATE = Object.freeze({ COACHING: "coaching", PROGRESS: "progress" });
 
@@ -90,6 +95,7 @@ const persistCoachTurn = ({
   investigationFlow = null,
   structuralCoachingFlow = null,
   activationMomentFlow = null,
+  sessionIntake = null,
 }) => {
   const { stage1: afterTurn, session_id } = recordCoachCheckin(stage1, {
     domain,
@@ -106,6 +112,7 @@ const persistCoachTurn = ({
     investigation_flow: investigationFlow,
     structural_coaching_flow: structuralCoachingFlow,
     activation_moment_flow: activationMomentFlow,
+    session_intake: sessionIntake,
   });
 
   const mapIdx = (afterTurn.domain_maps || []).findIndex((m) => m.domain === domain);
@@ -156,20 +163,43 @@ const coachOpen = async (req, res) => {
 
     const open = getOpenCoachSession(stage1, domain);
     if (open?.messages?.length) {
+      const intake = open.session_intake || {};
+      const resumePhase =
+        open.cert_session_phase ||
+        (intake.session_intention ? SESSION_PHASES.EXPLORE : SESSION_PHASES.INTENTION);
       return successResponse(res, "Coach session resumed", {
         domain,
-        session_phase: "coaching",
-        coach_state: COACH_STATE.COACHING,
+        session_phase: resumePhase,
+        coach_state: open.coach_state || COACH_STATE.COACHING,
         awaiting_user: open.awaiting_user,
         resumed: true,
         assistant_message: null,
         messages: open.messages,
         session_id: open.id,
+        session_intention: intake.session_intention || null,
+        felt_sensation: intake.felt_sensation || null,
       });
     }
 
+    const frictionHandoff = stage1.coach_friction_handoff || null;
+    const frictionContext =
+      frictionHandoff?.domain === domain ? frictionHandoff : null;
+
     const { opening_message, coachContext, activeGoalContext, continuity } =
       gatherCoachOpenPayload(user, stage1, map, domain);
+
+    const goalPhrase =
+      activeGoalContext?.goal_name ||
+      activeGoalContext?.specific_goal ||
+      map?.goal_title ||
+      "your goal";
+    const intentionOpening = buildIntentionOpening({
+      firstName: (user?.name || "Member").split(/\s+/)[0],
+      goalPhrase,
+    });
+    const opening_message_final = frictionContext
+      ? `${intentionOpening}\n\nI see you just came from Friction Rescue — we'll pick up from there once you share what you want from this session.`
+      : intentionOpening;
 
     const coachMemoryContext = await buildCoachMemoryContext({
       user,
@@ -183,10 +213,14 @@ const coachOpen = async (req, res) => {
     const { stage1: afterOpen, session_id } = recordCoachCheckin(stage1, {
       domain,
       state: checkinState,
-      assistant_message: opening_message,
-      phase: "coaching",
+      assistant_message: opening_message_final,
+      phase: SESSION_PHASES.INTENTION,
       opening_checkin: true,
       coach_state: COACH_STATE.COACHING,
+      session_intake: {
+        friction_context: frictionContext,
+        friction_acknowledged: Boolean(frictionContext),
+      },
     });
 
     const mapIdx = (afterOpen.domain_maps || []).findIndex((m) => m.domain === domain);
@@ -197,7 +231,7 @@ const coachOpen = async (req, res) => {
         session_id,
         domain,
         state: checkinState,
-        assistant_message: opening_message,
+        assistant_message: opening_message_final,
         active_goal_context: activeGoalContext,
         opening_checkin: true,
         writeback_hints: {
@@ -214,11 +248,11 @@ const coachOpen = async (req, res) => {
 
     await persistStage1ForUser(user.id, nextStage1);
 
-    const safeOpening = sanitizeCoachUserFacingText(opening_message);
+    const safeOpening = sanitizeCoachUserFacingText(opening_message_final);
 
     return successResponse(res, "Coach check-in", {
       domain,
-      session_phase: "coaching",
+      session_phase: SESSION_PHASES.INTENTION,
       awaiting_user: true,
       resumed: false,
       assistant_message: safeOpening,
@@ -274,7 +308,9 @@ const coachCheckin = async (req, res) => {
       map = (stage1.domain_maps || []).find((m) => m.domain === domain);
     }
 
-    const userMessage = String(req.body?.message || "").trim();
+    const userMessageRaw = String(req.body?.message || "").trim();
+    const setupIntention = String(req.body?.session_intention || "").trim();
+    const userMessage = userMessageRaw || setupIntention;
     if (!userMessage) {
       return errorResponse(res, "Answer the coach's question to continue.", 400);
     }
@@ -313,6 +349,31 @@ const coachCheckin = async (req, res) => {
       Array.isArray(stage1.coach_session_log) ? stage1.coach_session_log : [],
       domain,
     );
+
+    const frictionHandoff = stage1.coach_friction_handoff || null;
+    const frictionContext =
+      req.body?.friction_context && typeof req.body.friction_context === "object"
+        ? req.body.friction_context
+        : frictionHandoff?.domain === domain
+          ? {
+              message: frictionHandoff.message,
+              assistant_message: frictionHandoff.assistant_message,
+              green_rep: frictionHandoff.green_rep,
+            }
+          : null;
+
+    const sessionIntakeFlow = resolveSessionIntakeFlow({
+      openSession: rawOpenSession,
+      userMessage,
+      reqBody: {
+        session_intention: req.body?.session_intention,
+        felt_sensation: req.body?.felt_sensation,
+        friction_context: frictionContext,
+      },
+      messages,
+      gravityRating,
+    });
+
     const activeGoalContext = buildActiveGoalContext(map, domain);
     const preSignals = buildCoachConversationSignals({
       messages,
@@ -451,6 +512,23 @@ const coachCheckin = async (req, res) => {
         transition.coaching_mode = "coaching";
       }
     }
+    if (sessionIntakeFlow.stop_discovery === false && sessionIntakeFlow.awaiting_session_intention) {
+      transition.stop_discovery = false;
+      transition.discovery_complete = false;
+      if (transition.coaching_brief) {
+        transition.coaching_brief.assign_green_rep = false;
+        transition.coaching_brief.must_assign_green_rep = false;
+      }
+    }
+    if (
+      sessionIntakeFlow.awaiting_emotional_checkin ||
+      sessionIntakeFlow.session_phase === SESSION_PHASES.RESISTANCE_PROBE
+    ) {
+      if (transition.coaching_brief) {
+        transition.coaching_brief.assign_green_rep = false;
+        transition.coaching_brief.must_assign_green_rep = false;
+      }
+    }
     if (transition.coaching_brief) {
       transition.coaching_brief.conversation_signals = mergedConversationSignals;
       if (mergedConversationSignals.coaching_directive) {
@@ -483,11 +561,22 @@ const coachCheckin = async (req, res) => {
         null;
     }
 
+    const intakeSessionPhase =
+      proofCycleFlow.proof_integration_mode || proofCycleFlow.session_phase === "proof_integration"
+        ? SESSION_PHASES.INTEGRATION
+        : sessionIntakeFlow.session_phase;
+
     const checkin = {
       current_state: checkinState,
       gravity_rating: gravityRating,
       message: userMessage,
-      session_phase: proofCycleFlow.session_phase || "coaching",
+      session_phase: intakeSessionPhase,
+      session_intention: sessionIntakeFlow.session_intention,
+      felt_sensation: sessionIntakeFlow.felt_sensation,
+      friction_context: sessionIntakeFlow.friction_context,
+      awaiting_session_intention: sessionIntakeFlow.awaiting_session_intention,
+      awaiting_emotional_checkin: sessionIntakeFlow.awaiting_emotional_checkin,
+      yes_man_pattern: Boolean(sessionIntakeFlow.yes_man_pattern),
       coaching_phase: transition.coaching_phase,
       coaching_mode: transition.coaching_mode,
       discovery_complete: transition.discovery_complete,
@@ -660,13 +749,23 @@ const coachCheckin = async (req, res) => {
       );
     }
 
-    const sessionPhase = proofCycleFlow.session_phase || "coaching";
+    if (writebackHints.session_intention == null && sessionIntakeFlow.session_intention) {
+      writebackHints.session_intention = sessionIntakeFlow.session_intention;
+    }
+    if (writebackHints.felt_sensation == null && sessionIntakeFlow.felt_sensation) {
+      writebackHints.felt_sensation = sessionIntakeFlow.felt_sensation;
+    }
+
+    const sessionPhase =
+      proofCycleFlow.proof_integration_mode || proofCycleFlow.session_phase === "proof_integration"
+        ? proofCycleFlow.session_phase || SESSION_PHASES.INTEGRATION
+        : intakeSessionPhase;
     const coachState =
       proofCycleFlow.proof_integration_mode || sessionPhase === "proof_integration"
         ? COACH_STATE.PROGRESS
         : COACH_STATE.COACHING;
 
-    const { nextStage1 } = persistCoachTurn({
+    const { nextStage1: nextStage1Raw } = persistCoachTurn({
       stage1,
       map:
         transition.conversation_signals?.no_trusted_person
@@ -685,8 +784,14 @@ const coachCheckin = async (req, res) => {
       firstSessionFlow: firstSessionFlow.first_session_flow,
       investigationFlow: investigationFlow.investigation_flow,
       structuralCoachingFlow: nextStructuralFlow,
+      activationMomentFlow: activationMomentFlow?.activation_moment_flow || null,
+      sessionIntake: sessionIntakeFlow.session_intake_update,
     });
 
+    let nextStage1 = nextStage1Raw;
+    if (frictionContext && frictionHandoff?.domain === domain) {
+      nextStage1 = { ...nextStage1, coach_friction_handoff: null };
+    }
     await persistStage1ForUser(user.id, nextStage1);
 
     return successResponse(res, "Coach reply", {
@@ -746,6 +851,18 @@ const frictionRescue = async (req, res) => {
       prompts,
     });
 
+    const frictionHandoff = {
+      domain,
+      message: req.body?.message || null,
+      assistant_message: result.assistant_message || null,
+      green_rep: result.green_rep || null,
+      at: new Date().toISOString(),
+    };
+    await persistStage1ForUser(user.id, {
+      ...stage1,
+      coach_friction_handoff: frictionHandoff,
+    });
+
     return successResponse(res, "Friction rescue", {
       assistant_message: sanitizeCoachUserFacingText(result.assistant_message),
       green_rep: result.green_rep || null,
@@ -789,12 +906,19 @@ const getCoachResume = async (req, res) => {
     const messages = open?.messages?.length
       ? open.messages
       : getResumableCoachMessages(stage1, domain);
+    const intake = open?.session_intake || {};
+    const sessionPhase =
+      open?.cert_session_phase ||
+      (intake.session_intention ? SESSION_PHASES.EXPLORE : SESSION_PHASES.INTENTION);
     return successResponse(res, "Coach resume", {
       domain,
       messages,
-      session_phase: "coaching",
-      coach_state: COACH_STATE.COACHING,
+      session_phase: sessionPhase,
+      coach_state: open?.coach_state || COACH_STATE.COACHING,
       awaiting_user: open?.awaiting_user ?? false,
+      session_intention: intake.session_intention || null,
+      felt_sensation: intake.felt_sensation || null,
+      session_id: open?.id || null,
     });
   } catch (err) {
     return errorResponse(res, err.message || "Failed to resume coach", err.status || 500);

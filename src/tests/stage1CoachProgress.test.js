@@ -5,7 +5,7 @@ const {
   buildProgressIntegrationFromContinuity,
   initProgressIntegration,
   PROGRESS_STEPS,
-} = require("../helpers/stage1CoachProgress");
+} = require("../stage1/coach/utils/progress");
 
 describe("stage1CoachProgress", () => {
   test("detects 2 hrs worked + not enough", () => {

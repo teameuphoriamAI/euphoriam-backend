@@ -22,13 +22,25 @@ const SESSION_PHASES = Object.freeze({
   EMOTIONAL_CHECKIN: "emotional_checkin",
   EXPLORE: "explore",
   RESISTANCE_PROBE: "resistance_probe",
+  DEEP_PROBE: "deep_probe",
   INTEGRATION: "integration",
+  INTEGRATION_DEEP: "integration_deep",
 });
+
+const DEEP_READY_SIGNAL =
+  /\b(go deeper|ready to go deeper|let's go deeper|lets go deeper|take me deeper|deeper work)\b/i;
+
+const CHANGE_HISTORY_SIGNAL =
+  /\b(always been this way|since i was|childhood|young|pattern started|been like this|years ago)\b/i;
 
 const readIntake = (openSession) => {
   const raw = openSession?.session_intake;
   return raw && typeof raw === "object" ? { ...raw } : {};
 };
+
+/** @param {object} reqBody */
+const proofCycleIntegrationHint = (reqBody) =>
+  Boolean(reqBody?.proof_integration_mode || reqBody?.session_phase === "integration");
 
 const detectFeltSensation = (text) => {
   const t = String(text || "").trim();
@@ -44,6 +56,7 @@ const detectFeltSensation = (text) => {
  * @param {object} params.reqBody
  * @param {Array} params.messages
  * @param {number|null} params.gravityRating
+ * @param {boolean} [params.certDeepEnabled=false]
  */
 const resolveSessionIntakeFlow = ({
   openSession,
@@ -51,6 +64,7 @@ const resolveSessionIntakeFlow = ({
   reqBody = {},
   messages = [],
   gravityRating = null,
+  certDeepEnabled = false,
 }) => {
   const intake = readIntake(openSession);
   const userTurns =
@@ -117,6 +131,26 @@ const resolveSessionIntakeFlow = ({
     sessionPhase = SESSION_PHASES.RESISTANCE_PROBE;
   }
 
+  let deep_probe_active = false;
+  let change_history_hook = null;
+
+  if (certDeepEnabled && sessionIntention && !awaitingSessionIntention && !awaitingEmotionalCheckin) {
+    if (DEEP_READY_SIGNAL.test(userMessage || "") || intake.deep_probe_active) {
+      sessionPhase = SESSION_PHASES.DEEP_PROBE;
+      deep_probe_active = true;
+      stopDiscovery = true;
+    }
+    if (CHANGE_HISTORY_SIGNAL.test(userMessage || "")) {
+      change_history_hook = String(userMessage || "").trim().slice(0, 500) || null;
+    }
+    if (
+      intake.deep_probe_complete &&
+      (proofCycleIntegrationHint(reqBody) || /\b(integrat|takeaway|what i learned)\b/i.test(userMessage || ""))
+    ) {
+      sessionPhase = SESSION_PHASES.INTEGRATION_DEEP;
+    }
+  }
+
   const intakeUpdate = {
     session_intention: sessionIntention,
     felt_sensation: feltSensation,
@@ -130,6 +164,9 @@ const resolveSessionIntakeFlow = ({
       intake.emotional_checkin_skipped || SKIP_EMOTIONAL.test(userMessage || ""),
     ),
     friction_acknowledged: Boolean(intake.friction_acknowledged || frictionContext),
+    deep_probe_active: deep_probe_active || Boolean(intake.deep_probe_active),
+    deep_probe_complete: Boolean(intake.deep_probe_complete),
+    change_history_hook: change_history_hook || intake.change_history_hook || null,
   };
 
   if (awaitingEmotionalCheckin && feltSensation) {
@@ -147,6 +184,9 @@ const resolveSessionIntakeFlow = ({
     awaiting_emotional_checkin: awaitingEmotionalCheckin,
     stop_discovery: stopDiscovery,
     yes_man_pattern: YES_MAN_SIGNAL.test(userMessage || ""),
+    cert_deep_enabled: Boolean(certDeepEnabled),
+    deep_probe_active,
+    change_history_hook: change_history_hook || intake.change_history_hook || null,
     session_intake_update: intakeUpdate,
   };
 };

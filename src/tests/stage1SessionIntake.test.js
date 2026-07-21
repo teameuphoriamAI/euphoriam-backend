@@ -130,4 +130,40 @@ describe("stage1SessionIntake", () => {
     });
     expect(flow.session_intake_update.emotional_checkin_skipped).toBe(true);
   });
+
+  test("cert deep enabled → deep_probe when user asks to go deeper", () => {
+    const flow = resolveSessionIntakeFlow({
+      openSession: {
+        session_intake: {
+          session_intention: "Break the freeze",
+          emotional_checkin_complete: true,
+        },
+      },
+      userMessage: "I'm ready to go deeper on this pattern",
+      reqBody: {},
+      messages: [],
+      gravityRating: 5,
+      certDeepEnabled: true,
+    });
+    expect(flow.session_phase).toBe(SESSION_PHASES.DEEP_PROBE);
+    expect(flow.deep_probe_active).toBe(true);
+    expect(flow.cert_deep_enabled).toBe(true);
+  });
+
+  test("cert deep disabled → no deep_probe phase", () => {
+    const flow = resolveSessionIntakeFlow({
+      openSession: {
+        session_intake: {
+          session_intention: "Break the freeze",
+          emotional_checkin_complete: true,
+        },
+      },
+      userMessage: "I'm ready to go deeper on this pattern",
+      reqBody: {},
+      messages: [],
+      gravityRating: 5,
+      certDeepEnabled: false,
+    });
+    expect(flow.session_phase).not.toBe(SESSION_PHASES.DEEP_PROBE);
+  });
 });

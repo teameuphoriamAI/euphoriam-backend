@@ -56,6 +56,8 @@ const {
   buildIntentionOpening,
   SESSION_PHASES,
 } = require("../stage1/coach/flows/sessionIntake");
+const { stage1FeatureFlags } = require("../helpers/stage1FeatureFlags");
+const { buildStateVectorV2 } = require("../helpers/stage1StateVector");
 
 const COACH_STATE = Object.freeze({ COACHING: "coaching", PROGRESS: "progress" });
 
@@ -362,6 +364,8 @@ const coachCheckin = async (req, res) => {
             }
           : null;
 
+    const featureFlags = stage1FeatureFlags();
+
     const sessionIntakeFlow = resolveSessionIntakeFlow({
       openSession: rawOpenSession,
       userMessage,
@@ -369,9 +373,12 @@ const coachCheckin = async (req, res) => {
         session_intention: req.body?.session_intention,
         felt_sensation: req.body?.felt_sensation,
         friction_context: frictionContext,
+        proof_integration_mode: req.body?.proof_integration_mode,
+        session_phase: req.body?.session_phase,
       },
       messages,
       gravityRating,
+      certDeepEnabled: featureFlags.coach_cert_deep_enabled,
     });
 
     const activeGoalContext = buildActiveGoalContext(map, domain);
@@ -522,7 +529,8 @@ const coachCheckin = async (req, res) => {
     }
     if (
       sessionIntakeFlow.awaiting_emotional_checkin ||
-      sessionIntakeFlow.session_phase === SESSION_PHASES.RESISTANCE_PROBE
+      sessionIntakeFlow.session_phase === SESSION_PHASES.RESISTANCE_PROBE ||
+      sessionIntakeFlow.session_phase === SESSION_PHASES.DEEP_PROBE
     ) {
       if (transition.coaching_brief) {
         transition.coaching_brief.assign_green_rep = false;
@@ -616,6 +624,17 @@ const coachCheckin = async (req, res) => {
       active_bottleneck: structuralFlow.active_bottleneck || null,
       structural_coaching_flow: structuralFlow.structural_coaching_flow || null,
       suggested_milestone_rep: transition.coaching_brief?.suggested_milestone_rep || null,
+      feature_flags: featureFlags,
+      cert_deep_enabled: featureFlags.coach_cert_deep_enabled,
+      deep_probe_active: Boolean(sessionIntakeFlow.deep_probe_active),
+      change_history_hook: sessionIntakeFlow.change_history_hook || null,
+      state_vector_v2: buildStateVectorV2({
+        userId: user.id,
+        stage1,
+        map,
+        domain,
+        checkin: { current_state: checkinState, gravity_rating: gravityRating },
+      }),
     };
 
     const aiMessages = excerptCoachMessages(messages);

@@ -11,10 +11,10 @@ const TIERS = Object.freeze({
 });
 
 const TIER_LIMITS = Object.freeze({
-  [TIERS.STANDARD]: { maxActiveDomains: 0, maxStoredGoals: 0 },
-  [TIERS.BRONZE]: { maxActiveDomains: 1, maxStoredGoals: 3 },
-  [TIERS.SILVER]: { maxActiveDomains: 2, maxStoredGoals: Infinity },
-  [TIERS.ACCELERATE]: { maxActiveDomains: 5, maxStoredGoals: Infinity },
+  [TIERS.BRONZE]: { maxStoredGoals: 3, maxActiveDomains: 1 },
+  [TIERS.SILVER]: { maxStoredGoals: Infinity, maxActiveDomains: 2 },
+  [TIERS.ACCELERATE]: { maxStoredGoals: Infinity, maxActiveDomains: 5 },
+  [TIERS.STANDARD]: { maxStoredGoals: 1, maxActiveDomains: 1 },
 });
 
 const parseMembership = (user) => {
@@ -32,7 +32,9 @@ const parseMembership = (user) => {
 
 const productTitles = (membership) => {
   const items = [...(membership.products || []), ...(membership.offers || [])];
-  return items.map((item) => String(item.title || item.name || "").toLowerCase());
+  return items.map((item) =>
+    String(item.title || item.name || "").toLowerCase(),
+  );
 };
 
 /** Resolve paid tier from users.membership (Kajabi sync) and product titles. */
@@ -40,12 +42,11 @@ const getTier = (user) => {
   const m = parseMembership(user);
   const titles = productTitles(m);
 
-  if (m.isCreatorClubAccelerate) return TIERS.ACCELERATE;
+  if (m.isCreatorClubAccelerate || m.isAccelerate) return TIERS.ACCELERATE;
   if (titles.some((t) => t.includes("accelerate"))) return TIERS.ACCELERATE;
-  if (m.isCreatorClubSilver) return TIERS.SILVER;
-  if (m.isCreatorClubBronze) return TIERS.BRONZE;
-  if (m.isCreatorClub) return TIERS.BRONZE;
-
+  if (m.isCreatorClubSilver || m.isSilver) return TIERS.SILVER;
+  if (m.isCreatorClubBronze || m.isBronze) return TIERS.BRONZE;
+  if (m.isCreatorClub || m.isCreatorClub === true) return TIERS.BRONZE;
   return TIERS.STANDARD;
 };
 

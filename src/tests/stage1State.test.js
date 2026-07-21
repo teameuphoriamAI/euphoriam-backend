@@ -30,7 +30,9 @@ describe("membershipDomains", () => {
   });
 
   test("accelerate tier from membership flag or product title", () => {
-    expect(getTier({ membership: { isCreatorClubAccelerate: true } })).toBe("accelerate");
+    expect(getTier({ membership: { isCreatorClubAccelerate: true } })).toBe(
+      "accelerate",
+    );
     expect(
       getTier({
         membership: { products: [{ title: "Euphoriam Accelerate" }] },

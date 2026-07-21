@@ -9,6 +9,8 @@ const flags = {
   mapResistance: process.env.USE_PYTHON_MAP_RESISTANCE === "true",
 };
 
+const { stage1FeatureFlags } = require("../helpers/stage1FeatureFlags");
+
 const isEnabled = () => Boolean(BASE);
 
 const headers = () => {
@@ -43,9 +45,19 @@ const post = async (path, body) => {
   }
 };
 
-const coachReply = (payload) => post("/v1/coach/reply", payload);
+const coachReply = (payload) =>
+  post("/v1/coach/reply", {
+    ...payload,
+    feature_flags: payload.feature_flags || stage1FeatureFlags(),
+  });
 
-const frictionRescue = (payload) => post("/v1/coach/friction", payload);
+const frictionRescue = (payload) =>
+  post("/v1/coach/friction", {
+    ...payload,
+    feature_flags: payload.feature_flags || stage1FeatureFlags(),
+  });
+
+const generateTreatmentPlan = (payload) => post("/v1/treatment-plan/generate", payload);
 
 const mapResistanceTurn = (payload) => post("/v1/map-resistance/turn", payload);
 
@@ -62,4 +74,5 @@ module.exports = {
   mapResistanceTurn,
   mapResistanceFinalize,
   extractDomainStructure,
+  generateTreatmentPlan,
 };

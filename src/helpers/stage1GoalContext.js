@@ -10,6 +10,13 @@ const {
  */
 const buildActiveGoalContext = (map, domain) => {
   const milestones = map?.milestones || {};
+  const treatment = map?.treatment_plan_30d || {};
+  const treatmentWeek = treatment?.current_week ?? map?.treatment_week ?? null;
+  const weeklyFocus =
+    treatment?.weekly_focus && treatmentWeek
+      ? treatment.weekly_focus[`week_${treatmentWeek}`] ?? null
+      : null;
+
   return {
     active_domain: domain,
     domain_label: DOMAIN_LABELS[domain] || domain,
@@ -36,6 +43,12 @@ const buildActiveGoalContext = (map, domain) => {
     past_pattern: map?.past_pattern || null,
     core_fear: map?.core_fear || null,
     visible_next_action: map?.today_visible_action || null,
+    failure_strategy: map?.failure_strategy || null,
+    success_strategy: map?.success_strategy || null,
+    treatment_week: treatmentWeek,
+    treatment_day: treatment?.current_day ?? map?.treatment_day ?? null,
+    weekly_focus: weeklyFocus,
+    current_green_rep: map?.daily_rep || null,
   };
 };
 

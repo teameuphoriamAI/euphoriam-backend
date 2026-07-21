@@ -5,6 +5,7 @@ const asyncHandler = require("../helpers/asyncHandler");
 const stage1Controller = require("../controllers/stage1Controller");
 const stage1CoachController = require("../controllers/stage1CoachController");
 const stage1ProofController = require("../controllers/stage1ProofController");
+const stage1TreatmentPlanController = require("../controllers/stage1TreatmentPlanController");
 
 const router = express.Router();
 const stage1Auth = [auth, requirePaidStage1];
@@ -104,6 +105,11 @@ router.get(
   "/training/suggested",
   ...stage1Auth,
   asyncHandler(stage1Controller.getSuggestedTraining),
+);
+router.post(
+  "/treatment-plan/generate",
+  ...stage1Auth,
+  asyncHandler(stage1TreatmentPlanController.generateTreatmentPlan),
 );
 
 module.exports = router;

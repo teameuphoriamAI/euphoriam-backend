@@ -7,6 +7,26 @@ const newSessionId = () =>
 
 const isSessionOpen = (session) => Boolean(session && !session.ended_at);
 
+/** Open sessions from a prior day or older than SESSION_GAP_MS need a fresh intention. */
+const isStaleOpenSession = (session, nowMs = Date.now()) => {
+  if (!session?.started_at) return false;
+  const startedMs = new Date(session.started_at).getTime();
+  if (!Number.isFinite(startedMs)) return false;
+  const started = new Date(startedMs);
+  const now = new Date(nowMs);
+  if (started.toDateString() !== now.toDateString()) return true;
+  return nowMs - startedMs >= SESSION_GAP_MS;
+};
+
+const closeStaleOpenSessionIfNeeded = (stage1, domain) => {
+  const open = findOpenSessionForDomain(stage1.coach_session_log || [], domain);
+  if (!open || !isStaleOpenSession(open)) {
+    return { stage1, closed: false, session_id: null };
+  }
+  const result = endCoachSession(stage1, domain);
+  return { ...result, closed: result.ended };
+};
+
 const findOpenSessionForDomain = (sessions, domain) => {
   for (let i = sessions.length - 1; i >= 0; i -= 1) {
     const s = sessions[i];
@@ -347,6 +367,8 @@ module.exports = {
   getOpenCoachSession,
   endCoachSession,
   findOpenSessionForDomain,
+  isStaleOpenSession,
+  closeStaleOpenSessionIfNeeded,
   migrateLegacyCoachSessions,
   SESSION_GAP_MS,
 };

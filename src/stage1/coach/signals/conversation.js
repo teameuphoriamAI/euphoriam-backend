@@ -16,7 +16,7 @@ const NO_TRUSTED_PERSON_PATTERN =
   /\b(no\s*one|nobody|don'?t\s+have\s+anyone|have\s+no\s+one|no\s+friends?|not\s+anyone|no\s+body\s+to\s+talk|alone|isolated|no\s+one\s+to\s+talk)\b/i;
 
 const WHAT_NEXT_PATTERN =
-  /\b(what\s+should\s+i\s+do|what\s+do\s+i\s+do\s+next|what'?s?\s+next|what\s+now|what\s+should\s+i\s+do\s+next|what\s+next)\b/i;
+  /\b(what\s+should\s+i\s+do|what\s+do\s+i\s+do\s+next|what'?s?\s+next|what\s+now|what\s+should\s+i\s+do\s+next|what\s+next|how\s+(?:do|should|can|will|would)\s+i\s+(?:start|begin|do\s+(?:it|this|that)|get\s+started|actually\s+(?:start|do|begin))|how\s+will\s+i\s+do\s+it|where\s+(?:do|should|can|would)\s+i\s+(?:even\s+)?(?:start|begin)|(?:what'?s?|what\s+is)\s+the\s+first\s+step|first\s+step|(?:what|which)\s+steps|steps\s+(?:do\s+)?i\s+(?:must|need|should|have\s+to)\s+take|what\s+do\s+i\s+need\s+to\s+do|how\s+do\s+i\s+do\s+this)\b/i;
 
 const REP_REQUIRES_PERSON_PATTERN =
   /\b(someone|person|trust|send\s+it|send\s+to|reach\s+out|friend|family|tell\s+them|text\s+them|safest\s+relevant\s+person)\b/i;
@@ -450,9 +450,9 @@ const buildCoachConversationSignals = ({
       "Ask what specifically is blocked or what their first step would be.";
   } else if (coaching_repeat_complaint || repeated_assistant_advice) {
     coaching_directive =
-      "User says you repeated the same advice (today or yesterday). Acknowledge that directly — do NOT defend or repeat the prior wording. " +
-      "Do NOT suggest another act of kindness, sentence rep, or notes/voice exercise. " +
-      "Ask ONE question: what specifically is not changing for them? Name the missing leverage point. green_rep must be null.";
+      "Your recent guidance has been repetitive. Do NOT tell the member the chat is looping, circling, or repeating, and do NOT reference 'same/similar advice' or 'break this cycle'. " +
+      "SILENTLY change approach: give ONE concrete, specific next step OR ask ONE sharp new question that moves toward real-world action. " +
+      "Do NOT suggest another act of kindness, sentence rep, or notes/voice exercise. Name the missing leverage point plainly. green_rep must be null.";
   } else if (reports_stagnation || solo_ladder_complete) {
     coaching_directive =
       "User reports solo sentence reps are not changing outcomes OR has completed the solo ladder. " +
@@ -481,8 +481,8 @@ const buildCoachConversationSignals = ({
       "Do NOT assign a new rep and do NOT repeat the full instructions verbatim.";
   } else if (assistant_advice_loop) {
     coaching_directive =
-      "You have repeated the same intervention or rep family. Stop repeating. " +
-      "Ask what is NOT changing, identify the missing leverage point, and change your coaching approach. " +
+      "Your recent guidance has repeated the same intervention. Do NOT tell the member you are repeating or looping, and do NOT say 'same/similar advice' or 'break this cycle'. " +
+      "SILENTLY switch approach: give ONE new concrete action OR a sharper question that identifies the missing leverage point. " +
       "Do NOT assign another sentence/notes/voice rep unless proof integration is complete.";
   } else if (user_repeated_same_point && no_trusted_person) {
     coaching_directive =

@@ -67,9 +67,23 @@ const resolveSessionIntakeFlow = ({
   certDeepEnabled = false,
 }) => {
   const intake = readIntake(openSession);
+  // `messages` is the reconciled transcript which normally already contains the
+  // current userMessage. Counting it AND adding +1 double-counted the first turn
+  // (userTurns became 2 on turn 1), so the intention was never captured and the
+  // session froze in the `intention` phase. Only add +1 when the current message
+  // is not already the last user turn in the transcript.
+  const userMessagesInTranscript = Array.isArray(messages)
+    ? messages.filter((m) => m?.role === "user")
+    : [];
+  const trimmedCurrent = String(userMessage || "").trim();
+  const lastUserInTranscript = String(
+    userMessagesInTranscript[userMessagesInTranscript.length - 1]?.content || "",
+  ).trim();
+  const currentAlreadyInTranscript =
+    Boolean(trimmedCurrent) && lastUserInTranscript === trimmedCurrent;
   const userTurns =
-    (Array.isArray(messages) ? messages.filter((m) => m?.role === "user").length : 0) +
-    (userMessage?.trim() ? 1 : 0);
+    userMessagesInTranscript.length +
+    (trimmedCurrent && !currentAlreadyInTranscript ? 1 : 0);
 
   let sessionIntention =
     String(reqBody.session_intention || intake.session_intention || "").trim() || null;
@@ -174,6 +188,32 @@ const resolveSessionIntakeFlow = ({
     sessionPhase = SESSION_PHASES.EXPLORE;
     awaitingEmotionalCheckin = false;
   }
+
+  // #region agent log
+  try {
+    require("../../../helpers/debugIngest").debugIngest(
+      "sessionIntake.js:resolve",
+      "intake phase resolution",
+      {
+        userTurns,
+        userMsgLen: String(userMessage || "").trim().length,
+        reqBody_intention: Boolean(reqBody.session_intention),
+        intake_intention: Boolean(intake.session_intention),
+        captured_intention: Boolean(sessionIntention),
+        intention_head: String(sessionIntention || "").slice(0, 60),
+        resistance_match: RESISTANCE_SIGNAL.test(String(userMessage || "")),
+        emotional_complete: Boolean(intake.emotional_checkin_complete),
+        felt_sensation: Boolean(feltSensation),
+        same_day: sameDaySession,
+        session_phase: sessionPhase,
+        awaiting_intention: awaitingSessionIntention,
+      },
+      "H15",
+    );
+  } catch {
+    /* ignore */
+  }
+  // #endregion
 
   return {
     session_phase: sessionPhase,

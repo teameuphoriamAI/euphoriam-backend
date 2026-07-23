@@ -23,6 +23,40 @@ const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) =>
 const excerptCoachMessages = (messages, maxMessages = MAX_COACH_AI_MESSAGES) =>
   excerptTranscript(messages, maxMessages);
 
+const normalizeCoachMessage = (message) => {
+  if (!message?.role || message.content == null) return null;
+  const role = String(message.role).trim();
+  if (role !== "user" && role !== "assistant") return null;
+  const content = String(message.content).trim();
+  if (!content) return null;
+  return { role, content };
+};
+
+const normalizeCoachTranscript = (messages = []) =>
+  (Array.isArray(messages) ? messages : [])
+    .map(normalizeCoachMessage)
+    .filter(Boolean);
+
+/** Prefer the longer transcript; fall back to stored open-session history when client sends none. */
+const reconcileCoachTranscript = (clientMessages = [], openSession = null, userMessage = "") => {
+  const client = normalizeCoachTranscript(clientMessages);
+  const stored = normalizeCoachTranscript(openSession?.messages);
+  const trimmedUser = String(userMessage || "").trim();
+
+  let base =
+    client.length >= stored.length && client.length > 0
+      ? client
+      : stored.length > 0
+        ? stored
+        : client;
+
+  if (!trimmedUser) return base;
+
+  const last = base[base.length - 1];
+  if (last?.role === "user" && last.content === trimmedUser) return base;
+  return [...base, { role: "user", content: trimmedUser }];
+};
+
 /** Strip bloated fields duplicated in USER_COACH_CONTEXT / COACH_MEMORY_CONTEXT. */
 const slimDomainMapForCoach = (map) => {
   if (!map || typeof map !== "object") return {};
@@ -165,6 +199,7 @@ module.exports = {
   buildCoachUserContext,
   excerptTranscript,
   excerptCoachMessages,
+  reconcileCoachTranscript,
   slimDomainMapForCoach,
   trimProofAction,
   serializeUserSessions,

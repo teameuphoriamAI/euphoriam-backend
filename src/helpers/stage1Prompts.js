@@ -16,13 +16,10 @@ const fetchContent = async (type) => {
  */
 const loadCoachPromptBundle = async () => {
   const flags = stage1FeatureFlags();
-  const brainType = flags.brain_prompt_v2_shadow
-    ? PromptType.BRAIN_PROMPT_V2
-    : PromptType.BRAINPROMPT;
 
   const fetches = [
     fetchContent(PromptType.COACHBRAINPROMPT),
-    fetchContent(brainType),
+    fetchContent(PromptType.BRAINPROMPT),
     fetchContent(PromptType.STAGE1_DAILY_COACH),
     fetchContent(PromptType.STAGE1_FRICTION_RESCUE),
     fetchContent(PromptType.STAGE1_COACH_OPENING),
@@ -30,11 +27,26 @@ const loadCoachPromptBundle = async () => {
   ];
 
   if (flags.brain_prompt_v2_shadow) {
+    fetches.push(fetchContent(PromptType.BRAIN_PROMPT_V2));
     fetches.push(fetchContent(PromptType.COACH_V2));
   }
 
   const results = await Promise.all(fetches);
-  const [coachBrain, brain, dailyCoach, friction, coachOpening, goalIntake, coachV2] = results;
+  const [
+    coachBrain,
+    brainCanonical,
+    dailyCoach,
+    friction,
+    coachOpening,
+    goalIntake,
+    brainV2,
+    coachV2,
+  ] = results;
+
+  // Shadow V2 is additive: only use it when the row actually exists, otherwise
+  // keep the canonical Brain Prompt so the coaching library is never dropped.
+  const brain =
+    flags.brain_prompt_v2_shadow && brainV2 ? brainV2 : brainCanonical;
 
   const bundle = {
     coach_brain_prompt: coachBrain,

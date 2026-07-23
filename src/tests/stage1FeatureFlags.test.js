@@ -11,10 +11,12 @@ describe("stage1FeatureFlags", () => {
     delete process.env.COACH_CERT_DEEP_ENABLED;
     delete process.env.BRAIN_PROMPT_V2_SHADOW;
     delete process.env.TREATMENT_PLAN_ENABLED;
+    delete process.env.BRAIN_PROMPT_RAG_ENABLED;
     const flags = stage1FeatureFlags();
     expect(flags.coach_cert_deep_enabled).toBe(false);
     expect(flags.brain_prompt_v2_shadow).toBe(false);
     expect(flags.treatment_plan_enabled).toBe(false);
+    expect(flags.brain_prompt_rag_enabled).toBe(false);
   });
 
   test("truthy parses common env values", () => {
@@ -28,5 +30,10 @@ describe("stage1FeatureFlags", () => {
   test("COACH_CERT_DEEP_ENABLED when set", () => {
     process.env.COACH_CERT_DEEP_ENABLED = "true";
     expect(stage1FeatureFlags().coach_cert_deep_enabled).toBe(true);
+  });
+
+  test("BRAIN_PROMPT_RAG_ENABLED when set", () => {
+    process.env.BRAIN_PROMPT_RAG_ENABLED = "true";
+    expect(stage1FeatureFlags().brain_prompt_rag_enabled).toBe(true);
   });
 });

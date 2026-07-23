@@ -14,6 +14,7 @@ const classifySection = (title, body) => {
   if (/REP\s*LIBRARY|GREEN\s*REP/.test(t)) return "rep_library";
   if (/OPPOSITE\s*MAP|OPPOSITE_MAP/.test(t)) return "opposite_map";
   if (/SIGNATURE.*DICT|SIGNATURE.*BEHAVIOUR|48\s*COMBIN/.test(t)) return "signature_overview";
+  if (/SIGNATURE\s*CATALOG/.test(t)) return "signature_catalog";
   return "general";
 };
 
@@ -79,6 +80,62 @@ const splitIntoSections = (content) => {
   return sections;
 };
 
+const splitBodyBySignatureHeaders = (body) => {
+  const lines = String(body || "").split("\n");
+  const blocks = [];
+  let current = { sigIds: [], lines: [] };
+
+  for (const line of lines) {
+    const lineSigs = extractSignatureIds(line);
+    const headerSig =
+      lineSigs.length === 1 && /^[^\w]*[A-Z]{2,3}\+[A-Z]\+[A-Z]/.test(line.trim())
+        ? lineSigs[0]
+        : null;
+    if (headerSig) {
+      if (current.lines.length) blocks.push(current);
+      current = { sigIds: [headerSig], lines: [line] };
+      continue;
+    }
+    current.lines.push(line);
+    for (const sig of lineSigs) {
+      if (!current.sigIds.includes(sig)) current.sigIds.push(sig);
+    }
+  }
+  if (current.lines.length) blocks.push(current);
+  return blocks.length > 1 ? blocks : null;
+};
+
+/** Canonical 48-signature rows for deterministic hybrid lookup (Brain Prompt text often omits IDs). */
+const buildSignatureCatalogDocuments = ({ promptType, version = "1" }) => {
+  const signatures = generateVortexSignatures();
+  return signatures.map((sig) => {
+    const chunk = [
+      `${sig.id}: ${sig.failurePattern}`,
+      `EO: ${sig.eo?.name || sig.eo?.code || ""}`,
+      `Lack: ${sig.lack?.name || sig.lack?.code || ""}`,
+      `Avoid: ${sig.avoid?.name || sig.avoid?.code || ""}`,
+      sig.oppositeBehavior ? `Opposite behaviour: ${sig.oppositeBehavior}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return {
+      title: `${promptType}: Signature catalog ${sig.id}`,
+      chunk,
+      metadata: {
+        source: "brain_prompt",
+        prompt_type: promptType,
+        section: "signature_catalog",
+        section_title: `Signature ${sig.id}`,
+        signature_id: sig.id,
+        signature_ids: [sig.id],
+        chunk_index: 0,
+        version,
+      },
+    };
+  });
+};
+
 /**
  * Turn Brain Prompt text into document rows ready for embed + insert.
  */
@@ -88,33 +145,43 @@ const buildBrainPromptDocuments = ({ content, promptType, version = "1" }) => {
 
   for (const section of sections) {
     const sectionType = classifySection(section.title, section.body);
-    const signatureIds = extractSignatureIds(`${section.title}\n${section.body}`);
-    const subChunks = chunkText(section.body);
+    const signatureBlocks = splitBodyBySignatureHeaders(section.body);
+    const bodies = signatureBlocks
+      ? signatureBlocks.map((block) => ({
+          body: block.lines.join("\n").trim(),
+          signatureIds: block.sigIds,
+        }))
+      : [{ body: section.body, signatureIds: extractSignatureIds(`${section.title}\n${section.body}`) }];
 
-    subChunks.forEach((chunk, idx) => {
-      const chunkSigs = extractSignatureIds(chunk);
-      const sigId =
-        chunkSigs.length === 1
-          ? chunkSigs[0]
-          : signatureIds.length === 1
-            ? signatureIds[0]
-            : null;
+    for (const part of bodies) {
+      if (!part.body) continue;
+      const subChunks = chunkText(part.body);
 
-      docs.push({
-        title: `${promptType}: ${section.title}${subChunks.length > 1 ? ` [${idx + 1}/${subChunks.length}]` : ""}`,
-        chunk,
-        metadata: {
-          source: "brain_prompt",
-          prompt_type: promptType,
-          section: sectionType,
-          section_title: section.title,
-          signature_id: sigId,
-          chunk_index: idx,
-          version,
-        },
+      subChunks.forEach((chunk, idx) => {
+        const chunkSigs = extractSignatureIds(chunk);
+        const sigIds = [
+          ...new Set([...(part.signatureIds || []), ...chunkSigs]),
+        ].filter((id) => ALL_SIGNATURE_IDS.has(id));
+
+        docs.push({
+          title: `${promptType}: ${section.title}${subChunks.length > 1 ? ` [${idx + 1}/${subChunks.length}]` : ""}`,
+          chunk,
+          metadata: {
+            source: "brain_prompt",
+            prompt_type: promptType,
+            section: sectionType,
+            section_title: section.title,
+            signature_id: sigIds[0] || null,
+            signature_ids: sigIds,
+            chunk_index: idx,
+            version,
+          },
+        });
       });
-    });
+    }
   }
+
+  docs.push(...buildSignatureCatalogDocuments({ promptType, version }));
 
   return docs;
 };
@@ -138,6 +205,15 @@ const retrieveDeterministicChunks = (brainDocs, signatureId) => {
   const picked = [];
   const seen = new Set();
 
+  const matchesSignature = (doc, sigId) => {
+    const meta = doc.metadata || {};
+    if (meta.signature_id === sigId) return true;
+    if (Array.isArray(meta.signature_ids) && meta.signature_ids.includes(sigId)) {
+      return true;
+    }
+    return false;
+  };
+
   const add = (doc, score) => {
     const key = `${doc.id}`;
     if (seen.has(key)) return;
@@ -153,7 +229,7 @@ const retrieveDeterministicChunks = (brainDocs, signatureId) => {
 
   if (signatureId) {
     for (const doc of brainDocs) {
-      if (doc.metadata?.signature_id === signatureId) {
+      if (matchesSignature(doc, signatureId)) {
         add(doc, 1);
       }
     }
@@ -166,10 +242,12 @@ module.exports = {
   ALL_SIGNATURE_IDS,
   BASELINE_BRAIN_SECTIONS,
   buildBrainPromptDocuments,
+  buildSignatureCatalogDocuments,
   classifySection,
   chunkText,
   extractSignatureIds,
   retrieveDeterministicChunks,
+  splitBodyBySignatureHeaders,
   splitIntoSections,
   toBrainChunkResult,
 };

@@ -34,6 +34,23 @@ describe("coachCertAcceptance", () => {
     expect(flow.session_phase).toBe(SESSION_PHASES.RESISTANCE_PROBE);
   });
 
+  test("scenario 1 sets body_echo_required with felt sensation", () => {
+    const flow = resolveSessionIntakeFlow({
+      openSession: {
+        session_intake: {
+          session_intention: "Feel less stuck",
+          emotional_checkin_complete: true,
+          felt_sensation: "Tight chest and solar plexus",
+        },
+      },
+      userMessage: "My head feels like it's in a vice. Work pressure is crushing me.",
+      reqBody: {},
+      messages: [],
+      gravityRating: 7,
+    });
+    expect(flow.body_echo_required).toBe(true);
+  });
+
   test("scenario 2: yes-man sets yes_man_pattern", () => {
     const flow = resolveSessionIntakeFlow({
       openSession: {
@@ -72,5 +89,22 @@ describe("coachCertAcceptance", () => {
     });
     expect(flow.session_phase).toBe(SESSION_PHASES.INTENTION);
     expect(flow.awaiting_session_intention).toBe(true);
+  });
+
+  test("let me do it after actionable advice → user_commitment_to_act", () => {
+    const { buildCoachConversationSignals } = require("../stage1/coach/signals/conversation");
+    const priorAdvice =
+      "Given your Upwork goal, refine your offer:\n1. Identify a problem\n2. Craft a value statement\n3. Update your proposal template\nThis should take about 10 minutes.";
+    const signals = buildCoachConversationSignals({
+      messages: [
+        { role: "assistant", content: "What do you want from this session?" },
+        { role: "user", content: "Land my first client" },
+        { role: "assistant", content: priorAdvice },
+      ],
+      userMessage: "let me do it",
+      map: { map_resistance_complete: true },
+    });
+    expect(signals.user_commitment_to_act).toBe(true);
+    expect(signals.execution_confirmed).toBe(true);
   });
 });

@@ -277,6 +277,7 @@ const buildIntegrationCompleteContext = ({ repName, goalContext, map }) => ({
     map?.goal_title ||
     null,
   next_edge_inquiry: true,
+  edge_inquiry_required: true,
 });
 
 const detectInterventionAdviceLoop = (messages = []) => {
@@ -530,6 +531,7 @@ const resolveProofCycleFlow = ({
           proof_integration_complete: true,
           user_completed_current_rep: true,
           assign_green_rep: !suggestEnd,
+          edge_inquiry_required: true,
         },
       };
     }

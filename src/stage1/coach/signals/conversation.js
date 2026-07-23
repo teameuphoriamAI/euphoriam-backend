@@ -576,6 +576,7 @@ const buildCoachConversationSignals = ({
     self_generated_clarity: Boolean(claritySignals?.self_generated_clarity),
     seeking_leverage_direction: Boolean(claritySignals?.seeking_leverage_direction),
     execution_confirmed: Boolean(claritySignals?.execution_confirmed),
+    user_commitment_to_act: Boolean(claritySignals?.user_commitment_to_act),
     execution_sustainability_issue: Boolean(claritySignals?.execution_sustainability_issue),
     user_showing_hope_depletion: Boolean(claritySignals?.user_showing_hope_depletion),
     motivation_loss: Boolean(claritySignals?.motivation_loss),

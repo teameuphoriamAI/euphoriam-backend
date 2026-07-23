@@ -578,6 +578,123 @@ const resolveCoachingTransition = ({
   });
 };
 
+const { SESSION_PHASES: INTAKE_PHASES } = require("./sessionIntake");
+
+/**
+ * Cert v1 + Nathan depth directives — body echo, map reference, edge/cost, training, insight rep.
+ */
+const applyCertTurnDirectives = ({
+  transition,
+  sessionIntakeFlow = {},
+  proofCycleFlow = null,
+  coachMemoryContext = {},
+  map = null,
+  userMessage = "",
+  messages = [],
+  goalContext = null,
+  openSession = null,
+  stage1 = null,
+  domain = null,
+}) => {
+  const next = { ...transition };
+  const phase = sessionIntakeFlow.session_phase;
+  const signals = {
+    ...(next.conversation_signals || next.coaching_brief?.conversation_signals || {}),
+  };
+  const proofIntegrationActive = Boolean(
+    proofCycleFlow?.proof_integration_mode ||
+      proofCycleFlow?.session_phase === "proof_integration",
+  );
+
+  if (!next.coaching_brief && phase === INTAKE_PHASES.INSIGHT_INTEGRATION) {
+    next.coaching_mode = "coaching";
+    next.stop_discovery = true;
+    next.discovery_complete = true;
+    next.coaching_brief = buildCoachingBrief(map, coachMemoryContext, userMessage, {
+      messages,
+      stage1,
+      domain,
+      proofCycleFlow,
+      openSession,
+      goalContext,
+    });
+  }
+
+  if (sessionIntakeFlow.body_echo_required && next.coaching_brief) {
+    signals.body_echo_required = true;
+    signals.smallest_step_mode = Boolean(sessionIntakeFlow.smallest_step_mode);
+    const bodyWords = String(sessionIntakeFlow.felt_sensation || "").trim();
+    const intention = String(sessionIntakeFlow.session_intention || "").trim();
+    next.coaching_brief.instruction =
+      `${next.coaching_brief.instruction || ""} BODY ECHO REQUIRED: echo member body words verbatim once (${bodyWords || "their sensation"}). Link to old pattern in plain language (no vortex jargon). Ask smallest step in the next hour tied to session intention (${intention || "their goal"}) — not generic break advice unless they chose that.`.trim();
+  }
+
+  if (
+    (phase === INTAKE_PHASES.EXPLORE || phase === INTAKE_PHASES.INSIGHT_INTEGRATION) &&
+    !proofIntegrationActive
+  ) {
+    signals.map_reference_required = true;
+    if (next.coaching_brief) {
+      next.coaching_brief.instruction =
+        `${next.coaching_brief.instruction || ""} MAP REFERENCE REQUIRED: link one plain-language line to their failure_strategy / flip_belief / active milestone from COACH_MEMORY_CONTEXT before advice or rep.`.trim();
+    }
+  }
+
+  const edgeFromProof = Boolean(
+    proofCycleFlow?.coaching_context?.next_edge_inquiry ||
+      proofCycleFlow?.coaching_context?.edge_inquiry_required ||
+      signals.edge_inquiry_required,
+  );
+  const exploreEdgeNeeded =
+    (phase === INTAKE_PHASES.EXPLORE || phase === INTAKE_PHASES.INSIGHT_INTEGRATION) &&
+    !sessionIntakeFlow.session_intake_update?.edge_inquiry_complete &&
+    !proofIntegrationActive;
+
+  if (edgeFromProof || exploreEdgeNeeded || signals.reports_stagnation) {
+    signals.edge_inquiry_required = true;
+    if (next.coaching_brief) {
+      next.coaching_brief.instruction =
+        `${next.coaching_brief.instruction || ""} EDGE/COST: Ask ONE plain-language question about what is holding them back OR what moving forward would cost — honour the protective part's good intention — before prescribing action or assigning rep.`.trim();
+    }
+  }
+
+  const trainingPick =
+    coachMemoryContext?.suggested_training?.primary_masterclass ||
+    coachMemoryContext?.suggested_training?.picks?.[0] ||
+    null;
+  const suggestTraining =
+    Boolean(phase === INTAKE_PHASES.RESISTANCE_PROBE) ||
+    Boolean(sessionIntakeFlow.felt_sensation && (coachMemoryContext?.gravity_rating ?? 0) >= 7) ||
+    Boolean(signals.reports_stagnation);
+  if (suggestTraining && trainingPick?.title) {
+    signals.suggest_training = true;
+    signals.suggested_training_pick = trainingPick;
+    if (next.coaching_brief) {
+      next.coaching_brief.instruction =
+        `${next.coaching_brief.instruction || ""} Optionally mention ONE suggested training (${trainingPick.title}) with why_chosen — no lecture.`.trim();
+    }
+  }
+
+  if (phase === INTAKE_PHASES.INSIGHT_INTEGRATION && !proofIntegrationActive) {
+    signals.insight_integration = true;
+    if (next.coaching_brief) {
+      next.coaching_brief.assign_green_rep = true;
+      next.coaching_brief.must_assign_green_rep = true;
+      next.coaching_brief.instruction =
+        `${next.coaching_brief.instruction || ""} INSIGHT INTEGRATION: summarize insight in member's words → assign ONE Green Rep → surface proof criteria.`.trim();
+    }
+    next.stop_discovery = true;
+    next.discovery_complete = true;
+    next.coaching_mode = "coaching";
+  }
+
+  next.conversation_signals = signals;
+  if (next.coaching_brief) {
+    next.coaching_brief.conversation_signals = signals;
+  }
+  return next;
+};
+
 /** @deprecated use resolveCoachingTransition */
 const inferCoachingPhase = (messages, userMessage) =>
   resolveCoachingTransition({ messages, userMessage }).coaching_phase;
@@ -591,5 +708,6 @@ module.exports = {
   hasEnoughStoredContext,
   countPatternOccurrences,
   buildCoachingBrief,
+  applyCertTurnDirectives,
   AVOIDANCE_MESSAGE,
 };

@@ -32,6 +32,9 @@ const PROOF_CRITERIA_PATTERN =
 const EXECUTION_CONFIRM_PATTERN =
   /\b(understood|got it|agreed|sounds good|will do|tomorrow i'?ll|i'?ll focus|next rep:|current bottleneck|my next rep)\b/i;
 
+const EXECUTION_COMMIT_SHORT_PATTERN =
+  /\b(let me do(?:\s+it|\s+that)?|i'?ll do(?:\s+it|\s+that)?|i will do(?:\s+it|\s+that)?|on it|going to do(?:\s+it|\s+that)?|ok(?:ay)?(?:,?\s+i'?ll do)?|got it(?:,?\s+i'?ll do)?|sounds good(?:,?\s+i'?ll do)?)\b/i;
+
 const EXECUTION_RECAP_PATTERN =
   /\b(next rep|green rep|win:|proof|bottleneck|market data|sample size|track|log|outreach messages|follow[\s-]?ups?)\b/i;
 
@@ -176,6 +179,29 @@ const hasRecentRepAssignment = (messages = [], openSession = null) => {
 
   const recentAssistant = (messages || []).filter((m) => m?.role === "assistant").slice(-3);
   return recentAssistant.some((m) => REP_ASSIGNMENT_PATTERN.test(String(m.content || "")));
+};
+
+const lastAssistantMessage = (messages = []) => {
+  for (let i = (messages || []).length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m?.role === "assistant" && String(m.content || "").trim()) {
+      return String(m.content || "").trim();
+    }
+  }
+  return "";
+};
+
+/** Short "let me do it" after coach gave actionable steps — do not repeat the plan. */
+const detectUserCommitmentToAct = (userMessage = "", messages = []) => {
+  const t = String(userMessage || "").trim();
+  if (!t || t.length > 100) return false;
+  if (!EXECUTION_COMMIT_SHORT_PATTERN.test(t)) return false;
+  const last = lastAssistantMessage(messages);
+  if (!last || last.length < 80) return false;
+  return (
+    /\n\s*1[\.)]/.test(last) ||
+    /\b(step|minutes|next hour|here'?s what|practical next|you can do)\b/i.test(last)
+  );
 };
 
 const detectAgreementLoop = (messages = []) => {
@@ -561,6 +587,21 @@ const buildSignalCoachingDirective = (signals) => {
       avoid: ["restating map", "restating rep", "restating plan", "questions already answered"],
     });
   }
+  if (signals.user_commitment_to_act) {
+    return formatOutcomeDirective("user_commitment_to_act", {
+      goal: "Member agreed to execute the plan you already gave — close the loop.",
+      yourJob: [
+        "one brief acknowledgment (1-2 sentences max)",
+        "optional: invite them to report back when done or log proof",
+      ],
+      avoid: [
+        "repeating the plan",
+        "re-listing numbered steps",
+        "re-explaining the goal or milestone",
+        "opening with the same body-echo paragraph",
+      ],
+    });
+  }
   if (signals.execution_confirmed) {
     return formatOutcomeDirective("execution_confirmed", {
       goal: "Convert agreement into sustained execution without another planning loop.",
@@ -655,6 +696,7 @@ const buildClarityExecutionSignals = (ctx) => {
   const executionThreat = detectExecutionThreat(userMessage, messages, openSession);
   const agreementLoop = detectAgreementLoop(messages);
   const executionConfirmed = detectExecutionConfirmation(userMessage, messages, openSession);
+  const userCommitmentToAct = detectUserCommitmentToAct(userMessage, messages);
   const userExecDefined = detectUserDefinedExecution(userMessage, messages);
   const recentAssignment = hasRecentRepAssignment(messages, openSession);
   const clarity = detectSelfGeneratedClarity(userMessage, messages);
@@ -682,13 +724,18 @@ const buildClarityExecutionSignals = (ctx) => {
     ...empty,
     self_generated_clarity: clarity.clear || establishedClarity.established,
     seeking_leverage_direction: seekingLeverage,
-    execution_confirmed: executionConfirmed || (userExecDefined.complete && recentAssignment),
+    execution_confirmed:
+      executionConfirmed || userCommitmentToAct || (userExecDefined.complete && recentAssignment),
+    user_commitment_to_act: userCommitmentToAct,
     execution_sustainability_issue:
       executionThreat.active ||
       (establishedClarity.established && strategyClear && establishedClarity.hasStallReason),
     user_showing_hope_depletion: hopeDepletion.active,
     motivation_loss: executionThreat.type === "motivation_loss",
-    clarity_saturation: claritySaturation || (establishedClarity.established && executionClarityTurns >= 2),
+    clarity_saturation:
+      claritySaturation ||
+      userCommitmentToAct ||
+      (establishedClarity.established && executionClarityTurns >= 2),
     agreement_loop_detected: agreementLoop,
     strategy_context_clear: strategyClear || establishedClarity.established,
     outreach_target_count: outreachTarget,
@@ -716,6 +763,7 @@ const buildClarityExecutionSignals = (ctx) => {
     signals.execution_sustainability_issue ||
     signals.clarity_saturation ||
     signals.execution_confirmed ||
+    signals.user_commitment_to_act ||
     signals.agreement_loop_detected;
 
   signals.block_green_rep = blockRep;
@@ -842,6 +890,7 @@ module.exports = {
   detectSeekingLeverageDirection,
   detectUserDefinedExecution,
   detectExecutionConfirmation,
+  detectUserCommitmentToAct,
   detectExecutionThreat,
   detectHopeDepletion,
   detectAgreementLoop,

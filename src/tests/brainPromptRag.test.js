@@ -45,6 +45,14 @@ describe("brainPromptChunking", () => {
     expect(docs.some((d) => d.metadata.signature_id === "NE+S+R")).toBe(true);
     expect(docs.every((d) => d.metadata.source === "brain_prompt")).toBe(true);
   });
+
+  test("buildSignatureCatalogDocuments tags all 48 signatures", () => {
+    const { buildSignatureCatalogDocuments } = require("../helpers/brainPromptChunking");
+    const docs = buildSignatureCatalogDocuments({ promptType: "Brain Prompt" });
+    expect(docs.length).toBe(48);
+    expect(docs.every((d) => d.metadata.signature_id)).toBe(true);
+    expect(docs.some((d) => d.metadata.signature_id === "NE+S+R")).toBe(true);
+  });
 });
 
 describe("brainPromptRag deterministic retrieval", () => {

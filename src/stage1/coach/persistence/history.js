@@ -333,7 +333,10 @@ const getOpenCoachSession = (stage1, domain) => {
     "emotional_checkin",
     "explore",
     "resistance_probe",
+    "deep_probe",
+    "insight_integration",
     "integration",
+    "integration_deep",
   ]);
   const certSessionPhase = certPhases.has(String(open.phase || ""))
     ? open.phase

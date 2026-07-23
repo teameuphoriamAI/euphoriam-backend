@@ -44,7 +44,7 @@ const { indexCoachSession } = require("../stage1/coach/persistence/vectorMemory"
 const { DOMAIN_LABELS } = require("../constants/domains");
 const { sanitizeCoachUserFacingText, unwrapCoachAssistantMessage } = require("../stage1/coach/context/naturalLanguage");
 const { mergeBarriersIntoMemory } = require("../stage1/coach/signals/barriers");
-const { resolveCoachingTransition } = require("../stage1/coach/flows/transition");
+const { resolveCoachingTransition, applyCertTurnDirectives } = require("../stage1/coach/flows/transition");
 const { buildCoachConversationSignals } = require("../stage1/coach/signals/conversation");
 const {
   resolveProofCycleFlow,
@@ -171,6 +171,9 @@ const coachOpen = async (req, res) => {
       map = (stage1.domain_maps || []).find((m) => m.domain === domain);
     }
 
+    const forceNewSession =
+      req.query?.force_new_session === "true" || req.query?.force_new_session === "1";
+
     const { stage1: afterStaleClose, closed: staleClosed } = closeStaleOpenSessionIfNeeded(
       stage1,
       domain,
@@ -179,8 +182,15 @@ const coachOpen = async (req, res) => {
       stage1 = await persistStage1ForUser(user.id, afterStaleClose);
     }
 
+    if (forceNewSession) {
+      const { stage1: afterForceEnd, ended: forceEnded } = endCoachSession(stage1, domain);
+      if (forceEnded) {
+        stage1 = await persistStage1ForUser(user.id, afterForceEnd);
+      }
+    }
+
     const open = getOpenCoachSession(stage1, domain);
-    if (open?.messages?.length) {
+    if (open?.messages?.length && !forceNewSession) {
       const intake = open.session_intake || {};
       const resumePhase =
         open.cert_session_phase ||
@@ -413,6 +423,7 @@ const coachCheckin = async (req, res) => {
         friction_context: frictionContext,
         proof_integration_mode: req.body?.proof_integration_mode,
         session_phase: req.body?.session_phase,
+        force_new_session: Boolean(req.body?.force_new_session),
       },
       messages,
       gravityRating,
@@ -471,7 +482,7 @@ const coachCheckin = async (req, res) => {
     const user_coach_context = await buildCoachUserContext(user, stage1, map, domain);
     user_coach_context.COACH_MEMORY_CONTEXT = coachMemoryContext;
 
-    const transition = resolveCoachingTransition({
+    let transition = resolveCoachingTransition({
       messages,
       userMessage,
       map,
@@ -483,6 +494,23 @@ const coachCheckin = async (req, res) => {
       firstSessionFlow,
       investigationFlow,
       goalContext: activeGoalContext,
+    });
+
+    transition = applyCertTurnDirectives({
+      transition,
+      sessionIntakeFlow,
+      proofCycleFlow,
+      coachMemoryContext: {
+        ...coachMemoryContext,
+        gravity_rating: gravityRating,
+      },
+      map,
+      userMessage,
+      messages,
+      goalContext: activeGoalContext,
+      openSession: rawOpenSession,
+      stage1,
+      domain,
     });
 
     const proofProgressionFlow = await resolveProofProgressionFlowAsync({
@@ -623,6 +651,17 @@ const coachCheckin = async (req, res) => {
       awaiting_session_intention: sessionIntakeFlow.awaiting_session_intention,
       awaiting_emotional_checkin: sessionIntakeFlow.awaiting_emotional_checkin,
       yes_man_pattern: Boolean(sessionIntakeFlow.yes_man_pattern),
+      body_echo_required: Boolean(sessionIntakeFlow.body_echo_required),
+      smallest_step_mode: Boolean(sessionIntakeFlow.smallest_step_mode),
+      map_reference_required: Boolean(
+        transition.conversation_signals?.map_reference_required,
+      ),
+      edge_inquiry_required: Boolean(
+        transition.conversation_signals?.edge_inquiry_required,
+      ),
+      suggest_training: Boolean(transition.conversation_signals?.suggest_training),
+      suggested_training_pick:
+        transition.conversation_signals?.suggested_training_pick || null,
       coaching_phase: transition.coaching_phase,
       coaching_mode: transition.coaching_mode,
       discovery_complete: transition.discovery_complete,
@@ -916,6 +955,8 @@ const coachCheckin = async (req, res) => {
       green_rep: safeGreenRep,
       detected_failure_strategy: result.detected_failure_strategy || null,
       writeback_hints: writebackHints,
+      suggested_training_pick:
+        transition.conversation_signals?.suggested_training_pick || null,
       COACH_MEMORY_CONTEXT: coachMemoryContext,
       checkin,
     });

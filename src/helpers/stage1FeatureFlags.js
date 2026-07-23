@@ -15,6 +15,7 @@ const stage1FeatureFlags = () => ({
   coach_cert_deep_enabled: truthy(process.env.COACH_CERT_DEEP_ENABLED),
   brain_prompt_v2_shadow: truthy(process.env.BRAIN_PROMPT_V2_SHADOW),
   treatment_plan_enabled: truthy(process.env.TREATMENT_PLAN_ENABLED),
+  brain_prompt_rag_enabled: truthy(process.env.BRAIN_PROMPT_RAG_ENABLED),
 });
 
 module.exports = {

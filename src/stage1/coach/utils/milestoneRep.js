@@ -5,7 +5,7 @@
 const { resolveFailureStrategyForMap, resolveSuccessStrategyForMap } = require("../../../helpers/stage1MapStructure");
 
 const GENERIC_EXERCISE_PATTERN =
-  /\b(solo\s+truth|mirror\s+(?:exercise|stay|work)|feeling\s+stay|one\s+line\s+out|notes?\s+app|voice\s+(?:note|memo)|read\s+(?:it\s+)?out\s+loud|say\s+(?:your\s+)?rate\s+out\s+loud|write\s+your\s+rate|write\s+(?:your\s+)?rate\s+in|rate\s+in\s+a\s+note|generic\s+truth|truth\s+expression|visibility\s+exercise|journal\s+about|affirm(?:ation)?\s+out\s+loud)\b/i;
+  /\b(solo\s+truth|truth\s+send|honest\s+sentence|say\s+it\s+in\s+(?:the\s+)?mirror|safest\s+relevant\s+person|hold\s+(?:your\s+)?body\s+steady|mirror\s+(?:exercise|stay|work)|feeling\s+stay|one\s+line\s+out|notes?\s+app|voice\s+(?:note|memo)|read\s+(?:it\s+)?out\s+loud|say\s+(?:your\s+)?rate\s+out\s+loud|write\s+your\s+rate|write\s+(?:your\s+)?rate\s+in|rate\s+in\s+a\s+note|generic\s+truth|truth\s+expression|visibility\s+exercise|journal\s+about|affirm(?:ation)?\s+out\s+loud)\b/i;
 
 const FLIP_MARKET_ANSWER_PATTERN =
   /\b(let\s+(?:the\s+)?(?:market|client|them)\s+answer|before\s+i\s+answer|wait\s+for\s+(?:the\s+)?(?:market|client|response)|market\s+answer)\b/i;
@@ -58,7 +58,7 @@ const goalMilestoneBlob = (goalContext = null, map = null) =>
 
 const isIncomeOrClientMilestone = (goalContext = null, map = null) => {
   const blob = goalMilestoneBlob(goalContext, map);
-  return /\b(income|client|customer|\$|dollar|hour|hr|earn|revenue|sale|outreach|pricing|charge)\b/.test(
+  return /\b(income|client|customer|\$|dollar|hour|hr|earn|revenue|sale|outreach|pricing|charge|upwork|fiverr|freelanc|proposal|profile\s+view|gig|job\s+(?:post|listing)|rank|prospect)\b/.test(
     blob,
   );
 };

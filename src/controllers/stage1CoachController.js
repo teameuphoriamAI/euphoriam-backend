@@ -7,7 +7,14 @@ const { normalizeDomain } = require("../constants/domains");
 const { User } = require("../models/userModel");
 const { withDbSlot } = require("../config/sequelize");
 const { loadCoachPromptBundle } = require("../helpers/stage1Prompts");
-const { buildCoachUserContext, excerptCoachMessages, slimDomainMapForCoach } = require("../stage1/coach/context/userContext");
+const { stage1FeatureFlags } = require("../helpers/stage1FeatureFlags");
+const { retrieveBrainPromptChunks } = require("../helpers/brainPromptRag");
+const {
+  buildCoachUserContext,
+  excerptCoachMessages,
+  reconcileCoachTranscript,
+  slimDomainMapForCoach,
+} = require("../stage1/coach/context/userContext");
 const { buildCoachMemoryContext } = require("../stage1/coach/context/memory");
 const {
   recordCoachCheckin,
@@ -15,6 +22,7 @@ const {
   getResumableCoachMessages,
   getOpenCoachSession,
   endCoachSession,
+  closeStaleOpenSessionIfNeeded,
   findOpenSessionForDomain,
 } = require("../stage1/coach/persistence/history");
 const { gatherCoachOpenPayload, resolveLastGreenRep } = require("../stage1/coach/context/open");
@@ -56,8 +64,8 @@ const {
   buildIntentionOpening,
   SESSION_PHASES,
 } = require("../stage1/coach/flows/sessionIntake");
-const { stage1FeatureFlags } = require("../helpers/stage1FeatureFlags");
 const { buildStateVectorV2 } = require("../helpers/stage1StateVector");
+const { debugIngest } = require("../helpers/debugIngest");
 
 const COACH_STATE = Object.freeze({ COACHING: "coaching", PROGRESS: "progress" });
 
@@ -161,6 +169,14 @@ const coachOpen = async (req, res) => {
     if (diagnosticBackfill) {
       stage1 = await persistStage1ForUser(user.id, withDiagnostic);
       map = (stage1.domain_maps || []).find((m) => m.domain === domain);
+    }
+
+    const { stage1: afterStaleClose, closed: staleClosed } = closeStaleOpenSessionIfNeeded(
+      stage1,
+      domain,
+    );
+    if (staleClosed) {
+      stage1 = await persistStage1ForUser(user.id, afterStaleClose);
     }
 
     const open = getOpenCoachSession(stage1, domain);
@@ -318,7 +334,7 @@ const coachCheckin = async (req, res) => {
     }
 
     const checkinState = req.body?.state || req.body?.current_state || "clear";
-    const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const clientMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
     const gravityRating = req.body?.gravity_rating ?? null;
 
     const memoryCtx = serializeCoachingMemoryForCoach(map, stage1, domain);
@@ -351,6 +367,28 @@ const coachCheckin = async (req, res) => {
       Array.isArray(stage1.coach_session_log) ? stage1.coach_session_log : [],
       domain,
     );
+
+    const messages = reconcileCoachTranscript(
+      clientMessages,
+      rawOpenSession,
+      userMessage,
+    );
+
+    // #region agent log
+    if (clientMessages.length === 0 && messages.length > 0) {
+      debugIngest(
+        "stage1CoachController.js:coachCheckin:reconcile",
+        "merged open session transcript after empty client messages",
+        {
+          clientLen: clientMessages.length,
+          storedLen: rawOpenSession?.messages?.length || 0,
+          mergedLen: messages.length,
+          roles: messages.map((m) => m.role),
+        },
+        "H1",
+      );
+    }
+    // #endregion
 
     const frictionHandoff = stage1.coach_friction_handoff || null;
     const frictionContext =
@@ -639,6 +677,49 @@ const coachCheckin = async (req, res) => {
 
     const aiMessages = excerptCoachMessages(messages);
 
+    // #region agent log
+    debugIngest(
+      "stage1CoachController.js:coachCheckin:pre-ai",
+      "coach checkin before AI",
+      {
+        domain,
+        userMsgLen: userMessage.length,
+        aiMessageCount: aiMessages.length,
+        roles: aiMessages.map((m) => m.role),
+        sessionPhase: intakeSessionPhase,
+        coachingMode: transition.coaching_mode,
+        assignGreenRep: Boolean(transition.coaching_brief?.assign_green_rep),
+        suggestedMilestoneRep: transition.coaching_brief?.suggested_milestone_rep?.name || null,
+        executionConfirmed: Boolean(transition.conversation_signals?.execution_confirmed),
+        claritySaturation: Boolean(transition.conversation_signals?.clarity_saturation),
+        repeatComplaint: Boolean(transition.conversation_signals?.coaching_repeat_complaint),
+        repeatedAssistantAdvice: Boolean(transition.conversation_signals?.repeated_assistant_advice),
+        assistantAdviceLoop: Boolean(transition.conversation_signals?.assistant_advice_loop),
+        userRepeatedSamePoint: Boolean(transition.conversation_signals?.user_repeated_same_point),
+        coachingDirectiveHead: String(transition.conversation_signals?.coaching_directive || "").slice(0, 200),
+        instructionTail: String(transition.coaching_brief?.instruction || "").slice(-120),
+      },
+      "H10-H12",
+    );
+    // #endregion
+
+    if (featureFlags.brain_prompt_rag_enabled) {
+      try {
+        prompts.brain_prompt_rag_chunks = await retrieveBrainPromptChunks({
+          query: userMessage,
+          signatureId: map?.signature_id || null,
+          domain,
+          topK: 6,
+          minSim: 0.22,
+        });
+        if (prompts.brain_prompt_rag_chunks?.length) {
+          delete prompts.brain_prompt;
+        }
+      } catch (err) {
+        console.warn("[coachCheckin] brain prompt RAG skipped:", err.message);
+      }
+    }
+
     const result = await aiService.coachReply({
       user_id: user.id,
       domain_map: slimDomainMapForCoach(map),
@@ -651,6 +732,20 @@ const coachCheckin = async (req, res) => {
     });
 
     let rawAssistant = result.assistant_message;
+    // #region agent log
+    debugIngest(
+      "stage1CoachController.js:coachCheckin:post-ai",
+      "coach checkin after AI",
+      {
+        domain,
+        assistantPrefix: String(rawAssistant || "").slice(0, 100),
+        assistantLen: String(rawAssistant || "").length,
+        hasGreenRep: Boolean(result.green_rep?.name),
+        greenRepName: result.green_rep?.name || null,
+      },
+      "H2-H4",
+    );
+    // #endregion
     let rawGreenRep = result.green_rep;
     if (typeof rawAssistant === "string" && rawAssistant.trim().startsWith("{")) {
       try {
@@ -915,12 +1010,21 @@ const getCoachHistory = async (req, res) => {
 const getCoachResume = async (req, res) => {
   try {
     const user = await resolveUser(req);
-    const stage1 = await loadStage1ForUser(user);
+    let stage1 = await loadStage1ForUser(user);
     const domain =
       normalizeDomain(req.query?.domain) || resolvePrimaryDomain(stage1);
     if (!domain) {
       return successResponse(res, "No domain", { messages: [], domain: null });
     }
+
+    const { stage1: afterStaleClose, closed: staleClosed } = closeStaleOpenSessionIfNeeded(
+      stage1,
+      domain,
+    );
+    if (staleClosed) {
+      stage1 = await persistStage1ForUser(user.id, afterStaleClose);
+    }
+
     const open = getOpenCoachSession(stage1, domain);
     const messages = open?.messages?.length
       ? open.messages

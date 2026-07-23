@@ -1,4 +1,5 @@
 const { upsertDocuments, retrieveSimilarChunks } = require("../helpers/rag");
+const { ingestBrainPromptRag } = require("../helpers/ingestBrainPromptRag");
 const { 
   ingestSupabaseCourses, 
   ingestSupabaseBucketPdfs,
@@ -88,11 +89,25 @@ const extractForFineTuning = async (req, res) => {
   }
 };
 
+const ingestBrainPrompt = async (req, res) => {
+  try {
+    const { include_v2: includeV2 } = req.body || {};
+    const result = await ingestBrainPromptRag({
+      includeV2: includeV2 === true || includeV2 === "true",
+    });
+    return successResponse(res, "Brain Prompt indexed for RAG", result);
+  } catch (error) {
+    console.error("[ragController] ingestBrainPrompt error:", error);
+    return errorResponse(res, error.message || "Failed to ingest Brain Prompt", 500);
+  }
+};
+
 module.exports = { 
   ingestDocuments, 
   searchDocuments, 
   ingestSupabase,
   ingestBucketPdfs,
-  extractForFineTuning
+  extractForFineTuning,
+  ingestBrainPrompt,
 };
 

@@ -41,4 +41,20 @@ describe("coach session stale resume", () => {
     expect(closed).toBe(true);
     expect(next.coach_session_log[0].ended_at).toBeTruthy();
   });
+
+  test("getResumableCoachMessages returns empty for ended session", () => {
+    const { getResumableCoachMessages } = require("../stage1/coach/persistence/history");
+    const stage1 = {
+      coach_session_log: [
+        {
+          id: "coach-ended",
+          domain: "income",
+          started_at: new Date().toISOString(),
+          ended_at: new Date().toISOString(),
+          messages: [{ role: "user", content: "Old proof about boat" }],
+        },
+      ],
+    };
+    expect(getResumableCoachMessages(stage1, "income")).toEqual([]);
+  });
 });

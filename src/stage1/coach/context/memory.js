@@ -32,6 +32,26 @@ const pickSuccessRule = (map) => {
   return ss?.behaviour || ss?.success_rule || ss?.title || null;
 };
 
+const buildDiagnosticExcerpt = (map, memory) => {
+  const report =
+    map?.diagnostic_report ||
+    memory?.initial_diagnostic?.report ||
+    memory?.initial_diagnostic;
+  if (typeof report === "string" && report.trim()) {
+    return report.trim().slice(0, 600);
+  }
+  if (report && typeof report === "object") {
+    const parts = [report.summary, report.failure_strategy, report.pattern]
+      .filter(Boolean)
+      .map(String);
+    if (parts.length) return parts.join(" — ").slice(0, 600);
+  }
+  const fallback = [pickFailureRule(map), map?.flip_belief, map?.protector_rule]
+    .filter(Boolean)
+    .join(" — ");
+  return fallback.trim().slice(0, 600) || null;
+};
+
 const recentResistancePatterns = (memory, map) => {
   const seen = new Set();
   const out = [];
@@ -168,6 +188,9 @@ const buildCoachMemoryContext = async ({
     recent_proofs: proofs,
     recent_resistance_patterns: recentResistancePatterns(memory, map),
     initial_diagnostic: memory.initial_diagnostic || null,
+    diagnostic_report_excerpt: buildDiagnosticExcerpt(map, memory),
+    coaching_directive_map_reference:
+      "Before advice or rep assignment, link one plain-language line to failure_strategy, flip_belief, or active milestone from this context.",
     last_five_sessions: lastFiveSessions(stage1, domain),
     coaching_summary: buildCoachingSummary(memory, stage1, domain) || continuity.session_summary,
     last_ended_session: {

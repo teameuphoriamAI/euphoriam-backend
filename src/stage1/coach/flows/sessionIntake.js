@@ -23,9 +23,13 @@ const SESSION_PHASES = Object.freeze({
   EXPLORE: "explore",
   RESISTANCE_PROBE: "resistance_probe",
   DEEP_PROBE: "deep_probe",
+  INSIGHT_INTEGRATION: "insight_integration",
   INTEGRATION: "integration",
   INTEGRATION_DEEP: "integration_deep",
 });
+
+const INSIGHT_RESOLUTION =
+  /\b(i see|i realise|i realize|the insight|that's why|that is why|it makes sense|protective|keeps me safe|pattern is|what's really going on|what is really going on|named it|now i get|i get it now)\b/i;
 
 const DEEP_READY_SIGNAL =
   /\b(go deeper|ready to go deeper|let's go deeper|lets go deeper|take me deeper|deeper work)\b/i;
@@ -109,12 +113,16 @@ const resolveSessionIntakeFlow = ({
   const sessionStartedAt = openSession?.started_at
     ? new Date(openSession.started_at).getTime()
     : null;
+  const forceNewSession = Boolean(reqBody.force_new_session);
   const sameDaySession =
     sessionStartedAt != null &&
     Number.isFinite(sessionStartedAt) &&
     Date.now() - sessionStartedAt < SESSION_GAP_MS;
   const skipReIntention = Boolean(
-    sameDaySession && intake.session_intention && sessionIntention,
+    !forceNewSession &&
+      sameDaySession &&
+      intake.session_intention &&
+      sessionIntention,
   );
 
   let sessionPhase = SESSION_PHASES.EXPLORE;
@@ -143,6 +151,20 @@ const resolveSessionIntakeFlow = ({
     (gravityRating != null && Number(gravityRating) >= 7)
   ) {
     sessionPhase = SESSION_PHASES.RESISTANCE_PROBE;
+  }
+
+  if (
+    intake.resistance_probe_active &&
+    sessionIntention &&
+    !proofCycleIntegrationHint(reqBody) &&
+    sessionPhase !== SESSION_PHASES.DEEP_PROBE &&
+    (INSIGHT_RESOLUTION.test(userMessage || "") ||
+      (userTurns >= 3 &&
+        !RESISTANCE_SIGNAL.test(userMessage || "") &&
+        String(userMessage || "").trim().length >= 20))
+  ) {
+    sessionPhase = SESSION_PHASES.INSIGHT_INTEGRATION;
+    stopDiscovery = true;
   }
 
   let deep_probe_active = false;
@@ -181,6 +203,12 @@ const resolveSessionIntakeFlow = ({
     deep_probe_active: deep_probe_active || Boolean(intake.deep_probe_active),
     deep_probe_complete: Boolean(intake.deep_probe_complete),
     change_history_hook: change_history_hook || intake.change_history_hook || null,
+    resistance_probe_active:
+      sessionPhase === SESSION_PHASES.RESISTANCE_PROBE ||
+      (Boolean(intake.resistance_probe_active) &&
+        sessionPhase !== SESSION_PHASES.INSIGHT_INTEGRATION),
+    insight_integration_active: sessionPhase === SESSION_PHASES.INSIGHT_INTEGRATION,
+    edge_inquiry_complete: Boolean(intake.edge_inquiry_complete),
   };
 
   if (awaitingEmotionalCheckin && feltSensation) {
@@ -215,6 +243,17 @@ const resolveSessionIntakeFlow = ({
   }
   // #endregion
 
+  const bodyEchoRequired = Boolean(
+    feltSensation &&
+      (sessionPhase === SESSION_PHASES.RESISTANCE_PROBE ||
+        (sessionPhase === SESSION_PHASES.EXPLORE &&
+          intakeUpdate.emotional_checkin_complete &&
+          !intakeUpdate.resistance_probe_active)),
+  );
+  const smallestStepMode = Boolean(
+    bodyEchoRequired || sessionPhase === SESSION_PHASES.RESISTANCE_PROBE,
+  );
+
   return {
     session_phase: sessionPhase,
     session_intention: sessionIntention,
@@ -227,6 +266,8 @@ const resolveSessionIntakeFlow = ({
     cert_deep_enabled: Boolean(certDeepEnabled),
     deep_probe_active,
     change_history_hook: change_history_hook || intake.change_history_hook || null,
+    body_echo_required: bodyEchoRequired,
+    smallest_step_mode: smallestStepMode,
     session_intake_update: intakeUpdate,
   };
 };

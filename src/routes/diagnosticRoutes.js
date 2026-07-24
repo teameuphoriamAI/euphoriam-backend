@@ -38,7 +38,11 @@ router.post(
 );
 
 // User metrics endpoint (for dashboard)
-router.get("/metrics/user", asyncHandler(diagnosticController.getUserMetrics));
+router.get(
+  "/metrics/user",
+  auth,
+  asyncHandler(diagnosticController.getUserMetrics),
+);
 
 // Parameterized routes come last
 router.get("/:id/metrics", auth, asyncHandler(diagnosticController.getMetrics));

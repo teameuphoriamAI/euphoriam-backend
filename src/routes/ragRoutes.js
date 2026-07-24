@@ -1,8 +1,11 @@
 const express = require("express");
 const asyncHandler = require("../helpers/asyncHandler");
+const auth = require("../middleware/auth");
 const ragController = require("../controllers/ragController");
 
 const router = express.Router();
+
+router.use(auth);
 
 router.post("/documents", asyncHandler(ragController.ingestDocuments));
 router.post("/search", asyncHandler(ragController.searchDocuments));
@@ -12,4 +15,3 @@ router.post("/ingest-brain-prompt", asyncHandler(ragController.ingestBrainPrompt
 router.post("/extract-fine-tuning", asyncHandler(ragController.extractForFineTuning));
 
 module.exports = router;
-

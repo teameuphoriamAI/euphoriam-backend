@@ -6,14 +6,18 @@ const {
 } = require("../stage1/coach/flows/sessionIntake");
 
 describe("stage1SessionIntake", () => {
-  test("buildIntentionOpening asks for session intention", () => {
+  test("buildIntentionOpening includes confidential, goal, and session ask", () => {
     const msg = buildIntentionOpening({
       firstName: "Teresa",
       goalPhrase: "reduce pressure at work",
     });
     expect(msg).toMatch(/Teresa/i);
-    expect(msg).toMatch(/what do you want from this session/i);
     expect(msg).toMatch(/confidential/i);
+    expect(msg).toMatch(/We're working on reduce pressure at work/i);
+    expect(msg).toMatch(/Good to see you/i);
+    expect(msg).toMatch(/How are you today/i);
+    expect(msg).toMatch(/What brought you here today/i);
+    expect(msg).toMatch(/what do you want from this session/i);
     expect(msg).not.toMatch(/vortex|signature|quantum/i);
   });
 

@@ -15,8 +15,9 @@ describe("coachCertAcceptance", () => {
       firstName: "Teresa",
       goalPhrase: "reduce pressure at work",
     });
-    expect(opening).toMatch(/what do you want from this session/i);
-    expect(opening).not.toMatch(/how are things going/i);
+    expect(opening).toMatch(/What brought you here today/i);
+    expect(opening).toMatch(/We're working on reduce pressure at work/i);
+    expect(opening).toMatch(/confidential/i);
     expect(opening).not.toMatch(/vortex|quantum|signature/i);
 
     const flow = resolveSessionIntakeFlow({

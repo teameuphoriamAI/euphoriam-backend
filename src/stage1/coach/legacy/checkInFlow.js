@@ -123,7 +123,7 @@ const { detectProgressSignals } = require("../utils/progress");
 const questionForStep = (step, { lastRepName, answers }) => {
   switch (step) {
     case CHECK_IN_STEPS.SINCE_LAST:
-      return "How have things been since we last spoke?";
+      return "What are we creating today?";
     case CHECK_IN_STEPS.FOLLOW_UP:
       return buildAdaptiveFollowUpQuestion(answers, { lastRepName });
     default:

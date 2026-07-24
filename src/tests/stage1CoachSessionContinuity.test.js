@@ -14,7 +14,7 @@ describe("stage1CoachSessionContinuity", () => {
     expect(isPlausibleGreenRepName("Outreach Practice")).toBe(true);
   });
 
-  test("opening includes last session proof and devaluation", () => {
+  test("opening stays today-first; continuity kept out of chat dump", () => {
     const continuity = {
       had_proof: true,
       had_devaluation: true,
@@ -34,12 +34,18 @@ describe("stage1CoachSessionContinuity", () => {
       continuity: { ...continuity, last_session_ended_at: "2026-06-01" },
     });
 
+    expect(msg).toMatch(/Hey Yashal/i);
+    expect(msg).toMatch(/What brought you here today/i);
+    expect(msg).toMatch(/We're working on/i);
     expect(msg).not.toContain("Last session (carried forward)");
     expect(msg).not.toContain("Current Goal:");
-    expect(msg).toMatch(/not enough/i);
-    expect(msg).toMatch(/Hey Yashal/i);
-    expect(msg).toMatch(/Recent proof/i);
-    expect(msg).toMatch(/i competed 12 dollar an hr/i);
+    expect(msg).not.toMatch(/Recent proof/i);
+    expect(msg).not.toContain("i competed 12 dollar an hr");
+    expect(msg).not.toMatch(/not enough/i);
+
+    // Continuity still available for LLM/recap helpers — just not in opening chat
+    const recap = buildContinuityRecapLines(continuity);
+    expect(recap.join("\n")).toMatch(/12 dollar/i);
   });
 
   test("gatherSessionContinuity from ended coach session log", () => {

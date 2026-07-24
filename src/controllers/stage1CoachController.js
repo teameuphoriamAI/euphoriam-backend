@@ -216,18 +216,21 @@ const coachOpen = async (req, res) => {
     const { opening_message, coachContext, activeGoalContext, continuity } =
       gatherCoachOpenPayload(user, stage1, map, domain);
 
+    // Prefer structured human opening; fall back to intention opener (same copy).
     const goalPhrase =
       activeGoalContext?.goal_name ||
       activeGoalContext?.specific_goal ||
       map?.goal_title ||
       "your goal";
-    const intentionOpening = buildIntentionOpening({
-      firstName: (user?.name || "Member").split(/\s+/)[0],
-      goalPhrase,
-    });
+    const baseOpening =
+      (opening_message && String(opening_message).trim()) ||
+      buildIntentionOpening({
+        firstName: (user?.name || "Member").split(/\s+/)[0],
+        goalPhrase,
+      });
     const opening_message_final = frictionContext
-      ? `${intentionOpening}\n\nI see you just came from Friction Rescue — we'll pick up from there once you share what you want from this session.`
-      : intentionOpening;
+      ? `${baseOpening}\n\nI see you just came from Friction Rescue — we'll pick up from there once you share what you want from this session.`
+      : baseOpening;
 
     const coachMemoryContext = await buildCoachMemoryContext({
       user,

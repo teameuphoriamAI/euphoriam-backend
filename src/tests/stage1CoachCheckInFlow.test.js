@@ -6,7 +6,7 @@ const {
 } = require("../stage1/coach/legacy/checkInFlow");
 
 describe("stage1CoachCheckInFlow", () => {
-  test("opening has human greeting and exactly one question", () => {
+  test("opening has human greeting and today-first question", () => {
     const msg = buildCoachOpeningCheckin({
       firstName: "Yashal",
       activeGoalContext: {
@@ -15,17 +15,21 @@ describe("stage1CoachCheckInFlow", () => {
       },
       map: {
         top_3_avoidance_behaviours: ["Overthinking", "Delaying action"],
+        contradiction_statement: "You want income but delay offers",
       },
       memory: {},
       coachContext: {},
     });
 
     expect(msg).toMatch(/Hey Yashal/i);
+    expect(msg).toMatch(/confidential/i);
+    expect(msg).toMatch(/We're working on/i);
     expect(msg).toContain("Generate $12/hour");
+    expect(msg).toMatch(/Good to see you/i);
+    expect(msg).toMatch(/How are you today/i);
+    expect(msg).toMatch(/What brought you here today/i);
     expect(msg).not.toContain("Current Goal:");
-    expect(msg).not.toContain("Outreach Practice");
-    expect(msg).toMatch(/What's been true since the map/i);
-    expect(msg).toMatch(/interrupt that pattern/i);
+    expect(msg).not.toMatch(/From that map|finished mapping|interrupt that pattern/i);
     expect(msg).not.toContain("Did you complete");
   });
 

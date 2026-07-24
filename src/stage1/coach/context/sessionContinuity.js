@@ -257,23 +257,21 @@ const buildContinuityRecapLines = (continuity) => {
   return lines;
 };
 
+/** Today-first opening question — continuity memory stays internal to the LLM. */
 const buildContinuityOpeningQuestion = (continuity) => {
   if (continuity?.recent_setback?.length) {
-    return "You named the gap last time — what happened since then, specifically?";
+    return "What's showing up today around that gap — and what's getting in the way?";
   }
   if (continuity?.had_proof && continuity?.had_devaluation) {
-    return "Since that session — is the 'not enough' feeling showing up again, or did something shift?";
+    return "What are we creating today — and is the 'not enough' feeling in the way?";
   }
   if (continuity?.last_green_rep?.name) {
-    return `Where are you with ${continuity.last_green_rep.name} — done, stuck, or somewhere in between?`;
+    return "What are we creating today?";
   }
   if (continuity?.had_proof) {
-    return "Since you logged that proof — what's shifted, even a little?";
+    return "What are we creating today?";
   }
-  if (continuity?.last_user_snippet) {
-    return "What's changed since last time we spoke?";
-  }
-  return "What happened since our last session?";
+  return "What are we creating today?";
 };
 
 /** Auto-summary when user ends coach session */

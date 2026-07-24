@@ -90,7 +90,7 @@ function buildCompletionTurn(transcript, targetCount, goalContext = {}) {
     goalContext.goal_name ||
     goalContext.measurable_outcome ||
     "your goal";
-  const content = `Great work — you've answered all ${targetCount} questions about "${goal}".\n\nWhen you're ready, click **Complete mapping** below to extract your resistance structure and continue.`;
+  const content = `Great work — you've answered all ${targetCount} questions about "${goal}".\n\nExtracting your resistance structure now — hang tight.`;
   const assistantMsg = { role: "assistant", content };
   const fullTranscript = [...transcript, assistantMsg];
   const prog = progressFromTranscript(fullTranscript, targetCount);

@@ -272,18 +272,25 @@ const resolveSessionIntakeFlow = ({
   };
 };
 
+/**
+ * Nathan today-first opening for session intention phase.
+ * Map / last session stay internal; active goal is lightly named.
+ */
 const buildIntentionOpening = ({ firstName, goalPhrase }) => {
   const name = firstName?.trim() || "there";
+  const goal = String(goalPhrase || "").trim() || "your goal";
   return [
     `Hey ${name}.`,
     "",
     "Everything you share here is confidential — this is your space to be honest.",
     "",
-    goalPhrase ? `We're working on ${goalPhrase}.` : "Good to see you.",
+    `We're working on ${goal}.`,
     "",
-    "What brought you here today — and **what do you want from this session?**",
+    "Good to see you.",
     "",
-    "Is it okay if we focus on that together? One sentence is enough.",
+    "How are you today?",
+    "",
+    "What brought you here today — and what do you want from this session?",
   ].join("\n");
 };
 

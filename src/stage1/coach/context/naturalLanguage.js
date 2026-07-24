@@ -25,7 +25,13 @@ const HOLLOW_COACH_PHRASES = [
   /\beach small step is a victory[^.!?\n]*[.!?]?\s*/gi,
   /\bchallenging the (?:old )?belief that you need to be perfect[^.!?\n]*[.!?]?\s*/gi,
   /\bsmall steps you'?re taking are still valuable[^.!?\n]*[.!?]?\s*/gi,
-  /\bit sounds like you'?re feeling stuck[^.!?\n]*[.!?]?\s*/gi,
+  /\bthis is a great (?:moment|opportunity)[^.!?\n]*[.!?]?\s*/gi,
+  /\bunderstanding this can help us[^.!?\n]*[.!?]?\s*/gi,
+  /\bthis can help us (?:identify|understand|figure)[^.!?\n]*[.!?]?\s*/gi,
+  /\blet'?s (?:unpack|explore|reflect on|focus on) (?:that|this|what)[^.!?\n]*[.!?]?\s*/gi,
+  /\bit sounds like[^.!?\n]*[.!?]?\s*/gi,
+  /\byou'?ve shared a lot[^.!?\n]*[.!?]?\s*/gi,
+  /\byou'?ve been thinking about[^.!?\n]*[.!?]?\s*/gi,
   /\byou'?re staying financially invisible[^.!?\n]*[.!?]?\s*/gi,
   /\bit sounds like you'?re staying financially invisible[^.!?\n]*[.!?]?\s*/gi,
   /\bit sounds like the pattern of[^.!?\n]*[.!?]?\s*/gi,
@@ -166,6 +172,11 @@ const buildResistanceEvolutionNarrative = (resistanceEvolution = []) => {
   return `I'm noticing your edge has shifted — from ${parts[0].toLowerCase()} to ${parts[parts.length - 1].toLowerCase()} over recent sessions.`;
 };
 
+/**
+ * Nathan coaching opening: person + TODAY first, with active goal lightly named.
+ * Last rep / proof / Map Resistance stay in continuity + COACH_MEMORY_CONTEXT
+ * for the LLM — never dump them as a report.
+ */
 const buildHumanCoachOpening = ({
   firstName,
   activeGoalContext,
@@ -174,9 +185,7 @@ const buildHumanCoachOpening = ({
   coachContext,
   continuity = null,
 }) => {
-const { buildContinuityOpeningQuestion } = require("./sessionContinuity");
-const { buildFirstSessionOpening, isFirstCoachSession } = require("../signals/firstSession");
-const { isSetbackOrGapReport } = require("../signals/setback");
+  const { buildFirstSessionOpening, isFirstCoachSession } = require("../signals/firstSession");
   const name = firstName?.trim() || "there";
   const goal =
     activeGoalContext?.goal_name ||
@@ -189,66 +198,36 @@ const { isSetbackOrGapReport } = require("../signals/setback");
     null;
   const goalPhrase = formatGoalPhrase(goal, milestone);
 
-  const isFirstCoachSessionFlag = isFirstCoachSession(continuity, coachContext, memory);
-
-  const lines = [];
-
-  if (isFirstCoachSessionFlag) {
+  if (isFirstCoachSession(continuity, coachContext, memory)) {
     return buildFirstSessionOpening({
       firstName: name,
-      map,
-      activeGoalContext,
+      goalPhrase,
     });
   }
 
-  lines.push(`Hey ${name}.`);
-  lines.push("");
-  lines.push(`We're still on ${goalPhrase}.`);
-
-  const repName =
-    continuity?.last_green_rep?.name ||
-    coachContext?.last_green_rep_assigned?.name ||
-    null;
-  if (repName) {
-    lines.push(`Last rep in play: ${repName}.`);
-  }
-
-  if (continuity?.recent_proof?.length) {
-    const positiveOnly = continuity.recent_proof.filter((p) => !isSetbackOrGapReport(p));
-    if (positiveOnly.length) {
-      lines.push(`Recent proof: ${positiveOnly[0]}.`);
-    }
-  } else if (continuity?.recent_setback?.length) {
-    lines.push(`Last named gap: ${continuity.recent_setback[0]}.`);
-  } else if (continuity?.session_summary) {
-    const summary = String(continuity.session_summary).trim();
-    lines.push(
-      summary.toLowerCase().startsWith("last session")
-        ? summary.charAt(0).toUpperCase() + summary.slice(1)
-        : `Last time: ${summary.charAt(0).toLowerCase() + summary.slice(1)}`,
-    );
-  }
-
-  lines.push("");
-  const followUp =
-    buildContinuityOpeningQuestion(continuity) ||
-    buildNaturalOpeningQuestion(continuity, { hadRep: Boolean(repName) });
-  lines.push(followUp);
+  const lines = [
+    `Hey ${name}.`,
+    "",
+    "Everything you share here is confidential — this is your space to be honest.",
+    "",
+    `We're working on ${goalPhrase}.`,
+    "",
+    "Good to see you.",
+    "",
+    "How are you today?",
+    "",
+    "What brought you here today — and what do you want from this session?",
+  ];
 
   return sanitizeCoachUserFacingText(lines.join("\n"));
 };
 
-const buildNaturalOpeningQuestion = (continuity, { hadRep = false } = {}) => {
-  if (continuity?.had_proof && continuity?.had_devaluation) {
-    return "How have things been since then — is the 'not enough' feeling still showing up, or did something shift?";
-  }
-  if (continuity?.had_proof) {
-    return "How have things been since you took that step?";
-  }
+/** Today-first follow-up (used after check-in answers — not for dumping yesterday). */
+const buildNaturalOpeningQuestion = (_continuity, { hadRep = false } = {}) => {
   if (hadRep) {
-    return "How have things been since we last spoke?";
+    return "What's getting in the way of that today?";
   }
-  return "What's been happening since we last spoke?";
+  return "What are we creating today?";
 };
 
 const buildHumanAcknowledgment = (userMessage, signals = null) => {

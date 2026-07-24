@@ -4,7 +4,6 @@
 
 const { resolveFailureStrategyForMap } = require("../../../helpers/stage1MapStructure");
 const { detectStruggleSetback } = require("./discovery");
-const { formatGoalPhrase } = require("../context/naturalLanguage");
 const { isSetbackOrGapReport } = require("./setback");
 const { formatOutcomeDirective } = require("./directive");
 
@@ -83,25 +82,21 @@ const isSubstantiveInvestigateAnswer = (text) => {
   return true;
 };
 
-const buildFirstSessionOpening = ({ firstName, map, activeGoalContext }) => {
+/**
+ * First coach session after Map Resistance.
+ * Map fields stay internal — never read protector/failure/contradiction aloud.
+ * Active goal is lightly named; session starts with today.
+ */
+const buildFirstSessionOpening = ({ firstName, goalPhrase }) => {
   const name = firstName?.trim() || "there";
-  const goal =
-    activeGoalContext?.goal_name ||
-    activeGoalContext?.specific_goal ||
-    map?.goal_title ||
-    "your goal";
-  const milestone =
-    activeGoalContext?.current_milestone ||
-    activeGoalContext?.milestones?.day_7 ||
-    null;
-  const goalPhrase = formatGoalPhrase(goal, milestone);
-  const mapHook = pickMapHook(map);
-
+  const goal = String(goalPhrase || "").trim() || "your goal";
   return (
     `Hey ${name}.\n\n` +
-    `We finished mapping ${goalPhrase}. From that map: ${mapHook}\n\n` +
-    `This coach is here to interrupt that pattern — not motivate you around it.\n\n` +
-    `What's been true since the map — any real move toward ${milestone || goal}, or did the old structure run the week?`
+    `Everything you share here is confidential — this is your space to be honest.\n\n` +
+    `We're working on ${goal}.\n\n` +
+    `Good to see you.\n\n` +
+    `How are you today?\n\n` +
+    `What brought you here today — and what do you want from this session?`
   );
 };
 

@@ -113,7 +113,7 @@ const buildActiveGoalContext = (map, domain) => {
 
   const questionBlock =
     lastAnsweredQ >= targetCount && aiAnswered
-      ? `All ${targetCount} questions are done. Acknowledge completion warmly and tell them they can press "Complete mapping" — do not ask another intake question.`
+      ? `All ${targetCount} questions are done. Acknowledge completion warmly and say their resistance structure is being extracted now — do not ask another intake question. Do not mention any button.`
       : `Ask exactly ONE question labeled **Q${nextQ}** about resistance, avoidance, protector behaviour, fear, or cost tied to achieving "${goal}" in the ${label} domain. Include your brief acknowledgment BEFORE the **Q${nextQ}** line.`;
 
   return `${resumeNotice ? `${resumeNotice}\n\n` : ""}You are conducting MAP RESISTANCE for domain "${label}" only.

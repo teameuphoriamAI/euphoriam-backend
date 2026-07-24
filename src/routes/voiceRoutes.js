@@ -1,10 +1,13 @@
 const express = require("express");
 const multer = require("multer");
 const asyncHandler = require("../helpers/asyncHandler");
+const auth = require("../middleware/auth");
 const voiceController = require("../controllers/voiceController");
 const errorResponse = require("../utils/response").errorResponse;
 
 const router = express.Router();
+
+router.use(auth);
 
 const upload = multer({
   storage: multer.memoryStorage(),

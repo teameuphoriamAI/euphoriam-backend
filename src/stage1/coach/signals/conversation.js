@@ -28,7 +28,13 @@ const REP_STAGNATION_PATTERN =
   /\b(nothing changed|nothing'?s changed|no change|didn'?t help|not helping|isn'?t helping|same thing|stuck|no new step|doing it daily but|beside writing|only writing|each day|what to do if i(?:'ve| have) already|already did that today|outcomes aren'?t|not shifting|should i just keep|same advice|told me same|yesterday and today|keep doing the same)\b/i;
 
 const COACHING_REPEAT_COMPLAINT_PATTERN =
-  /\b(same thing|same advice|told me same|you told me|yesterday and today|keep doing the same|should i just keep|nothing'?s changing|not shifting|outcomes aren'?t|doing the same thing|that'?s part of the problem|you keep asking|same question|talking past|not the issue|isn'?t (?:the|analyzing)|already (?:said|told|explained))\b/i;
+  /\b(same thing|same advice|told me same|you told me|yesterday and today|keep doing the same|should i just keep|nothing'?s changing|not shifting|outcomes aren'?t|doing the same thing|that'?s part of the problem|you keep asking|same question|talking past|not the issue|isn'?t (?:the|analyzing)|already (?:said|told|explained)|don'?t want (?:an? )?(?:exercise|homework|action|step)|stop giving (?:me )?(?:exercises|homework|steps|advice)|stay with (?:the )?(?:feeling|emotion)|want to understand|help me (?:figure|understand|explore)|move(?:d|s)? back to (?:another )?(?:action|exercise|step)|another exercise|you keep (?:giving|suggesting|repeating)|not what i (?:asked|need|want))\b/i;
+
+const {
+  buildAntiRepeatState,
+  detectRepeatedAssistantAdvice: detectRepeatedAssistantAdviceStrict,
+  detectCoachingRepeatComplaintExpanded,
+} = require("./antiRepeat");
 
 const OUTREACH_INVESTIGATION_LOOP_PATTERN =
   /\b(investigation question|what specific outreach|responses have you received|patterns? in responses|analyze (?:your )?outreach)\b/i;
@@ -227,7 +233,7 @@ const detectRepeatedAssistantAdvice = (messages = []) => {
   ) {
     return true;
   }
-  return tokenOverlapRatio(current, previous) >= 0.45;
+  return detectRepeatedAssistantAdviceStrict(messages);
 };
 
 const detectCoachingRepeatComplaint = (text) =>
@@ -333,7 +339,11 @@ const buildCoachConversationSignals = ({
   const no_trusted_person = Boolean(
     persistentBarriers?.no_trusted_person || detectNoTrustedPerson(userTexts),
   );
-  const user_asked_what_next = detectWhatNextQuestion(userMessage);
+  const antiRepeat = buildAntiRepeatState({ messages, userMessage });
+  let user_asked_what_next = detectWhatNextQuestion(userMessage);
+  if (antiRepeat.user_wants_discovery || antiRepeat.user_rejects_prescription) {
+    user_asked_what_next = false;
+  }
   const { detectEstablishedExecutionClarity } = require("./clarity");
   const establishedExecutionClarity = detectEstablishedExecutionClarity(
     userMessage,
@@ -348,16 +358,22 @@ const buildCoachConversationSignals = ({
     detectRepStagnation(userMessage) ||
     detectCoachingRepeatComplaint(userMessage) ||
     userTexts.some((t) => detectRepStagnation(t) || detectCoachingRepeatComplaint(t));
-  const coaching_repeat_complaint = detectCoachingRepeatComplaint(userMessage);
-  const repeated_assistant_advice = detectRepeatedAssistantAdvice(messages);
+  const coaching_repeat_complaint =
+    detectCoachingRepeatComplaint(userMessage) ||
+    detectCoachingRepeatComplaintExpanded(userMessage) ||
+    antiRepeat.coaching_repeat_complaint;
+  const repeated_assistant_advice =
+    antiRepeat.repeated_assistant_advice || detectRepeatedAssistantAdvice(messages);
   const user_completed_current_rep = detectRepCompletion(userMessage, {
     hasActiveSessionRep,
     lastRepName: lastRep,
   });
   const assistant_advice_loop =
+    antiRepeat.anti_repeat_active ||
     detectAssistantAdviceLoop(messages, userMessage) ||
     repeated_assistant_advice ||
-    coaching_repeat_complaint;
+    coaching_repeat_complaint ||
+    antiRepeat.thematic_assistant_repeat;
   const lastRepIdx = soloRepIndex(lastRep);
   const active_rep_needs_person = repRequiresTrustedPerson(lastRep, map);
   const active_solo_rep = isExplicitSoloRep(lastRep);
@@ -420,6 +436,7 @@ const buildCoachConversationSignals = ({
   );
 
   let assign_new_rep =
+    !antiRepeat.discovery_only_mode &&
     !user_expressed_uncertainty &&
     !user_completed_current_rep &&
     !reports_stagnation &&
@@ -438,8 +455,10 @@ const buildCoachConversationSignals = ({
     suggested_green_rep = null;
   }
 
-  let coaching_directive = null;
-  if (user_expressed_uncertainty) {
+  let coaching_directive = antiRepeat.coaching_directive || null;
+  if (antiRepeat.discovery_only_mode) {
+    coaching_directive = antiRepeat.coaching_directive;
+  } else if (user_expressed_uncertainty) {
     coaching_directive =
       "INVESTIGATION MODE — user is uncertain or stuck without detail. " +
       "Ask ONE discovery question to find the bottleneck (what's unclear, first step, who/what/price). " +
@@ -449,10 +468,7 @@ const buildCoachConversationSignals = ({
       "ANTI-REPEAT — you already named this diagnosis last turn. Do NOT say it again. " +
       "Ask what specifically is blocked or what their first step would be.";
   } else if (coaching_repeat_complaint || repeated_assistant_advice) {
-    coaching_directive =
-      "Your recent guidance has been repetitive. Do NOT tell the member the chat is looping, circling, or repeating, and do NOT reference 'same/similar advice' or 'break this cycle'. " +
-      "SILENTLY change approach: give ONE concrete, specific next step OR ask ONE sharp new question that moves toward real-world action. " +
-      "Do NOT suggest another act of kindness, sentence rep, or notes/voice exercise. Name the missing leverage point plainly. green_rep must be null.";
+    coaching_directive = antiRepeat.coaching_directive;
   } else if (reports_stagnation || solo_ladder_complete) {
     coaching_directive =
       "User reports solo sentence reps are not changing outcomes OR has completed the solo ladder. " +
@@ -480,10 +496,7 @@ const buildCoachConversationSignals = ({
       "User asked what's next but has NOT finished the current solo rep — point them to the active rep's win condition. " +
       "Do NOT assign a new rep and do NOT repeat the full instructions verbatim.";
   } else if (assistant_advice_loop) {
-    coaching_directive =
-      "Your recent guidance has repeated the same intervention. Do NOT tell the member you are repeating or looping, and do NOT say 'same/similar advice' or 'break this cycle'. " +
-      "SILENTLY switch approach: give ONE new concrete action OR a sharper question that identifies the missing leverage point. " +
-      "Do NOT assign another sentence/notes/voice rep unless proof integration is complete.";
+    coaching_directive = antiRepeat.coaching_directive;
   } else if (user_repeated_same_point && no_trusted_person) {
     coaching_directive =
       "User repeated that they have no one. Do NOT ask again whether someone exists to talk to. " +
@@ -527,11 +540,19 @@ const buildCoachConversationSignals = ({
     };
     claritySignals = buildClarityExecutionSignals(signalCtx);
     evidenceSignals = buildEvidenceContradictionSignals(signalCtx);
-    if (claritySignals?.coaching_directive) {
-      coaching_directive = claritySignals.coaching_directive;
-    } else if (evidenceSignals?.coaching_directive) {
-      coaching_directive = evidenceSignals.coaching_directive;
+    if (!antiRepeat.discovery_only_mode) {
+      if (claritySignals?.coaching_directive) {
+        coaching_directive = claritySignals.coaching_directive;
+      } else if (evidenceSignals?.coaching_directive) {
+        coaching_directive = evidenceSignals.coaching_directive;
+      }
     }
+  }
+
+  if (antiRepeat.discovery_only_mode) {
+    coaching_directive = antiRepeat.coaching_directive;
+    assign_new_rep = false;
+    suggested_green_rep = null;
   }
 
   const block_clarity_rep =
@@ -605,6 +626,13 @@ const buildCoachConversationSignals = ({
       null,
   /** @deprecated */ suggested_solo_rep: suggested_green_rep,
     coaching_directive,
+    user_rejects_prescription: antiRepeat.user_rejects_prescription,
+    user_wants_discovery: antiRepeat.user_wants_discovery,
+    discovery_only_mode: antiRepeat.discovery_only_mode,
+    anti_repeat_active: antiRepeat.anti_repeat_active,
+    thematic_assistant_repeat: antiRepeat.thematic_assistant_repeat,
+    max_assistant_overlap: antiRepeat.max_assistant_overlap,
+    stop_discovery: antiRepeat.discovery_only_mode ? false : undefined,
   };
 };
 

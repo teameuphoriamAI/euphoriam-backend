@@ -33,6 +33,6 @@ router.get(
 router.post("/profile", auth, asyncHandler(userController.getUserProfile));
 router.post("/verifyOTP", asyncHandler(userController.verifyOTP));
 router.post("/resendOTP", asyncHandler(userController.resendOTP));
-router.post("/updateTheme", asyncHandler(userController.updateTheme));
+router.post("/updateTheme", auth, asyncHandler(userController.updateTheme));
 
 module.exports = router;

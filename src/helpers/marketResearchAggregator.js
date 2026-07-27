@@ -2,21 +2,155 @@ const { QueryTypes } = require("sequelize");
 const { sequelize, withDbSlot } = require("../config/sequelize");
 
 /**
- * Admin cohort:
- * - `uc` — joined `users` row with `membership.isCreatorClub` (Kajabi / Creator Club), see userController.
- * - `non_member` — funnel rows: `diagnostics.funnel_access_id` is set (offer link / IRL).
- * - `both` — no cohort filter.
- * Without `user_audience`, default slice is funnel IRL only (`invisible_red_line` + `structuredPacket`).
+ * Admin cohort / membership tier for market research.
+ * - `free` — funnel redline (non-paid)
+ * - `bronze` — Creator Club (1 active domain)
+ * - `silver` — 2 active domains
+ * - `accelerate` — 5 active domains
+ * - `paid` — any paid Creator Club tier
+ * - `both` / `all` — no membership filter
  *
- * @returns {"uc" | "non_member" | "both" | null}
+ * Legacy aliases: `uc` → bronze+, `non_member` → free
+ *
+ * @returns {"free" | "bronze" | "silver" | "accelerate" | "paid" | "both" | null}
  */
 const normalizeUserAudience = (user_audience) => {
   const norm = (v) => (v == null || v === "" ? null : String(v).toLowerCase().trim());
   const ua = norm(user_audience);
   if (!ua) return null;
-  if (["uc", "uc_member", "member", "unlimited_creator", "diagnostic", "app"].includes(ua)) return "uc";
-  if (["non_member", "non-member", "funnel", "redline"].includes(ua)) return "non_member";
+  if (["free", "non_member", "non-member", "funnel", "redline"].includes(ua)) return "free";
+  if (["bronze", "creator_club", "creator-club", "creatorclub", "uc", "uc_member", "member"].includes(ua)) {
+    return "bronze";
+  }
+  if (["silver"].includes(ua)) return "silver";
+  if (["accelerate"].includes(ua)) return "accelerate";
+  if (["paid", "all_paid", "members", "unlimited_creator", "diagnostic", "app"].includes(ua)) {
+    return "paid";
+  }
   if (["both", "all", "any"].includes(ua)) return "both";
+  return null;
+};
+
+const MEMBERSHIP_TIER_SQL = Object.freeze({
+  paid: `(
+    u.membership @> '{"isCreatorClub": true}'::jsonb
+    OR u.membership @> '{"isCreatorClubBronze": true}'::jsonb
+    OR u.membership @> '{"isCreatorClubSilver": true}'::jsonb
+    OR u.membership @> '{"isCreatorClubAccelerate": true}'::jsonb
+    OR u.membership @> '{"isSilver": true}'::jsonb
+    OR u.membership @> '{"isAccelerate": true}'::jsonb
+    OR EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+        COALESCE(u.membership->'products', '[]'::jsonb)
+        || COALESCE(u.membership->'offers', '[]'::jsonb)
+      ) AS p(item)
+      WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%accelerate%'
+         OR LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%creator club%'
+         OR LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%silver%'
+    )
+  )`,
+  bronze: `(
+    (u.membership @> '{"isCreatorClubBronze": true}'::jsonb OR u.membership @> '{"isBronze": true}'::jsonb OR u.membership @> '{"isCreatorClub": true}'::jsonb)
+    AND NOT (u.membership @> '{"isCreatorClubSilver": true}'::jsonb OR u.membership @> '{"isSilver": true}'::jsonb OR u.membership @> '{"isCreatorClubAccelerate": true}'::jsonb OR u.membership @> '{"isAccelerate": true}'::jsonb)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+        COALESCE(u.membership->'products', '[]'::jsonb)
+        || COALESCE(u.membership->'offers', '[]'::jsonb)
+      ) AS p(item)
+      WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%accelerate%'
+         OR LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%silver%'
+    )
+  )`,
+  silver: `(
+    (
+      u.membership @> '{"isCreatorClubSilver": true}'::jsonb
+      OR u.membership @> '{"isSilver": true}'::jsonb
+      OR EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          COALESCE(u.membership->'products', '[]'::jsonb)
+          || COALESCE(u.membership->'offers', '[]'::jsonb)
+        ) AS p(item)
+        WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%silver%'
+      )
+    )
+    AND NOT (u.membership @> '{"isCreatorClubAccelerate": true}'::jsonb OR u.membership @> '{"isAccelerate": true}'::jsonb)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+        COALESCE(u.membership->'products', '[]'::jsonb)
+        || COALESCE(u.membership->'offers', '[]'::jsonb)
+      ) AS p(item)
+      WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%accelerate%'
+    )
+  )`,
+  accelerate: `(
+    u.membership @> '{"isCreatorClubAccelerate": true}'::jsonb
+    OR u.membership @> '{"isAccelerate": true}'::jsonb
+    OR EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+        COALESCE(u.membership->'products', '[]'::jsonb)
+        || COALESCE(u.membership->'offers', '[]'::jsonb)
+      ) AS p(item)
+      WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%accelerate%'
+    )
+  )`,
+});
+
+/** Shared SQL fragment: resolve plan from membership flags + Kajabi product titles (same rules as getTier). */
+const PRODUCT_COHORT_LABEL = `(
+  CASE
+    WHEN u.membership @> '{"isCreatorClubAccelerate": true}'::jsonb
+      OR u.membership @> '{"isAccelerate": true}'::jsonb
+      OR EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          COALESCE(u.membership->'products', '[]'::jsonb)
+          || COALESCE(u.membership->'offers', '[]'::jsonb)
+        ) AS p(item)
+        WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%accelerate%'
+      ) THEN 'Accelerate'
+    WHEN u.membership @> '{"isCreatorClubSilver": true}'::jsonb
+      OR u.membership @> '{"isSilver": true}'::jsonb
+      OR EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          COALESCE(u.membership->'products', '[]'::jsonb)
+          || COALESCE(u.membership->'offers', '[]'::jsonb)
+        ) AS p(item)
+        WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%silver%'
+      ) THEN 'Silver'
+    WHEN u.membership @> '{"isCreatorClubBronze": true}'::jsonb
+      OR u.membership @> '{"isBronze": true}'::jsonb
+      OR u.membership @> '{"isCreatorClub": true}'::jsonb
+      OR EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          COALESCE(u.membership->'products', '[]'::jsonb)
+          || COALESCE(u.membership->'offers', '[]'::jsonb)
+        ) AS p(item)
+        WHERE LOWER(COALESCE(p.item->>'title', p.item->>'name', '')) LIKE '%creator club%'
+      ) THEN 'Creator Club'
+    WHEN d.funnel_access_id IS NOT NULL
+      OR d.report_type = 'invisible_red_line'
+      OR (d.data ? 'structuredPacket' AND NOT (d.data ? 'map_resistance_domain')) THEN 'Redline'
+    ELSE 'Unlinked'
+  END
+)`;
+
+/**
+ * @returns {"redline" | "map_resistance" | "all" | null}
+ */
+const normalizeReportSource = (report_source) => {
+  const norm = (v) => (v == null || v === "" ? null : String(v).toLowerCase().trim());
+  const rs = norm(report_source);
+  if (!rs) return null;
+  if (["redline", "irl", "invisible_red_line"].includes(rs)) return "redline";
+  if (["map_resistance", "map-resistance", "mapresistance"].includes(rs)) return "map_resistance";
+  if (["all", "both", "any"].includes(rs)) return "all";
   return null;
 };
 
@@ -27,28 +161,46 @@ const normalizeUserAudience = (user_audience) => {
  * @param {string} [opts.date_from]    ISO date string
  * @param {string} [opts.date_to]      ISO date string
  * @param {string} [opts.funnel_source] kajabi_offer_source value
- * @param {string} [opts.user_audience]  "uc" (Creator Club) | "non_member" (funnel) | "both"
- * @returns {{ whereClauses: string[], bind: object, user_audience: "uc" | "non_member" | "both" | "default" | "invalid" }}
+ * @param {string} [opts.user_audience]  free | bronze | silver | accelerate | paid | both
+ * @param {string} [opts.report_source]  "redline" | "map_resistance" | "all"
+ * @returns {{ whereClauses: string[], bind: object, user_audience: string, report_source: string, includeUserJoin: boolean }}
  */
-const buildFilters = ({ date_from, date_to, funnel_source, user_audience } = {}) => {
+const buildFilters = ({ date_from, date_to, funnel_source, user_audience, report_source } = {}) => {
   const whereClauses = [];
   const bind = {};
 
   const cohort = normalizeUserAudience(user_audience);
+  const source = normalizeReportSource(report_source);
+  const paidCohort = cohort && ["bronze", "silver", "accelerate", "paid"].includes(cohort);
 
-  if (cohort === "uc") {
-    whereClauses.push(`u."id" IS NOT NULL`);
-    whereClauses.push(`u.membership @> '{"isCreatorClub": true}'::jsonb`);
-  } else if (cohort === "non_member") {
-    whereClauses.push(`d.funnel_access_id IS NOT NULL`);
+  if (source === "redline") {
+    whereClauses.push(`d.report_type = 'invisible_red_line'`);
+  } else if (source === "map_resistance") {
+    whereClauses.push(`d.data ? 'map_resistance_domain'`);
+  } else if (source === "all") {
+    // no report-source predicate
+  } else if (paidCohort) {
+    whereClauses.push(`d.data ? 'map_resistance_domain'`);
   } else if (cohort === "both") {
-    // no cohort predicate
+    // no report-source predicate
   } else {
     whereClauses.push(`d.report_type = 'invisible_red_line'`);
   }
 
-  // Require structuredPacket only for funnel IRL–style slices (default or non_member); not for uc/both.
-  const funnelIrlOnly = cohort === "non_member" || cohort == null;
+  if (cohort === "free") {
+    whereClauses.push(`d.funnel_access_id IS NOT NULL`);
+  } else if (cohort === "bronze" || cohort === "silver" || cohort === "accelerate") {
+    whereClauses.push(`u."id" IS NOT NULL`);
+    whereClauses.push(MEMBERSHIP_TIER_SQL[cohort]);
+  } else if (cohort === "paid") {
+    whereClauses.push(`u."id" IS NOT NULL`);
+    whereClauses.push(MEMBERSHIP_TIER_SQL.paid);
+  }
+
+  const funnelIrlOnly =
+    cohort === "free" ||
+    source === "redline" ||
+    (source == null && !paidCohort && cohort !== "both");
   if (funnelIrlOnly) {
     whereClauses.push(`d.data ? 'structuredPacket'`);
   }
@@ -72,20 +224,33 @@ const buildFilters = ({ date_from, date_to, funnel_source, user_audience } = {})
     user_audience == null || user_audience === ""
       ? ""
       : String(user_audience).trim();
+  const rawReportSource =
+    report_source == null || report_source === ""
+      ? ""
+      : String(report_source).trim();
   /** Reflects SQL branch: default slice is funnel IRL (`invisible_red_line` + structuredPacket), not the explicit `non_member` cohort predicate. */
   const userAudienceLabel = cohort
     ? cohort
     : !rawAudience
-      ? "default"
+      ? "free_default"
       : "invalid";
+  const reportSourceLabel = source
+    ? source
+    : paidCohort
+      ? "map_resistance_default"
+      : cohort === "both"
+        ? "all"
+        : !rawReportSource
+          ? "redline_default"
+          : "invalid";
 
-  /** Only Creator Club filtering needs `users`; joining u on every query can hit PG max_locks (OR join + many aggregations). */
-  const includeUserJoin = cohort === "uc";
+  const includeUserJoin = true;
 
   return {
     whereClauses,
     bind,
     user_audience: userAudienceLabel,
+    report_source: reportSourceLabel,
     includeUserJoin,
   };
 };
@@ -124,6 +289,7 @@ const AVOID_FROM_VS = `NULLIF(BTRIM(split_part((${VSIG})::text, '+', 3)), '')`;
 const EO_EXPR = `NULLIF(
   BTRIM(COALESCE(
     NULLIF((${DP}->>'EO'), ''),
+    NULLIF((d.data->'structure_snapshot'->>'EO'), ''),
     NULLIF((${M}->>'eo'), ''),
     NULLIF((${M}->>'EO'), ''),
     NULLIF((${M}->>'emotionalOrigin'), ''),
@@ -134,6 +300,7 @@ const EO_EXPR = `NULLIF(
 const LACK_EXPR = `NULLIF(
   BTRIM(COALESCE(
     NULLIF(COALESCE(${DP}->>'lack_channel', ${DP}->>'lack'), ''),
+    NULLIF((d.data->'structure_snapshot'->>'lack_channel'), ''),
     NULLIF((${M}->>'lack'), ''),
     NULLIF((${M}->>'lackChannel'), ''),
     (${LACK_FROM_VS})
@@ -149,6 +316,7 @@ const AVOID_DERIVED = `COALESCE(
 const AVOID_EXPR = `NULLIF(
   BTRIM(COALESCE(
     NULLIF((${AVOID_DERIVED}), ''),
+    NULLIF((d.data->'structure_snapshot'->>'avoid_type'), ''),
     NULLIF((${M}->>'avoid'), ''),
     NULLIF((${M}->>'avoidanceProtector'), ''),
     (${AVOID_FROM_VS})
@@ -198,10 +366,13 @@ const GDEPTH_VAL = `(
     END
   )
 )`;
-const FUNNEL_SOURCE_LABEL = `COALESCE(
-  NULLIF(fa.kajabi_offer_source, ''),
-  CASE WHEN d.funnel_access_id IS NULL THEN 'app_diagnostic' ELSE 'unknown' END
-)`;
+
+/** Kajabi campaign / offer name when present (optional secondary chart). */
+const KAJABI_OFFER_LABEL = `NULLIF(BTRIM(fa.kajabi_offer_source), '')`;
+
+/** @deprecated alias — same as product cohort (no generic legacy_app / paid_member_app labels). */
+const FUNNEL_SOURCE_LABEL = PRODUCT_COHORT_LABEL;
+const MEMBERSHIP_TIER_LABEL = PRODUCT_COHORT_LABEL;
 const VSD = `${M}->'vortexSignatureDetails'`;
 /** First segment of signatureId (NE_C_F or NE+C+F) → primary egoic “domain” for charts when life-domain is absent */
 const SIG_EO_CODE = `NULLIF(UPPER(BTRIM(split_part(replace(COALESCE(NULLIF((${M}->>'signatureId'), ''), ''), '+', '_'), '_', 1))), '')`;
@@ -222,6 +393,8 @@ const DOMAIN_FROM_SIG = `(
 const DOMAIN_EXPR = `NULLIF(BTRIM(COALESCE(
   NULLIF((${DP}->>'domain_primary'), ''),
   NULLIF((${DP}->>'domain'), ''),
+  NULLIF((d.data->>'map_resistance_domain'), ''),
+  NULLIF((d.data->'active_goal_context'->>'domain'), ''),
   NULLIF((${M}->>'domain'), ''),
   NULLIF((${VSD}->'eo'->>'name'), ''),
   NULLIF((${VSD}->>'name'), ''),
@@ -229,6 +402,8 @@ const DOMAIN_EXPR = `NULLIF(BTRIM(COALESCE(
 )), '')`;
 // App rows often lack IRL desired_outcome + full vortexSignatureDetails; pull from successCard / integration angle / signature id.
 const OUTCOME_EXPR = `NULLIF(BTRIM(COALESCE(
+  NULLIF((d.data->'active_goal_context'->>'desired_outcome'), ''),
+  NULLIF((d.data->'active_goal_context'->>'goal_title'), ''),
   NULLIF((${DP}->>'desired_outcome'), ''),
   NULLIF((${M}->>'desiredOutcome'), ''),
   NULLIF((${M}#>>'{successCard,fulfilledNeed}'), ''),
@@ -241,11 +416,9 @@ const OUTCOME_EXPR = `NULLIF(BTRIM(COALESCE(
   NULLIF((${VSD}->>'oppositeBehavior'), ''),
   NULLIF((d.data#>>'{metrics,vortexSignatureDetails,failurePattern}'), ''),
   NULLIF((d.data#>>'{metrics,vortexSignatureDetails,orbitStructure}'), ''),
-  (CASE
-    WHEN NULLIF((${M}->>'signatureId'), '') IS NOT NULL
-    THEN CONCAT('Pull (vortex id): ', (${M}->>'signatureId'))
-    ELSE NULL
-  END)
+  NULLIF((${M}->>'signatureId'), ''),
+  NULLIF((${DP}->>'structure_type'), ''),
+  NULLIF((${M}->>'structureType'), '')
 )), '')`;
 /** Compact vortex id (e.g. NE+C+F) or IRL structure_type */
 const STRUCT_TYPE_EXPR = `NULLIF(BTRIM(COALESCE(
@@ -267,10 +440,10 @@ const RECOVERY_EXPR = `NULLIF(BTRIM(COALESCE(
     THEN
       CASE
         WHEN (NULLIF((${M}->>'signalCoherence'), ''))::numeric < 40 THEN
-          'recovery_proxy: low_signal_coherence (higher load)'
+          'Low signal coherence (higher recovery load)'
         WHEN (NULLIF((${M}->>'signalCoherence'), ''))::numeric < 70 THEN
-          'recovery_proxy: mid_signal_coherence'
-        ELSE 'recovery_proxy: high_signal_coherence (lighter load)'
+          'Mid signal coherence'
+        ELSE 'High signal coherence (lighter load)'
       END
     ELSE NULL
   END)
@@ -289,17 +462,20 @@ const CONTRADICTION_EXPR = `NULLIF(BTRIM(COALESCE(
     THEN
       CASE
         WHEN (NULLIF((${M}->>'gravity'), ''))::numeric - (NULLIF((${M}->>'signalCoherence'), ''))::numeric > 25 THEN
-          'tension_proxy: gravity_pull >> coherence (high inner split)'
+          'High inner tension (gravity >> coherence)'
         WHEN (NULLIF((${M}->>'signalCoherence'), ''))::numeric - (NULLIF((${M}->>'gravity'), ''))::numeric > 20 THEN
-          'tension_proxy: coherence > gravity (unusual pattern)'
-        ELSE 'tension_proxy: relatively balanced'
+          'Coherence leads gravity (unusual)'
+        ELSE 'Relatively balanced tension'
       END
     ELSE NULL
   END)
 )), '')`;
 const ORBIT_EXPR = `NULLIF(BTRIM(COALESCE(
   NULLIF((${DP}->>'orbit_pattern'), ''),
-  NULLIF((${M}->>'orbitPattern'), '')
+  NULLIF((d.data->'structure_snapshot'->>'orbit_pattern'), ''),
+  NULLIF((${M}->>'orbitPattern'), ''),
+  NULLIF((${M}#>>'{vortexSignatureDetails,orbitStructure}'), ''),
+  NULLIF((d.data#>>'{metrics,vortexSignatureDetails,orbitStructure}'), '')
 )), '')`;
 
 /**
@@ -320,12 +496,14 @@ const getMarketResearchData = async ({
   date_to,
   funnel_source,
   user_audience,
+  report_source,
 } = {}) => {
-  const { whereClauses, bind, user_audience: audienceLabel, includeUserJoin } = buildFilters({
+  const { whereClauses, bind, user_audience: audienceLabel, report_source: sourceLabel, includeUserJoin } = buildFilters({
     date_from,
     date_to,
     funnel_source,
     user_audience,
+    report_source,
   });
   const whereStr = buildWhereStr(whereClauses);
   const baseQuery = buildBaseFrom(includeUserJoin, whereStr);
@@ -487,10 +665,10 @@ const getMarketResearchData = async ({
     .filter((r) => r.pattern)
     .map((r) => ({ text: r.pattern, count: parseInt(r.cnt, 10) }));
 
-  // ── 12. Funnel source distribution ────────────────────────────────────────
+  // ── 12. Product / plan distribution (Redline, Creator Club, Silver, Accelerate)
   const sourceRows = await withDbSlot(() =>
     sequelize.query(
-      `SELECT ${FUNNEL_SOURCE_LABEL} AS source, COUNT(*) AS cnt
+      `SELECT ${PRODUCT_COHORT_LABEL} AS source, COUNT(*) AS cnt
        ${baseQuery}
        GROUP BY source ORDER BY cnt DESC`,
       { type: QueryTypes.SELECT, bind }
@@ -498,6 +676,24 @@ const getMarketResearchData = async ({
   );
   const funnel_sources = {};
   sourceRows.forEach((r) => { funnel_sources[r.source] = parseInt(r.cnt, 10); });
+
+  // Same breakdown under the explicit tier key (always populated).
+  const membership_tier_distribution = { ...funnel_sources };
+
+  // Optional: Kajabi offer campaigns only (when an offer string exists).
+  const kajabiRows = await withDbSlot(() =>
+    sequelize.query(
+      `SELECT ${KAJABI_OFFER_LABEL} AS offer, COUNT(*) AS cnt
+       ${baseQuery}
+       ${whereStr ? "AND" : "WHERE"} ${KAJABI_OFFER_LABEL} IS NOT NULL
+       GROUP BY offer ORDER BY cnt DESC`,
+      { type: QueryTypes.SELECT, bind }
+    )
+  );
+  const kajabi_offer_distribution = {};
+  kajabiRows.forEach((r) => {
+    if (r.offer) kajabi_offer_distribution[r.offer] = parseInt(r.cnt, 10);
+  });
 
   // ── 13. Recovery speed distribution ──────────────────────────────────────
   const recoveryRows = await withDbSlot(() =>
@@ -550,6 +746,7 @@ const getMarketResearchData = async ({
   return {
     total_diagnostics: parseInt(total, 10),
     user_audience: audienceLabel,
+    report_source: sourceLabel,
     field_coverage: coverageRow || {},
     date_range: { from: date_from || null, to: date_to || null },
     eo_distribution,
@@ -564,6 +761,8 @@ const getMarketResearchData = async ({
     top_desired_outcomes,
     top_orbit_patterns,
     funnel_sources,
+    membership_tier_distribution,
+    kajabi_offer_distribution,
     recovery_speed_distribution,
     contradiction_rate_distribution,
   };
@@ -581,12 +780,14 @@ const getMarketResearchRows = async ({
   date_to,
   funnel_source,
   user_audience,
+  report_source,
 } = {}) => {
   const { whereClauses, bind, includeUserJoin } = buildFilters({
     date_from,
     date_to,
     funnel_source,
     user_audience,
+    report_source,
   });
   const whereStr = buildWhereStr(whereClauses);
   const fromAndWhere = buildBaseFrom(includeUserJoin, whereStr);

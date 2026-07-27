@@ -18,8 +18,25 @@ const { generateSessionSummary } = require("../config/sessionSummary");
 const { cleanTranscriptText, invalidateLatestPromptCache } = require("../helpers/euphoriamChatbot");
 const { PromptType, UserStatus, UserRole } = require("../utils/types");
 const { getMarketResearchData, getMarketResearchRows } = require("../helpers/marketResearchAggregator");
+const {
+  userDiagnosticWhere,
+  formatDiagnosticForAdmin,
+  loadAdminUserStage1,
+  countDiagnosticsByCategory,
+  mapResistanceCountForUser,
+  formatMembershipForAdmin,
+  resolveAdminMembershipTier,
+  computeUserProgress,
+} = require("../helpers/adminUserData");
+const { DomainGoal } = require("../models/domainGoalModel");
+const { UserStage1Meta } = require("../models/userStage1MetaModel");
 const openai = require("../config/openai");
 const { withDbSlot, sequelize } = require("../config/sequelize");
+
+const classicDiagnosticWhere = {
+  report_type: { [Op.ne]: "invisible_red_line" },
+  [Op.and]: [sequelize.literal(`NOT (data ? 'map_resistance_domain')`)],
+};
 
 const bustPromptCache = (type) => {
   if (!type) return;
@@ -58,23 +75,92 @@ const getAllUsers = async (req, res) => {
       attributes: { exclude: ["password"] },
     });
 
-    // Get report counts for each user
+    const userIds = users.map((u) => u.id);
+
+    const [mapResistanceRows, coachMetaRows, goalRows] = await Promise.all([
+      DomainGoal.findAll({
+        where: { userId: { [Op.in]: userIds }, mapResistanceComplete: true },
+        attributes: ["userId"],
+        raw: true,
+      }).catch(() => []),
+      UserStage1Meta.findAll({
+        where: { userId: { [Op.in]: userIds } },
+        attributes: ["userId", "coachSessionLog", "activeDomains", "primaryDomain", "proofLogs"],
+        raw: true,
+      }).catch(() => []),
+      DomainGoal.findAll({
+        where: {
+          userId: { [Op.in]: userIds },
+          [Op.or]: [
+            { goalTitle: { [Op.ne]: null } },
+            { desiredOutcome: { [Op.ne]: null } },
+          ],
+        },
+        attributes: ["userId", "goalsComplete", "status"],
+        raw: true,
+      }).catch(() => []),
+    ]);
+
+    const mapResistanceCountMap = {};
+    for (const row of mapResistanceRows) {
+      mapResistanceCountMap[row.userId] = (mapResistanceCountMap[row.userId] || 0) + 1;
+    }
+
+    const coachCountMap = {};
+    const activeDomainCountMap = {};
+    const proofCountMap = {};
+    for (const row of coachMetaRows) {
+      const sessions = Array.isArray(row.coachSessionLog) ? row.coachSessionLog : [];
+      coachCountMap[row.userId] = sessions.length;
+      const active = Array.isArray(row.activeDomains) ? row.activeDomains : [];
+      activeDomainCountMap[row.userId] = active.length;
+      proofCountMap[row.userId] = Array.isArray(row.proofLogs) ? row.proofLogs.length : 0;
+    }
+
+    const goalsCountMap = {};
+    const goalsCompleteMap = {};
+    for (const row of goalRows) {
+      if (row.status === "draft") continue;
+      goalsCountMap[row.userId] = (goalsCountMap[row.userId] || 0) + 1;
+      if (row.goalsComplete) {
+        goalsCompleteMap[row.userId] = (goalsCompleteMap[row.userId] || 0) + 1;
+      }
+    }
+
     const usersWithReports = await Promise.all(
       users.map(async (user) => {
-        const diagnostics = await Diagnostic.count({
-          where: {
-            [Op.or]: [{ email: user.email }, { userId: user.id }],
+        const reportCounts = await countDiagnosticsByCategory(user);
+        const membership = formatMembershipForAdmin(user);
+        const progress = computeUserProgress({
+          membership,
+          stage1: {
+            mapResistanceCompleteCount: mapResistanceCountMap[user.id] ?? reportCounts.mapResistance,
+            coachSessionCount: coachCountMap[user.id] || 0,
+            proofLogCount: proofCountMap[user.id] || 0,
+            activeDomains: Array.from({ length: activeDomainCountMap[user.id] || 0 }),
           },
-        });
-        const discoveries = await Discovery.count({
-          where: { userId: user.id },
+          redlineCount: reportCounts.redline,
+          goalsSetOverride: goalsCountMap[user.id] || 0,
+          goalsCompleteOverride: goalsCompleteMap[user.id] || 0,
         });
 
         return {
           ...user.toJSON(),
-          reportCount: diagnostics + discoveries,
-          diagnosticCount: diagnostics,
-          discoveryCount: discoveries,
+          membership,
+          membershipTier: membership.tier,
+          membershipLabel: membership.label,
+          reportCount: reportCounts.totalReports,
+          totalReportCount: reportCounts.totalReports,
+          redlineCount: reportCounts.redline,
+          mapResistanceCount:
+            mapResistanceCountMap[user.id] ?? reportCounts.mapResistance,
+          coachSessionCount: coachCountMap[user.id] || 0,
+          proofLogCount: proofCountMap[user.id] || 0,
+          goalsCount: goalsCountMap[user.id] || 0,
+          goalsCompleteCount: goalsCompleteMap[user.id] || 0,
+          activeDomainCount: activeDomainCountMap[user.id] || 0,
+          progressPhase: progress.phase,
+          progressScore: progress.progressScore,
         };
       }),
     );
@@ -182,30 +268,50 @@ const getUserReports = async (req, res) => {
       return errorResponse(res, "User not found", 404);
     }
 
-    const userEmail = user.email;
     const userIdNum = user.id;
 
-    // Get diagnostics by email or userId (diagnostics may be stored with either)
-    const diagnostics = await Diagnostic.findAll({
-      where: {
-        userId: userIdNum,
-      },
-      order: [["createdAt", "DESC"]],
-    });
-    console.log("diagnostic report", diagnostics);
+    const [diagnostics, stage1] = await Promise.all([
+      Diagnostic.findAll({
+        where: userDiagnosticWhere(user),
+        order: [["createdAt", "DESC"]],
+      }),
+      loadAdminUserStage1(userIdNum),
+    ]);
 
-    // Get discoveries by userId or email (discoveries may be stored with either)
-    const discoveries = await Discovery.findAll({
-      where: { userId: userIdNum },
-      order: [["createdAt", "DESC"]],
+    const membership = formatMembershipForAdmin(user);
+    const formattedDiagnostics = diagnostics
+      .map(formatDiagnosticForAdmin)
+      .filter((d) => d.category === "redline" || d.category === "map_resistance");
+    const redlineReports = formattedDiagnostics.filter((d) => d.category === "redline");
+    const mapResistanceReports = formattedDiagnostics.filter(
+      (d) => d.category === "map_resistance",
+    );
+    const progress = computeUserProgress({
+      membership,
+      stage1,
+      redlineCount: redlineReports.length,
     });
-    console.log("discoveries report", discoveries);
 
     return successResponse(res, "User reports fetched", {
       user: user.toJSON(),
-      diagnostics: diagnostics,
-      discoveries: discoveries,
-      totalReports: diagnostics.length + discoveries.length,
+      membership,
+      progress,
+      redlineReports,
+      mapResistanceReports,
+      stage1,
+      totalReports: redlineReports.length + stage1.mapResistanceCompleteCount,
+      counts: {
+        redline: redlineReports.length,
+        mapResistance: Math.max(
+          mapResistanceReports.length,
+          stage1.mapResistanceCompleteCount,
+        ),
+        coachSessions: stage1.coachSessionCount,
+        proofLogs: stage1.proofLogCount,
+        goalsSet: stage1.goalsSetCount,
+        goalsComplete: stage1.goalsCompleteCount,
+        activeDomains: stage1.activeDomains.length,
+      },
     });
   } catch (error) {
     console.error("[admin] Error fetching user reports:", error);
@@ -489,163 +595,184 @@ const getPromptHistory = async (req, res) => {
   }
 };
 
-// Get admin stats
+// Get admin stats — aligned to product flow: Free → Creator Club / Silver / Accelerate
 const getStats = async (req, res) => {
   try {
-    // Execute queries sequentially to avoid connection pool exhaustion
-    // With max: 1 connection pool, we need to ensure proper sequencing
-    const totalUsers = await User.count({ where: { role: "user" } }).catch(
-      (err) => {
-        console.error("[admin] Error counting users:", err);
-        return 0;
-      },
-    );
-
-    const [totalClassicDiagnostics, totalRedlineReports] = await Promise.all([
-      Diagnostic.count({
-        where: { report_type: { [Op.ne]: "invisible_red_line" } },
-      }).catch((err) => {
-        console.error("[admin] Error counting classic diagnostics:", err);
-        return 0;
-      }),
-      Diagnostic.count({
-        where: { report_type: "invisible_red_line" },
-      }).catch((err) => {
-        console.error("[admin] Error counting redline reports:", err);
-        return 0;
-      }),
-    ]);
-
-    const totalDiscoveries = await Discovery.count().catch((err) => {
-      console.error("[admin] Error counting discoveries:", err);
-      return 0;
-    });
-
-    const totalPrompts = await Prompt.count().catch((err) => {
-      console.error("[admin] Error counting prompts:", err);
-      return 0;
-    });
-
-    const activePrompts = await Prompt.count({
-      where: { isActive: true },
-    }).catch((err) => {
-      console.error("[admin] Error counting active prompts:", err);
-      return 0;
-    });
-
-    // Get diagnostics by date (last 30 days)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const [recentClassicDiagnostics, recentRedlineReports] = await Promise.all([
-      Diagnostic.count({
+    const [
+      allUsers,
+      totalRedlineReports,
+      totalMapResistanceDomains,
+      totalGoalsSet,
+      stage1MetaRows,
+      totalPrompts,
+      activePrompts,
+      recentRedlineReports,
+      recentMapResistanceDomains,
+      recentGoalsSet,
+      recentUsers,
+    ] = await Promise.all([
+      User.findAll({
+        where: { role: "user" },
+        attributes: ["id", "name", "email", "membership", "createdAt"],
+      }).catch(() => []),
+      Diagnostic.count({ where: { report_type: "invisible_red_line" } }).catch(() => 0),
+      DomainGoal.count({ where: { mapResistanceComplete: true } }).catch(() => 0),
+      DomainGoal.count({
         where: {
-          createdAt: { [Op.gte]: thirtyDaysAgo },
-          report_type: { [Op.ne]: "invisible_red_line" },
+          [Op.or]: [
+            { goalTitle: { [Op.ne]: null } },
+            { desiredOutcome: { [Op.ne]: null } },
+          ],
+          status: { [Op.ne]: "draft" },
         },
-      }).catch((err) => {
-        console.error("[admin] Error counting recent classic diagnostics:", err);
-        return 0;
-      }),
+      }).catch(() => 0),
+      UserStage1Meta.findAll({
+        attributes: ["userId", "coachSessionLog", "proofLogs", "activeDomains"],
+      }).catch(() => []),
+      Prompt.count().catch(() => 0),
+      Prompt.count({ where: { isActive: true } }).catch(() => 0),
       Diagnostic.count({
         where: {
           createdAt: { [Op.gte]: thirtyDaysAgo },
           report_type: "invisible_red_line",
         },
-      }).catch((err) => {
-        console.error("[admin] Error counting recent redline reports:", err);
-        return 0;
-      }),
+      }).catch(() => 0),
+      DomainGoal.count({
+        where: {
+          mapResistanceComplete: true,
+          updatedAt: { [Op.gte]: thirtyDaysAgo },
+        },
+      }).catch(() => 0),
+      DomainGoal.count({
+        where: {
+          createdAt: { [Op.gte]: thirtyDaysAgo },
+          [Op.or]: [
+            { goalTitle: { [Op.ne]: null } },
+            { desiredOutcome: { [Op.ne]: null } },
+          ],
+        },
+      }).catch(() => 0),
+      User.count({
+        where: { createdAt: { [Op.gte]: thirtyDaysAgo }, role: "user" },
+      }).catch(() => 0),
     ]);
 
-    // Get users by date (last 30 days)
-    const recentUsers = await User.count({
-      where: {
-        createdAt: {
-          [Op.gte]: thirtyDaysAgo,
-        },
-        role: "user",
-      },
-    }).catch((err) => {
-      console.error("[admin] Error counting recent users:", err);
-      return 0;
-    });
+    const usersByTier = { free: 0, bronze: 0, silver: 0, accelerate: 0 };
+    for (const user of allUsers) {
+      const tier = resolveAdminMembershipTier(user);
+      usersByTier[tier] = (usersByTier[tier] || 0) + 1;
+    }
 
-    // Get diagnostics grouped by month (last 6 months)
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    let totalCoachSessions = 0;
+    let totalProofLogs = 0;
+    let totalActiveDomainSlots = 0;
+    let recentCoachSessions = 0;
+    for (const row of stage1MetaRows) {
+      const sessions = Array.isArray(row.coachSessionLog) ? row.coachSessionLog : [];
+      totalCoachSessions += sessions.length;
+      totalProofLogs += Array.isArray(row.proofLogs) ? row.proofLogs.length : 0;
+      totalActiveDomainSlots += Array.isArray(row.activeDomains)
+        ? row.activeDomains.length
+        : 0;
+      for (const session of sessions) {
+        const started = session?.started_at || session?.created_at;
+        if (started && new Date(started) >= thirtyDaysAgo) recentCoachSessions += 1;
+      }
+    }
 
-    // Get users with most reports
-    const usersWithReports = await User.findAll({
-      attributes: ["id", "name", "email"],
-      where: { role: "user" },
-    }).catch((err) => {
-      console.error("[admin] Error fetching users with reports:", err);
-      return [];
-    });
-
-    // Process top users sequentially to avoid connection issues
     const topUsers = [];
-    for (const user of usersWithReports) {
+    for (const user of allUsers) {
       try {
-        // Run counts in parallel
-        const userDiagnosticMatch = [{ userId: user.id }];
-        if (user.email) userDiagnosticMatch.push({ email: user.email });
-
-        const [diagnosticCount, redlineCount, discoveryCount, discoveryChatCount] =
+        const membership = formatMembershipForAdmin(user);
+        const [reportCounts, mapResistanceCount, stage1Meta, goalsCount, goalsCompleteCount] =
           await Promise.all([
-            Diagnostic.count({
-              where: {
-                [Op.or]: userDiagnosticMatch,
-                report_type: { [Op.ne]: "invisible_red_line" },
-              },
-            }).catch(() => 0),
-            Diagnostic.count({
-              where: {
-                [Op.or]: userDiagnosticMatch,
-                report_type: "invisible_red_line",
-              },
-            }).catch(() => 0),
-            Discovery.count({ where: { userId: user.id } }).catch(() => 0),
-            DiscoveryChat.count({ where: { userId: user.id } }).catch(() => 0),
-          ]);
+          countDiagnosticsByCategory(user),
+          mapResistanceCountForUser(user.id).catch(() => 0),
+          UserStage1Meta.findOne({
+            where: { userId: user.id },
+            attributes: ["coachSessionLog", "proofLogs", "activeDomains"],
+          }).catch(() => null),
+          DomainGoal.count({
+            where: {
+              userId: user.id,
+              status: { [Op.ne]: "draft" },
+              [Op.or]: [
+                { goalTitle: { [Op.ne]: null } },
+                { desiredOutcome: { [Op.ne]: null } },
+              ],
+            },
+          }).catch(() => 0),
+          DomainGoal.count({
+            where: { userId: user.id, goalsComplete: true },
+          }).catch(() => 0),
+        ]);
+
+        const stage1 = {
+          mapResistanceCompleteCount: mapResistanceCount,
+          coachSessionCount: Array.isArray(stage1Meta?.coachSessionLog)
+            ? stage1Meta.coachSessionLog.length
+            : 0,
+          proofLogCount: Array.isArray(stage1Meta?.proofLogs)
+            ? stage1Meta.proofLogs.length
+            : 0,
+          activeDomains: Array.isArray(stage1Meta?.activeDomains)
+            ? stage1Meta.activeDomains
+            : [],
+        };
+        const progress = computeUserProgress({
+          membership,
+          stage1,
+          redlineCount: reportCounts.redline,
+          goalsSetOverride: goalsCount,
+          goalsCompleteOverride: goalsCompleteCount,
+        });
 
         topUsers.push({
           id: user.id,
           name: user.name,
           email: user.email,
-          totalReports:
-            diagnosticCount + redlineCount + discoveryCount + discoveryChatCount,
-          diagnostics: diagnosticCount,
-          redlineReports: redlineCount,
-          diagnosticChat: discoveryCount,
-          discoveries: discoveryChatCount,
+          membershipTier: membership.tier,
+          membershipLabel: membership.label,
+          progressPhase: progress.phase,
+          progressScore: progress.progressScore,
+          redlineReports: reportCounts.redline,
+          mapResistanceReports: mapResistanceCount,
+          coachSessions: stage1.coachSessionCount,
+          proofLogs: stage1.proofLogCount,
+          activeDomains: stage1.activeDomains.length,
+          goalsSet: progress.goalsSet,
         });
       } catch (err) {
         console.error(`[admin] Error processing user ${user.id}:`, err);
       }
     }
 
-    topUsers.sort((a, b) => b.totalReports - a.totalReports);
-    const topNUsers = topUsers.slice(0, 10);
+    topUsers.sort((a, b) => b.progressScore - a.progressScore);
 
     const stats = {
       overview: {
-        totalUsers,
-        totalDiagnostics: totalClassicDiagnostics,
+        totalUsers: allUsers.length,
+        usersByTier,
         totalRedlineReports,
-        totalDiscoveries,
-        totalReports:
-          totalClassicDiagnostics + totalRedlineReports + totalDiscoveries,
+        totalMapResistanceReports: totalMapResistanceDomains,
+        totalGoalsSet,
+        totalCoachSessions,
+        totalProofLogs,
+        totalActiveDomainSlots,
+        totalReports: totalRedlineReports + totalMapResistanceDomains,
         totalPrompts,
         activePrompts,
       },
       recent: {
-        diagnosticsLast30Days: recentClassicDiagnostics,
         redlineReportsLast30Days: recentRedlineReports,
+        mapResistanceLast30Days: recentMapResistanceDomains,
+        goalsLast30Days: recentGoalsSet,
+        coachSessionsLast30Days: recentCoachSessions,
         usersLast30Days: recentUsers,
       },
-
       topUsers: topUsers.slice(0, 10),
     };
 
@@ -684,34 +811,47 @@ const getMonthlystats = async (req, res) => {
         break;
     }
 
-    const [allDiagnostics, allDiscovery, allDiscoveryChat] = await Promise.all([
+    const [redlineDiagnostics, mapResistanceGoals, goalsCreated, coachMetaForTrends] =
+      await Promise.all([
       Diagnostic.findAll({
-        where: { createdAt: { [Op.gte]: startDate } },
-        attributes: ["createdAt", "report_type"],
+        where: {
+          createdAt: { [Op.gte]: startDate },
+          report_type: "invisible_red_line",
+        },
+        attributes: ["createdAt"],
         raw: true,
       }).catch(() => []),
 
-      Discovery.findAll({
+      DomainGoal.findAll({
+        where: {
+          mapResistanceComplete: true,
+          updatedAt: { [Op.gte]: startDate },
+        },
+        attributes: ["updatedAt"],
+        raw: true,
+      }).catch(() => []),
+
+      DomainGoal.findAll({
         where: { createdAt: { [Op.gte]: startDate } },
         attributes: ["createdAt"],
         raw: true,
       }).catch(() => []),
 
-      DiscoveryChat.findAll({
-        where: { createdAt: { [Op.gte]: startDate } },
-        attributes: ["createdAt"],
-        raw: true,
+      UserStage1Meta.findAll({
+        attributes: ["coachSessionLog"],
       }).catch(() => []),
     ]);
 
-    /** Paid / classic diagnostic rows — excludes funnel hidden-structure report (`report_type`). */
-    const classicDiagnostics = allDiagnostics.filter(
-      (r) => r.report_type !== "invisible_red_line",
-    );
-    /** Funnel IRL reports stored on `diagnostics` with `report_type = invisible_red_line`. */
-    const redlineDiagnostics = allDiagnostics.filter(
-      (r) => r.report_type === "invisible_red_line",
-    );
+    const coachSessionRows = [];
+    for (const row of coachMetaForTrends) {
+      const sessions = Array.isArray(row.coachSessionLog) ? row.coachSessionLog : [];
+      for (const session of sessions) {
+        const started = session?.started_at || session?.created_at;
+        if (!started) continue;
+        const ts = new Date(started);
+        if (ts >= startDate) coachSessionRows.push({ createdAt: ts });
+      }
+    }
 
     const getKey = (date) => {
       const d = new Date(date);
@@ -770,12 +910,16 @@ const getMonthlystats = async (req, res) => {
         });
     };
 
+    const mapResistanceRows = mapResistanceGoals.map((row) => ({
+      createdAt: row.updatedAt,
+    }));
+
     const stats = {
       trends: {
-        diagnostics: countByGroup(classicDiagnostics),
         redlineReports: countByGroup(redlineDiagnostics),
-        discovery: countByGroup(allDiscoveryChat),
-        discoveryChat: countByGroup(allDiscovery),
+        mapResistanceReports: countByGroup(mapResistanceRows),
+        goalsCreated: countByGroup(goalsCreated),
+        coachSessions: countByGroup(coachSessionRows),
       },
     };
 
@@ -1251,16 +1395,24 @@ const getMrFilterParams = (req) => {
     date_to: m.date_to,
     funnel_source: m.funnel_source,
     user_audience: m.user_audience ?? m.userAudience,
+    report_source: m.report_source ?? m.reportSource,
   };
 };
 
-/** Stable cache key: all slots explicit so `user_audience` is never dropped by `JSON.stringify` (undefined is omitted). */
-const getCacheKey = ({ date_from, date_to, funnel_source, user_audience }) =>
+/** Stable cache key: all slots explicit so filters are never dropped by `JSON.stringify`. */
+const getCacheKey = ({
+  date_from,
+  date_to,
+  funnel_source,
+  user_audience,
+  report_source,
+}) =>
   JSON.stringify({
     date_from: date_from ?? null,
     date_to: date_to ?? null,
     funnel_source: funnel_source ?? null,
     user_audience: user_audience ?? null,
+    report_source: report_source ?? null,
   });
 
 /**
@@ -1269,8 +1421,15 @@ const getCacheKey = ({ date_from, date_to, funnel_source, user_audience }) =>
  */
 const getMarketResearch = async (req, res) => {
   try {
-    const { date_from, date_to, funnel_source, user_audience } = getMrFilterParams(req);
-    const cacheKey = getCacheKey({ date_from, date_to, funnel_source, user_audience });
+    const { date_from, date_to, funnel_source, user_audience, report_source } =
+      getMrFilterParams(req);
+    const cacheKey = getCacheKey({
+      date_from,
+      date_to,
+      funnel_source,
+      user_audience,
+      report_source,
+    });
 
     const cached = _mrCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < MR_CACHE_TTL_MS) {
@@ -1282,6 +1441,7 @@ const getMarketResearch = async (req, res) => {
       date_to,
       funnel_source,
       user_audience,
+      report_source,
     });
     _mrCache.set(cacheKey, { data, ts: Date.now() });
 
@@ -1298,12 +1458,14 @@ const getMarketResearch = async (req, res) => {
  */
 const exportMarketResearchCsv = async (req, res) => {
   try {
-    const { date_from, date_to, funnel_source, user_audience } = getMrFilterParams(req);
+    const { date_from, date_to, funnel_source, user_audience, report_source } =
+      getMrFilterParams(req);
     const rows = await getMarketResearchRows({
       date_from,
       date_to,
       funnel_source,
       user_audience,
+      report_source,
     });
 
     const CSV_HEADERS = [
@@ -1370,6 +1532,7 @@ const generateMarketResearchReport = async (req, res) => {
       custom_question,
     } = m;
     const user_audience = m.user_audience ?? m.userAudience;
+    const report_source = m.report_source ?? m.reportSource;
 
     // Load the market_research prompt from the DB
     const promptRecord = await withDbSlot(() =>
@@ -1396,6 +1559,7 @@ Be specific. Use the data. Write in a tone suitable for a marketing strategist.`
       date_to,
       funnel_source,
       user_audience,
+      report_source,
     });
 
     // Build user content

@@ -71,6 +71,11 @@ const adminLogin = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.findAll({
+       where: {
+    role: {
+      [Op.ne]: "admin",
+    },
+  },
       order: [["createdAt", "DESC"]],
       attributes: { exclude: ["password"] },
     });

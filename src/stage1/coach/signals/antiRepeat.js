@@ -173,10 +173,140 @@ const buildAntiRepeatState = ({ messages = [], userMessage = "" } = {}) => {
   };
 };
 
+const DISCOVERY_FIRST_DOMAINS = new Set([
+  "relationships",
+  "relationship",
+  "love",
+  "connection",
+  "family",
+]);
+
+const USER_WANTS_ACTION_PATTERN =
+  /\b(what (?:should|can|do) i do|what'?s next|how do i start|one thing (?:i|to|we) can do|smallest step|action today|give me (?:an? )?(?:action|step|homework|task))\b/i;
+
+const EXPLORE_FIRST_DIRECTIVE =
+  "EXPLORE FIRST — Nathan-style discovery. Reply in 1-3 SHORT sentences with ONE new question only. " +
+  "Let the member uncover structure; do NOT label, diagnose, prescribe, or assign homework. " +
+  "FORBIDDEN: fear of rejection, protective mechanism, outreach/send-a-message tasks, numbered steps, Green Rep, 'Let's focus on', 'small actionable step'. " +
+  "Prefer body/feeling questions over 'what do you think'. Peel layers — do not solve.";
+
+const DISCOVERY_QUESTION_FALLBACKS = [
+  "What are you experiencing right now — in your body, not your head?",
+  "Tell me more about the last time that pull-away feeling showed up.",
+  "Stay with that. What's the worst part of it?",
+  "What happens inside you the moment closeness starts to feel real?",
+  "What part of that feels most alive for you right now?",
+  "If you didn't pull away, what would you be afraid might happen next?",
+];
+
+const pickDiscoveryFallback = (userMessage, priorAssistants = []) => {
+  const prior = priorAssistants.filter(Boolean);
+  const candidates = [];
+
+  if (/\b(body|feel|feeling|anxiety|experience)\b/i.test(String(userMessage || ""))) {
+    candidates.push(DISCOVERY_QUESTION_FALLBACKS[0]);
+  }
+  if (/\b(understand|why|where|come from|roots?|underneath)\b/i.test(String(userMessage || ""))) {
+    candidates.push(DISCOVERY_QUESTION_FALLBACKS[1]);
+  }
+
+  const idx = prior.length % DISCOVERY_QUESTION_FALLBACKS.length;
+  candidates.push(
+    ...DISCOVERY_QUESTION_FALLBACKS.slice(idx),
+    ...DISCOVERY_QUESTION_FALLBACKS.slice(0, idx),
+  );
+
+  const seen = new Set();
+  const ordered = [];
+  for (const q of candidates) {
+    const key = q.trim().toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      ordered.push(q);
+    }
+  }
+
+  const fresh = ordered.filter((q) => prior.every((p) => tokenOverlapRatio(q, p) < 0.38));
+  if (fresh.length) return fresh[0];
+
+  let best = ordered[0] || DISCOVERY_QUESTION_FALLBACKS[0];
+  let bestScore = 1;
+  for (const q of (ordered.length ? ordered : DISCOVERY_QUESTION_FALLBACKS)) {
+    const score = prior.length ? Math.max(...prior.map((p) => tokenOverlapRatio(q, p))) : 0;
+    if (score < bestScore) {
+      bestScore = score;
+      best = q;
+    }
+  }
+  return best;
+};
+
+const shouldDefaultExploreFirst = ({
+  domain = null,
+  userMessage = "",
+  user_asked_what_next = false,
+  user_wants_discovery = false,
+  user_rejects_prescription = false,
+  user_completed_current_rep = false,
+  has_active_session_rep = false,
+  execution_confirmed = false,
+  stop_discovery = false,
+  proofCycleFlow = null,
+} = {}) => {
+  if (user_asked_what_next) return false;
+  if (USER_WANTS_ACTION_PATTERN.test(String(userMessage || ""))) return false;
+  if (user_completed_current_rep && has_active_session_rep) return false;
+  if (proofCycleFlow?.proof_integration_mode) return false;
+  if (execution_confirmed) return false;
+  if (stop_discovery) return false;
+
+  const domainLower = String(domain || "").toLowerCase();
+  if (DISCOVERY_FIRST_DOMAINS.has(domainLower)) return true;
+  if (user_wants_discovery || detectUserWantsDiscovery([userMessage])) return true;
+  if (user_rejects_prescription || detectUserRejectsPrescription([userMessage])) return true;
+
+  return false;
+};
+
+const guardAssistantReplyAgainstRepeat = ({
+  assistant = "",
+  messages = [],
+  userMessage = "",
+  extraPriorAssistants = [],
+} = {}) => {
+  const text = String(assistant || "").trim();
+  if (!text) return text;
+
+  const priorSet = new Set([
+    ...assistantTextsFromMessages(messages),
+    ...extraPriorAssistants.map((t) => String(t || "").trim()).filter(Boolean),
+  ]);
+  const prior = [...priorSet];
+  const extraPrior = extraPriorAssistants.map((t) => String(t || "").trim()).filter(Boolean);
+
+  if (extraPrior.some((p) => normalizeForCompare(p) === normalizeForCompare(text))) {
+    return pickDiscoveryFallback(userMessage, [...prior, ...extraPrior]);
+  }
+
+  if (!prior.length && !extraPrior.length) return text;
+  const allPrior = [...new Set([...prior, ...extraPrior])];
+
+  const exactDup = allPrior.some((p) => p.trim() === text);
+  let maxOverlap = 0;
+  for (const p of allPrior) {
+    maxOverlap = Math.max(maxOverlap, tokenOverlapRatio(text, p));
+  }
+
+  if (!exactDup && maxOverlap < 0.38) return text;
+  return pickDiscoveryFallback(userMessage, allPrior);
+};
+
 module.exports = {
   DISCOVERY_ONLY_DIRECTIVE,
+  EXPLORE_FIRST_DIRECTIVE,
   PRESCRIPTIVE_REPLY_PATTERN,
   DIAGNOSIS_THEME_PATTERNS,
+  DISCOVERY_QUESTION_FALLBACKS,
   detectUserRejectsPrescription,
   detectUserWantsDiscovery,
   detectCoachingRepeatComplaintExpanded,
@@ -185,4 +315,7 @@ module.exports = {
   maxAssistantOverlapRatio,
   tokenOverlapRatio,
   buildAntiRepeatState,
+  shouldDefaultExploreFirst,
+  pickDiscoveryFallback,
+  guardAssistantReplyAgainstRepeat,
 };

@@ -34,6 +34,8 @@ const {
   buildAntiRepeatState,
   detectRepeatedAssistantAdvice: detectRepeatedAssistantAdviceStrict,
   detectCoachingRepeatComplaintExpanded,
+  shouldDefaultExploreFirst,
+  EXPLORE_FIRST_DIRECTIVE,
 } = require("./antiRepeat");
 
 const OUTREACH_INVESTIGATION_LOOP_PATTERN =
@@ -341,7 +343,15 @@ const buildCoachConversationSignals = ({
   );
   const antiRepeat = buildAntiRepeatState({ messages, userMessage });
   let user_asked_what_next = detectWhatNextQuestion(userMessage);
-  if (antiRepeat.user_wants_discovery || antiRepeat.user_rejects_prescription) {
+  const exploreFirstEarly = shouldDefaultExploreFirst({
+    domain: map?.domain || goalContext?.domain || null,
+    userMessage,
+    user_asked_what_next,
+    user_wants_discovery: antiRepeat.user_wants_discovery,
+    user_rejects_prescription: antiRepeat.user_rejects_prescription,
+    proofCycleFlow,
+  });
+  if (antiRepeat.user_wants_discovery || antiRepeat.user_rejects_prescription || exploreFirstEarly) {
     user_asked_what_next = false;
   }
   const { detectEstablishedExecutionClarity } = require("./clarity");
@@ -437,6 +447,7 @@ const buildCoachConversationSignals = ({
 
   let assign_new_rep =
     !antiRepeat.discovery_only_mode &&
+    !exploreFirstEarly &&
     !user_expressed_uncertainty &&
     !user_completed_current_rep &&
     !reports_stagnation &&
@@ -540,7 +551,7 @@ const buildCoachConversationSignals = ({
     };
     claritySignals = buildClarityExecutionSignals(signalCtx);
     evidenceSignals = buildEvidenceContradictionSignals(signalCtx);
-    if (!antiRepeat.discovery_only_mode) {
+    if (!antiRepeat.discovery_only_mode && !exploreFirstEarly) {
       if (claritySignals?.coaching_directive) {
         coaching_directive = claritySignals.coaching_directive;
       } else if (evidenceSignals?.coaching_directive) {
@@ -549,8 +560,35 @@ const buildCoachConversationSignals = ({
     }
   }
 
-  if (antiRepeat.discovery_only_mode) {
-    coaching_directive = antiRepeat.coaching_directive;
+  const exploreFirst = shouldDefaultExploreFirst({
+    domain: map?.domain || goalContext?.domain || null,
+    userMessage,
+    user_asked_what_next,
+    user_wants_discovery: antiRepeat.user_wants_discovery,
+    user_rejects_prescription: antiRepeat.user_rejects_prescription,
+    user_completed_current_rep,
+    has_active_session_rep: hasActiveSessionRep,
+    execution_confirmed: Boolean(claritySignals?.execution_confirmed),
+    stop_discovery: Boolean(claritySignals?.stop_discovery || establishedExecutionClarity.established),
+    proofCycleFlow,
+  });
+  const inDiscoveryMode = Boolean(antiRepeat.discovery_only_mode || exploreFirst);
+
+  if (inDiscoveryMode) {
+    const hardPushback =
+      antiRepeat.coaching_repeat_complaint ||
+      /\b(don'?t want (?:an? )?(?:exercise|homework|action|step)|stop giving (?:me )?(?:exercises|homework|steps|advice)|stay with (?:the )?(?:feeling|emotion)|not another exercise|please stop)\b/i.test(
+        String(userMessage || ""),
+      );
+    const exploreDirective =
+      exploreFirst &&
+      !hardPushback &&
+      !antiRepeat.repeated_assistant_advice &&
+      !antiRepeat.thematic_assistant_repeat
+        ? EXPLORE_FIRST_DIRECTIVE
+        : null;
+    coaching_directive =
+      exploreDirective || antiRepeat.coaching_directive || coaching_directive;
     assign_new_rep = false;
     suggested_green_rep = null;
   }
@@ -559,7 +597,7 @@ const buildCoachConversationSignals = ({
     Boolean(claritySignals?.block_green_rep) || Boolean(evidenceSignals?.block_green_rep);
   const assign_clarity_rep = Boolean(claritySignals?.assign_green_rep);
 
-  if (block_clarity_rep) {
+  if (block_clarity_rep || inDiscoveryMode) {
     assign_new_rep = false;
     suggested_green_rep = null;
   } else if (assign_clarity_rep && claritySignals?.suggested_clarity_rep) {
@@ -628,11 +666,12 @@ const buildCoachConversationSignals = ({
     coaching_directive,
     user_rejects_prescription: antiRepeat.user_rejects_prescription,
     user_wants_discovery: antiRepeat.user_wants_discovery,
-    discovery_only_mode: antiRepeat.discovery_only_mode,
-    anti_repeat_active: antiRepeat.anti_repeat_active,
+    explore_first_mode: exploreFirst,
+    discovery_only_mode: inDiscoveryMode,
+    anti_repeat_active: antiRepeat.anti_repeat_active || exploreFirst,
     thematic_assistant_repeat: antiRepeat.thematic_assistant_repeat,
     max_assistant_overlap: antiRepeat.max_assistant_overlap,
-    stop_discovery: antiRepeat.discovery_only_mode ? false : undefined,
+    stop_discovery: inDiscoveryMode ? false : undefined,
   };
 };
 

@@ -44,6 +44,7 @@ const { indexCoachSession } = require("../stage1/coach/persistence/vectorMemory"
 const { DOMAIN_LABELS } = require("../constants/domains");
 const { sanitizeCoachUserFacingText, unwrapCoachAssistantMessage } = require("../stage1/coach/context/naturalLanguage");
 const { mergeBarriersIntoMemory } = require("../stage1/coach/signals/barriers");
+const { guardAssistantReplyAgainstRepeat } = require("../stage1/coach/signals/antiRepeat");
 const { resolveCoachingTransition, applyCertTurnDirectives } = require("../stage1/coach/flows/transition");
 const { buildCoachConversationSignals } = require("../stage1/coach/signals/conversation");
 const {
@@ -818,10 +819,22 @@ const coachCheckin = async (req, res) => {
           assignRequested: Boolean(transition.coaching_brief?.assign_green_rep),
         });
 
-    const assistantReply = sanitizeCoachUserFacingText(unwrapCoachAssistantMessage(rawAssistant), {
+    let assistantReply = sanitizeCoachUserFacingText(unwrapCoachAssistantMessage(rawAssistant), {
       stripGreetingName: (user?.name || "Member").split(/\s+/)[0],
       noTrustedPerson: Boolean(transition.conversation_signals?.no_trusted_person),
       greenRep: safeGreenRep,
+    });
+
+    const clientAssistants = clientMessages
+      .filter((m) => m?.role === "assistant")
+      .map((m) => String(m.content || "").trim())
+      .filter(Boolean);
+
+    assistantReply = guardAssistantReplyAgainstRepeat({
+      assistant: assistantReply,
+      messages: clientMessages.length ? clientMessages : messages,
+      userMessage,
+      extraPriorAssistants: clientAssistants,
     });
 
     const writebackHints = { ...(result.writeback_hints || {}) };

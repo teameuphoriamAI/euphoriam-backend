@@ -3,6 +3,8 @@ const {
   detectUserRejectsPrescription,
   detectThematicAssistantRepeat,
   detectRepeatedAssistantAdvice,
+  shouldDefaultExploreFirst,
+  guardAssistantReplyAgainstRepeat,
 } = require("../stage1/coach/signals/antiRepeat");
 const { buildCoachConversationSignals } = require("../stage1/coach/signals/conversation");
 const { resolveCoachingTransition } = require("../stage1/coach/flows/transition");
@@ -84,5 +86,35 @@ describe("antiRepeat", () => {
     expect(transition.coaching_mode).toBe("discovery");
     expect(transition.stop_discovery).toBe(false);
     expect(transition.reasons).toContain("anti_repeat_discovery_only");
+  });
+
+  test("explore-first activates for relationships domain on turn 1", () => {
+    expect(
+      shouldDefaultExploreFirst({
+        domain: "relationships",
+        userMessage: "I pull away when I get close. I want to understand why.",
+        user_asked_what_next: false,
+      }),
+    ).toBe(true);
+
+    const signals = buildCoachConversationSignals({
+      messages: [],
+      userMessage: "I pull away when I get close. I want to understand why.",
+      map: { domain: "relationships", map_resistance_complete: true },
+    });
+    expect(signals.explore_first_mode).toBe(true);
+    expect(signals.discovery_only_mode).toBe(true);
+    expect(signals.assign_new_rep).toBe(false);
+    expect(signals.coaching_directive).toMatch(/EXPLORE FIRST/i);
+  });
+
+  test("guardAssistantReplyAgainstRepeat swaps exact duplicate", () => {
+    const prior = "Tell me more about the last time that pull-away feeling showed up.";
+    const out = guardAssistantReplyAgainstRepeat({
+      assistant: prior,
+      messages: [{ role: "assistant", content: prior }],
+      userMessage: "I want to understand what's underneath.",
+    });
+    expect(out.trim()).not.toBe(prior.trim());
   });
 });

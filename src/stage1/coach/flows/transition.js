@@ -172,7 +172,7 @@ const buildCoachingBrief = (map, memoryCtx, userMessage, { messages = [], stage1
     !repCompletedThisTurn;
   if (explicitWhatNextNoRep) {
     assign_green_rep = true;
-  } else if (conversation.discovery_only_mode || conversation.anti_repeat_active) {
+  } else if (conversation.discovery_only_mode || conversation.anti_repeat_active || conversation.explore_first_mode) {
     assign_green_rep = false;
   } else if (
     conversation.reports_stagnation ||
@@ -494,16 +494,23 @@ const resolveCoachingTransition = ({
     patternEstablished;
 
   const discoveryOnly = Boolean(
-    conversation.discovery_only_mode || conversation.anti_repeat_active,
+    conversation.discovery_only_mode || conversation.anti_repeat_active || conversation.explore_first_mode,
   );
 
   if (discoveryOnly) {
+    const reasons = [];
+    if (conversation.explore_first_mode && !conversation.anti_repeat_active) {
+      reasons.push("explore_first_discovery");
+    }
+    if (conversation.discovery_only_mode || conversation.anti_repeat_active) {
+      reasons.push("anti_repeat_discovery_only");
+    }
     return withSignals({
       coaching_phase: "explore",
       coaching_mode: "discovery",
       discovery_complete: false,
       stop_discovery: false,
-      reasons: ["anti_repeat_discovery_only"],
+      reasons: reasons.length ? reasons : ["discovery_only"],
       coaching_brief: null,
     });
   }
@@ -637,7 +644,7 @@ const applyCertTurnDirectives = ({
     });
   }
 
-  if (signals.discovery_only_mode || signals.anti_repeat_active) {
+  if (signals.discovery_only_mode || signals.anti_repeat_active || signals.explore_first_mode) {
     next.coaching_mode = "discovery";
     next.stop_discovery = false;
     next.discovery_complete = false;
@@ -658,7 +665,7 @@ const applyCertTurnDirectives = ({
     }
   }
 
-  if (sessionIntakeFlow.body_echo_required && next.coaching_brief && !signals.discovery_only_mode) {
+  if (sessionIntakeFlow.body_echo_required && next.coaching_brief && !signals.discovery_only_mode && !signals.explore_first_mode) {
     signals.body_echo_required = true;
     signals.smallest_step_mode = Boolean(sessionIntakeFlow.smallest_step_mode);
     const bodyWords = String(sessionIntakeFlow.felt_sensation || "").trim();
@@ -670,7 +677,8 @@ const applyCertTurnDirectives = ({
   if (
     (phase === INTAKE_PHASES.EXPLORE || phase === INTAKE_PHASES.INSIGHT_INTEGRATION) &&
     !proofIntegrationActive &&
-    !signals.discovery_only_mode
+    !signals.discovery_only_mode &&
+    !signals.explore_first_mode
   ) {
     signals.map_reference_required = true;
     if (next.coaching_brief) {
@@ -689,7 +697,7 @@ const applyCertTurnDirectives = ({
     !sessionIntakeFlow.session_intake_update?.edge_inquiry_complete &&
     !proofIntegrationActive;
 
-  if ((edgeFromProof || exploreEdgeNeeded || signals.reports_stagnation) && !signals.discovery_only_mode) {
+  if ((edgeFromProof || exploreEdgeNeeded || signals.reports_stagnation) && !signals.discovery_only_mode && !signals.explore_first_mode) {
     signals.edge_inquiry_required = true;
     if (next.coaching_brief) {
       next.coaching_brief.instruction =
@@ -714,7 +722,7 @@ const applyCertTurnDirectives = ({
     }
   }
 
-  if (phase === INTAKE_PHASES.INSIGHT_INTEGRATION && !proofIntegrationActive && !signals.discovery_only_mode) {
+  if (phase === INTAKE_PHASES.INSIGHT_INTEGRATION && !proofIntegrationActive && !signals.discovery_only_mode && !signals.explore_first_mode) {
     signals.insight_integration = true;
     if (next.coaching_brief) {
       next.coaching_brief.assign_green_rep = true;

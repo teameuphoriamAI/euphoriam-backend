@@ -229,18 +229,50 @@ const findOrCreateCreatorUser = async (req, res) => {
         email,
       });
 
-    if (reason === "KAJABI_UNAVAILABLE") {
-      const cachedStatus = user?.membership
-        ? clubStatusFromStoredMembership(user.membership)
-        : null;
-      if (cachedStatus && hasPaidMembership(cachedStatus)) {
-        clubStatus = cachedStatus;
-        diagnosticContext = diagnosticContextFromStoredMembership(
-          user.membership,
+    // Non-UC members: route them into the free funnel (IRL Report) instead of blocking
+    const isUcMember =
+      clubStatus.club ||
+      clubStatus.bronze ||
+      clubStatus.silver ||
+      clubStatus.accelerate;
+    if (!isUcMember) {
+      if (signupIntent && !name) {
+        return errorResponse(
+          res,
+          "Name is required to create your free diagnostic account.",
+          400,
         );
-        console.warn(
-          "[findOrCreateCreatorUser] Using cached membership — Kajabi unreachable",
-          { email },
+      }
+      const LINK_VALIDITY_DAYS = parseInt(process.env.FUNNEL_LINK_VALIDITY_DAYS || "10", 10);
+      const frontendUrl = (process.env.FRONTEND_URL || "").replace(/\/$/, "");
+      const now = new Date();
+
+      // One direct-signup row per email (DB unique index). Reuse + refresh token instead of inserting duplicates.
+      let funnelRecord = await withDbSlot(() =>
+        FunnelAccess.findOne({
+          where: { email, kajabi_offer_source: "direct-signup" },
+          order: [["createdAt", "DESC"]],
+        })
+      );
+
+      const signupName = name && String(name).trim() ? String(name).trim() : null;
+      const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
+
+      if (!funnelRecord) {
+        // First direct-signup row for this email.
+        const nonce = crypto.randomUUID();
+        const token = generateFunnelToken({ email, kajabi_offer_source: "direct-signup", nonce });
+        const metadata = signupName ? { signup_name: signupName } : {};
+
+        funnelRecord = await withDbSlot(() =>
+          FunnelAccess.create({
+            email,
+            link_token: token,
+            link_created_at: now,
+            link_expiry: linkExpiry,
+            kajabi_offer_source: "direct-signup",
+            metadata,
+          })
         );
       } else {
         return errorResponse(

@@ -301,8 +301,12 @@ const coachOpen = async (req, res) => {
   }
 };
 
+const BRAIN_PROMPT_FALLBACK_MAX = 6000;
+
 /** POST /api/stage1/coach/checkin — LLM controls conversation (memory loaded every turn). */
 const coachCheckin = async (req, res) => {
+  const t0 = Date.now();
+  const timings = {};
   try {
     if (!aiService.flags.coach) {
       return errorResponse(
@@ -365,13 +369,33 @@ const coachCheckin = async (req, res) => {
       stage1 = logged.stage1;
     }
 
-    const coachMemoryContext = await buildCoachMemoryContext({
+    const featureFlags = stage1FeatureFlags();
+
+    // Kick off independent I/O early; await memory first (flows need it).
+    const memoryPromise = buildCoachMemoryContext({
       user,
       stage1,
       map,
       domain,
       semanticQuery: userMessage,
     });
+    const promptsPromise = loadCoachPromptBundle();
+    const userCtxPromise = buildCoachUserContext(user, stage1, map, domain);
+    const ragPromise = featureFlags.brain_prompt_rag_enabled
+      ? retrieveBrainPromptChunks({
+          query: userMessage,
+          signatureId: map?.signature_id || null,
+          domain,
+          topK: 6,
+          minSim: 0.22,
+        }).catch((err) => {
+          console.warn("[coachCheckin] brain prompt RAG skipped:", err.message);
+          return [];
+        })
+      : Promise.resolve(null);
+
+    const coachMemoryContext = await memoryPromise;
+    timings.memory_ms = Date.now() - t0;
 
     const rawOpenSession = findOpenSessionForDomain(
       Array.isArray(stage1.coach_session_log) ? stage1.coach_session_log : [],
@@ -395,8 +419,6 @@ const coachCheckin = async (req, res) => {
               green_rep: frictionHandoff.green_rep,
             }
           : null;
-
-    const featureFlags = stage1FeatureFlags();
 
     const sessionIntakeFlow = resolveSessionIntakeFlow({
       openSession: rawOpenSession,
@@ -462,10 +484,6 @@ const coachCheckin = async (req, res) => {
       firstSessionFlow,
     });
 
-    const prompts = await loadCoachPromptBundle();
-    const user_coach_context = await buildCoachUserContext(user, stage1, map, domain);
-    user_coach_context.COACH_MEMORY_CONTEXT = coachMemoryContext;
-
     let transition = resolveCoachingTransition({
       messages,
       userMessage,
@@ -497,6 +515,7 @@ const coachCheckin = async (req, res) => {
       domain,
     });
 
+    const tProof = Date.now();
     const proofProgressionFlow = await resolveProofProgressionFlowAsync({
       userMessage,
       proofSignals,
@@ -507,6 +526,7 @@ const coachCheckin = async (req, res) => {
       openSession: rawOpenSession,
       proofCycleFlow,
     });
+    timings.proof_ms = Date.now() - tProof;
 
     const activationMomentFlow = resolveActivationMomentFlow({
       messages,
@@ -700,22 +720,31 @@ const coachCheckin = async (req, res) => {
 
     const aiMessages = excerptCoachMessages(messages);
 
-    if (featureFlags.brain_prompt_rag_enabled) {
-      try {
-        prompts.brain_prompt_rag_chunks = await retrieveBrainPromptChunks({
-          query: userMessage,
-          signatureId: map?.signature_id || null,
-          domain,
-          topK: 6,
-          minSim: 0.22,
-        });
-        if (prompts.brain_prompt_rag_chunks?.length) {
-          delete prompts.brain_prompt;
+    const tBundle = Date.now();
+    const [prompts, user_coach_context, ragChunks] = await Promise.all([
+      promptsPromise,
+      userCtxPromise,
+      ragPromise,
+    ]);
+    timings.bundle_rag_ms = Date.now() - tBundle;
+    user_coach_context.COACH_MEMORY_CONTEXT = coachMemoryContext;
+
+    if (Array.isArray(ragChunks)) {
+      if (ragChunks.length) {
+        prompts.brain_prompt_rag_chunks = ragChunks;
+      }
+      // Keep a truncated Brain in the static bundle so prompt-cache hits
+      // still have a fallback when a later turn misses RAG.
+      if (prompts.brain_prompt) {
+        const text = String(prompts.brain_prompt);
+        if (text.length > BRAIN_PROMPT_FALLBACK_MAX) {
+          prompts.brain_prompt =
+            `${text.slice(0, BRAIN_PROMPT_FALLBACK_MAX)}\n\n[... brain prompt truncated for latency ...]`;
         }
-      } catch (err) {
-        console.warn("[coachCheckin] brain prompt RAG skipped:", err.message);
       }
     }
+
+    timings.prep_ms = Date.now() - t0;
 
     const aiPayload = {
       user_id: user.id,
@@ -745,6 +774,7 @@ const coachCheckin = async (req, res) => {
       if (typeof res.flush === "function") res.flush();
     };
 
+    const tLlm = Date.now();
     let result = null;
     if (wantsStream) {
       writeSse({ type: "status", phase: "preparing" });
@@ -778,6 +808,7 @@ const coachCheckin = async (req, res) => {
     } else {
       result = await aiService.coachReply(aiPayload);
     }
+    timings.llm_ms = Date.now() - tLlm;
 
     let rawAssistant = result.assistant_message;
     let rawGreenRep = result.green_rep;
@@ -952,7 +983,11 @@ const coachCheckin = async (req, res) => {
     if (frictionContext && frictionHandoff?.domain === domain) {
       nextStage1 = { ...nextStage1, coach_friction_handoff: null };
     }
+    const tPersist = Date.now();
     await persistStage1ForUser(user.id, nextStage1);
+    timings.persist_ms = Date.now() - tPersist;
+    timings.total_ms = Date.now() - t0;
+    console.log("[coachCheckin:timing]", JSON.stringify(timings));
 
     const payload = {
       domain,

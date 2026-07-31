@@ -7,9 +7,10 @@ const { serializeCoachingMemoryForCoach } = require("./coachingMemory");
 const { buildResistanceEvolutionNarrative } = require("./naturalLanguage");
 
 const MAX_TRANSCRIPT_MESSAGES = 16;
-const MAX_COACH_AI_MESSAGES = 24;
-const MAX_MESSAGE_CHARS = 900;
+const MAX_COACH_AI_MESSAGES = 12;
+const MAX_MESSAGE_CHARS = 600;
 const MAX_PROOF_ACTION_CHARS = 400;
+const MAX_USER_SESSIONS_1ON1 = 3;
 
 const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) => {
   if (!Array.isArray(transcript)) return [];
@@ -73,7 +74,7 @@ const slimDomainMapForCoach = (map) => {
 const trimProofAction = (action) => String(action || "").slice(0, MAX_PROOF_ACTION_CHARS);
 
 const serializeUserSessions = (sessions) =>
-  (sessions || []).slice(0, 6).map((s) => ({
+  (sessions || []).slice(0, MAX_USER_SESSIONS_1ON1).map((s) => ({
     id: s.id,
     session_date: s.sessionDate || s.createdAt,
     summary: s.summery || null,

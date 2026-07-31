@@ -1,4 +1,5 @@
 const axios = require("axios");
+const crypto = require("crypto");
 
 const BASE = (process.env.AI_SERVICE_URL || "").replace(/\/$/, "");
 const TIMEOUT_MS = Number(process.env.AI_SERVICE_TIMEOUT_MS || 120000);
@@ -10,6 +11,9 @@ const flags = {
 };
 
 const { stage1FeatureFlags } = require("../helpers/stage1FeatureFlags");
+
+/** Keys already uploaded to the ai-worker prompt cache this process lifetime. */
+const uploadedPromptKeys = new Set();
 
 const isEnabled = () => Boolean(BASE);
 
@@ -45,11 +49,77 @@ const post = async (path, body) => {
   }
 };
 
-const coachReply = (payload) =>
-  post("/v1/coach/reply", {
+const hashStaticPrompts = (staticPrompts) =>
+  crypto.createHash("sha256").update(JSON.stringify(staticPrompts)).digest("hex").slice(0, 32);
+
+/**
+ * Split static prompt bundle (cacheable) from per-turn RAG chunks.
+ * After the first successful upload of a key, subsequent turns send cache_key + thin overlay.
+ */
+const prepareCoachPayload = (payload) => {
+  const feature_flags = payload.feature_flags || stage1FeatureFlags();
+  const prompts = payload.prompts;
+  if (!prompts || typeof prompts !== "object") {
+    return { wire: { ...payload, feature_flags }, meta: null };
+  }
+
+  const ragChunks = prompts.brain_prompt_rag_chunks;
+  const staticPrompts = { ...prompts };
+  delete staticPrompts.brain_prompt_rag_chunks;
+  const key = hashStaticPrompts(staticPrompts);
+  const thin = uploadedPromptKeys.has(key);
+
+  const wire = {
     ...payload,
-    feature_flags: payload.feature_flags || stage1FeatureFlags(),
-  });
+    feature_flags,
+    prompts_cache_key: key,
+  };
+
+  if (thin) {
+    wire.prompts = Array.isArray(ragChunks) && ragChunks.length
+      ? { brain_prompt_rag_chunks: ragChunks }
+      : null;
+  } else {
+    wire.prompts =
+      Array.isArray(ragChunks) && ragChunks.length
+        ? { ...staticPrompts, brain_prompt_rag_chunks: ragChunks }
+        : staticPrompts;
+  }
+
+  return {
+    wire,
+    meta: { key, staticPrompts, ragChunks },
+  };
+};
+
+const fullPromptsBody = (meta) => {
+  if (!meta) return null;
+  const { staticPrompts, ragChunks } = meta;
+  return Array.isArray(ragChunks) && ragChunks.length
+    ? { ...staticPrompts, brain_prompt_rag_chunks: ragChunks }
+    : staticPrompts;
+};
+
+const coachReply = async (payload) => {
+  const { wire, meta } = prepareCoachPayload(payload);
+  try {
+    const data = await post("/v1/coach/reply", wire);
+    if (meta?.key) uploadedPromptKeys.add(meta.key);
+    return data;
+  } catch (err) {
+    if (err.status === 428 && meta?.key) {
+      uploadedPromptKeys.delete(meta.key);
+      const data = await post("/v1/coach/reply", {
+        ...wire,
+        prompts_cache_key: meta.key,
+        prompts: fullPromptsBody(meta),
+      });
+      uploadedPromptKeys.add(meta.key);
+      return data;
+    }
+    throw err;
+  }
+};
 
 /**
  * Async generator of SSE events from /v1/coach/reply/stream.
@@ -62,32 +132,48 @@ async function* coachReplyStream(payload) {
     throw err;
   }
 
-  const body = {
-    ...payload,
-    feature_flags: payload.feature_flags || stage1FeatureFlags(),
+  const openStream = async (body) => {
+    try {
+      return await axios.post(`${BASE}/v1/coach/reply/stream`, body, {
+        headers: {
+          ...headers(),
+          Accept: "text/event-stream",
+        },
+        responseType: "stream",
+        timeout: TIMEOUT_MS,
+      });
+    } catch (err) {
+      const status = err.response?.status || 502;
+      const message =
+        err.response?.data?.detail ||
+        err.response?.data?.message ||
+        err.message ||
+        "AI service stream failed";
+      const e = new Error(message);
+      e.status = status >= 500 ? 502 : status;
+      e.cause = err;
+      throw e;
+    }
   };
 
+  let { wire, meta } = prepareCoachPayload(payload);
   let response;
   try {
-    response = await axios.post(`${BASE}/v1/coach/reply/stream`, body, {
-      headers: {
-        ...headers(),
-        Accept: "text/event-stream",
-      },
-      responseType: "stream",
-      timeout: TIMEOUT_MS,
-    });
+    response = await openStream(wire);
+    if (meta?.key) uploadedPromptKeys.add(meta.key);
   } catch (err) {
-    const status = err.response?.status || 502;
-    const message =
-      err.response?.data?.detail ||
-      err.response?.data?.message ||
-      err.message ||
-      "AI service stream failed";
-    const e = new Error(message);
-    e.status = status >= 500 ? 502 : status;
-    e.cause = err;
-    throw e;
+    if (err.status === 428 && meta?.key) {
+      uploadedPromptKeys.delete(meta.key);
+      wire = {
+        ...wire,
+        prompts_cache_key: meta.key,
+        prompts: fullPromptsBody(meta),
+      };
+      response = await openStream(wire);
+      uploadedPromptKeys.add(meta.key);
+    } else {
+      throw err;
+    }
   }
 
   const stream = response.data;

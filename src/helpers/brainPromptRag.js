@@ -5,9 +5,24 @@ const {
   toBrainChunkResult,
 } = require("./brainPromptChunking");
 
-const loadBrainPromptDocs = async () => {
+const BRAIN_DOCS_TTL_MS = Number(process.env.BRAIN_PROMPT_DOCS_CACHE_TTL_MS || 5 * 60 * 1000);
+
+let _brainDocsCache = { docs: null, loadedAt: 0 };
+
+const loadBrainPromptDocs = async ({ force = false } = {}) => {
+  const now = Date.now();
+  if (
+    !force &&
+    _brainDocsCache.docs &&
+    now - _brainDocsCache.loadedAt < BRAIN_DOCS_TTL_MS
+  ) {
+    return _brainDocsCache.docs;
+  }
+
   const docs = await Document.findAll({ limit: 500, order: [["id", "ASC"]] });
-  return docs.filter((d) => d.metadata?.source === "brain_prompt");
+  const brainDocs = docs.filter((d) => d.metadata?.source === "brain_prompt");
+  _brainDocsCache = { docs: brainDocs, loadedAt: now };
+  return brainDocs;
 };
 
 const retrieveSemanticBrainChunks = async ({

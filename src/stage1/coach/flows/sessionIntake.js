@@ -217,32 +217,6 @@ const resolveSessionIntakeFlow = ({
     awaitingEmotionalCheckin = false;
   }
 
-  // #region agent log
-  try {
-    require("../../../helpers/debugIngest").debugIngest(
-      "sessionIntake.js:resolve",
-      "intake phase resolution",
-      {
-        userTurns,
-        userMsgLen: String(userMessage || "").trim().length,
-        reqBody_intention: Boolean(reqBody.session_intention),
-        intake_intention: Boolean(intake.session_intention),
-        captured_intention: Boolean(sessionIntention),
-        intention_head: String(sessionIntention || "").slice(0, 60),
-        resistance_match: RESISTANCE_SIGNAL.test(String(userMessage || "")),
-        emotional_complete: Boolean(intake.emotional_checkin_complete),
-        felt_sensation: Boolean(feltSensation),
-        same_day: sameDaySession,
-        session_phase: sessionPhase,
-        awaiting_intention: awaitingSessionIntention,
-      },
-      "H15",
-    );
-  } catch {
-    /* ignore */
-  }
-  // #endregion
-
   const bodyEchoRequired = Boolean(
     feltSensation &&
       (sessionPhase === SESSION_PHASES.RESISTANCE_PROBE ||

@@ -66,7 +66,6 @@ const {
   SESSION_PHASES,
 } = require("../stage1/coach/flows/sessionIntake");
 const { buildStateVectorV2 } = require("../helpers/stage1StateVector");
-const { debugIngest } = require("../helpers/debugIngest");
 
 const COACH_STATE = Object.freeze({ COACHING: "coaching", PROGRESS: "progress" });
 
@@ -385,22 +384,6 @@ const coachCheckin = async (req, res) => {
       userMessage,
     );
 
-    // #region agent log
-    if (clientMessages.length === 0 && messages.length > 0) {
-      debugIngest(
-        "stage1CoachController.js:coachCheckin:reconcile",
-        "merged open session transcript after empty client messages",
-        {
-          clientLen: clientMessages.length,
-          storedLen: rawOpenSession?.messages?.length || 0,
-          mergedLen: messages.length,
-          roles: messages.map((m) => m.role),
-        },
-        "H1",
-      );
-    }
-    // #endregion
-
     const frictionHandoff = stage1.coach_friction_handoff || null;
     const frictionContext =
       req.body?.friction_context && typeof req.body.friction_context === "object"
@@ -717,32 +700,6 @@ const coachCheckin = async (req, res) => {
 
     const aiMessages = excerptCoachMessages(messages);
 
-    // #region agent log
-    debugIngest(
-      "stage1CoachController.js:coachCheckin:pre-ai",
-      "coach checkin before AI",
-      {
-        domain,
-        userMsgLen: userMessage.length,
-        aiMessageCount: aiMessages.length,
-        roles: aiMessages.map((m) => m.role),
-        sessionPhase: intakeSessionPhase,
-        coachingMode: transition.coaching_mode,
-        assignGreenRep: Boolean(transition.coaching_brief?.assign_green_rep),
-        suggestedMilestoneRep: transition.coaching_brief?.suggested_milestone_rep?.name || null,
-        executionConfirmed: Boolean(transition.conversation_signals?.execution_confirmed),
-        claritySaturation: Boolean(transition.conversation_signals?.clarity_saturation),
-        repeatComplaint: Boolean(transition.conversation_signals?.coaching_repeat_complaint),
-        repeatedAssistantAdvice: Boolean(transition.conversation_signals?.repeated_assistant_advice),
-        assistantAdviceLoop: Boolean(transition.conversation_signals?.assistant_advice_loop),
-        userRepeatedSamePoint: Boolean(transition.conversation_signals?.user_repeated_same_point),
-        coachingDirectiveHead: String(transition.conversation_signals?.coaching_directive || "").slice(0, 200),
-        instructionTail: String(transition.coaching_brief?.instruction || "").slice(-120),
-      },
-      "H10-H12",
-    );
-    // #endregion
-
     if (featureFlags.brain_prompt_rag_enabled) {
       try {
         prompts.brain_prompt_rag_chunks = await retrieveBrainPromptChunks({
@@ -772,20 +729,6 @@ const coachCheckin = async (req, res) => {
     });
 
     let rawAssistant = result.assistant_message;
-    // #region agent log
-    debugIngest(
-      "stage1CoachController.js:coachCheckin:post-ai",
-      "coach checkin after AI",
-      {
-        domain,
-        assistantPrefix: String(rawAssistant || "").slice(0, 100),
-        assistantLen: String(rawAssistant || "").length,
-        hasGreenRep: Boolean(result.green_rep?.name),
-        greenRepName: result.green_rep?.name || null,
-      },
-      "H2-H4",
-    );
-    // #endregion
     let rawGreenRep = result.green_rep;
     if (typeof rawAssistant === "string" && rawAssistant.trim().startsWith("{")) {
       try {

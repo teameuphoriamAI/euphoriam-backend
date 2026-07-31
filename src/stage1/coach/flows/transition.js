@@ -338,42 +338,6 @@ const buildCoachingBrief = (map, memoryCtx, userMessage, { messages = [], stage1
       " Use conversation_signals.coaching_context for bottleneck/rep/funnel hints — generate fresh wording; do not paste templates.";
   }
 
-  // #region agent log
-  try {
-    require("../../../helpers/debugIngest").debugIngest(
-      "transition.js:assignGate",
-      "assign_green_rep gate inputs",
-      {
-        assign_green_rep,
-        conv_assign_new_rep: Boolean(conversation.assign_new_rep),
-        conv_suggested_green_rep: Boolean(conversation.suggested_green_rep),
-        block_clarity_rep: Boolean(conversation.block_clarity_rep),
-        clarity_saturation: Boolean(conversation.clarity_saturation),
-        execution_confirmed: Boolean(conversation.execution_confirmed),
-        self_generated_clarity: Boolean(conversation.self_generated_clarity),
-        user_asked_what_next: Boolean(conversation.user_asked_what_next),
-        user_completed_current_rep: Boolean(conversation.user_completed_current_rep),
-        has_active_session_rep: Boolean(conversation.has_active_session_rep),
-        hasActiveRep_memory: hasActiveRep,
-        memory_last_green_rep: memoryCtx?.last_green_rep?.name || memoryCtx?.last_green_rep || null,
-        explicitWhatNextNoRep,
-        reports_stagnation: Boolean(conversation.reports_stagnation),
-        repeated_assistant_advice: Boolean(conversation.repeated_assistant_advice),
-        assistant_advice_loop: Boolean(conversation.assistant_advice_loop),
-        proof_awaiting: Boolean(proofCycleFlow?.awaiting_proof_log),
-        proof_integration: Boolean(proofCycleFlow?.proof_integration_mode),
-        investigation_active: Boolean(investigationFlow?.active),
-        map_complete: Boolean(map?.map_resistance_complete),
-        suggested_milestone_rep: suggested_milestone_rep?.name || null,
-        structural_step: structural_framework?.current_step || null,
-      },
-      "H13",
-    );
-  } catch {
-    /* ignore */
-  }
-  // #endregion
-
   return {
     discovery_complete: true,
     pattern_label: patternLabel,

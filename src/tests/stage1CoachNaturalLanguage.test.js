@@ -51,6 +51,24 @@ describe("stage1CoachNaturalLanguage", () => {
     expect(out).toContain("lazy");
   });
 
+  test("does not leave dangling Here's your next step after Green Rep strip", () => {
+    const raw =
+      "Great to hear you're feeling positive about moving forward, Yashal. " +
+      "Let's focus on maintaining that momentum. To support your goal of generating $5 an hour, " +
+      "let's work on starting a client conversation. Here's your next step:\n\n" +
+      "**Today's Green Rep:** Start a client conversation\n" +
+      "1. Open your notes app\n" +
+      "2. Draft one honest sentence\n" +
+      "**Win Condition:** Message is sent";
+    const out = sanitizeCoachUserFacingText(raw, {
+      greenRep: { name: "Start a client conversation" },
+    });
+    expect(out).toMatch(/feeling positive/i);
+    expect(out).not.toMatch(/here'?s your next step/i);
+    expect(out).not.toContain("Today's Green Rep");
+    expect(out).not.toContain("Win Condition");
+  });
+
   test("detects substantive answers and proof", () => {
     const sig = detectProgressSignals("I generated $12/hour", {});
     expect(isSubstantiveCheckInAnswer("I generated $12/hour", sig)).toBe(true);

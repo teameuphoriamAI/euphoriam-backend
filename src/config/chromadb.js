@@ -4,6 +4,18 @@ const { ChromaClient, CloudClient } = require("chromadb");
 let chromaClient = null;
 let chatCollection = null;
 let sessionCollection = null;
+let chromaDisabled = false;
+
+/** chromadb JS v3+ talks to a server URL or Cloud — not a filesystem directory. */
+const isChromaConfigured = () => {
+  if (chromaDisabled) return false;
+  const hasCloud =
+    process.env.CHROMA_DB_API_KEY &&
+    process.env.CHROMA_DB_TENANT &&
+    process.env.CHROMA_DB_DATABASE;
+  const hasUrl = Boolean(process.env.CHROMA_DB_URL?.trim());
+  return Boolean(hasCloud || hasUrl);
+};
 
 // Collection names
 const COLLECTIONS = {
@@ -51,9 +63,13 @@ const initChromaDB = async () => {
       console.log(`Initializing ChromaDB client with remote server: ${chromaDbUrl}`);
       chromaClient = new ChromaClient({ path: chromaDbUrl });
     } else if (chromaDbPath) {
-      // Local persistent storage
-      console.log(`Initializing ChromaDB client with local storage: ${chromaDbPath}`);
-      chromaClient = new ChromaClient({ path: chromaDbPath });
+      // chromadb JS v3 no longer supports filesystem paths via `path` (must be http(s) URL).
+      chromaDisabled = true;
+      console.warn(
+        `ChromaDB disabled: CHROMA_DB_PATH="${chromaDbPath}" is not supported in chromadb v3. ` +
+          "Set CHROMA_DB_URL (e.g. http://localhost:8001) or Cloud credentials instead.",
+      );
+      return null;
     } else {
       // Ephemeral (in-memory) - default for development
       console.log("Initializing ChromaDB client in ephemeral (in-memory) mode");
@@ -114,11 +130,15 @@ const getChatCollection = async () => {
  */
 const getSessionCollection = async () => {
   try {
+    if (!isChromaConfigured()) {
+      return null;
+    }
     if (sessionCollection) {
       return sessionCollection;
     }
 
     const client = await initChromaDB();
+    if (!client) return null;
     
     // Try to get existing collection first
     try {
@@ -198,6 +218,7 @@ const getChromaClient = async () => {
 
 module.exports = {
   initChromaDB,
+  isChromaConfigured,
   getChromaClient,
   getChatCollection,
   getSessionCollection,

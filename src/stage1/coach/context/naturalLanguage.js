@@ -38,7 +38,11 @@ const HOLLOW_COACH_PHRASES = [
 ];
 
 const INLINE_REP_WORKSHEET =
-  /(?:here'?s what to do|your next step is|next step is the)[\s\S]*?(?=\n\n[A-Z]|$)/gi;
+  /(?:here'?s what to do|here'?s your next step|your next step is|next step is the)[\s\S]*?(?=\n\n[A-Z]|$)/gi;
+
+/** Left behind when Green Rep / worksheet blocks are stripped from the reply. */
+const DANGLING_NEXT_STEP_LEADIN =
+  /(?:^|\n)\s*(?:here'?s (?:what to do|your next step)|your next step is(?: the)?|next step is the)\s*:?\s*$/i;
 
 const unwrapCoachAssistantMessage = (raw) => {
   if (raw == null) return raw;
@@ -107,6 +111,7 @@ const sanitizeCoachUserFacingText = (
   }
   out = out.replace(/\n{3,}/g, "\n\n").trim();
   out = stripInlineRepWorksheet(out, greenRep);
+  out = out.replace(DANGLING_NEXT_STEP_LEADIN, "").trim();
   return out;
 };
 

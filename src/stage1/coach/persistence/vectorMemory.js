@@ -3,7 +3,7 @@
  * Best-effort — failures do not block coaching.
  */
 
-const { getSessionCollection } = require("../../../config/chromadb");
+const { getSessionCollection, isChromaConfigured } = require("../../../config/chromadb");
 const { generateEmbedding } = require("../../../services/vectorStoreService");
 
 const coachDocId = (sessionId) => `coach_stage1_${sessionId}`;
@@ -34,8 +34,10 @@ const indexCoachSession = async ({
   summary = null,
 }) => {
   if (!sessionId || !messages?.length) return null;
+  if (!isChromaConfigured()) return null;
   try {
     const collection = await getSessionCollection();
+    if (!collection) return null;
     const transcript = formatCoachTranscript(messages);
     const content = [
       summary ? `Summary: ${summary}` : null,
@@ -82,8 +84,10 @@ const searchCoachSessions = async ({
   minScore = 0.25,
 }) => {
   if (!query?.trim()) return [];
+  if (!isChromaConfigured()) return [];
   try {
     const collection = await getSessionCollection();
+    if (!collection) return [];
     const queryEmbedding = await generateEmbedding(query.slice(0, 2000));
     const where = buildCoachSessionWhere({ userId, domain });
 

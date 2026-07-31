@@ -717,7 +717,7 @@ const coachCheckin = async (req, res) => {
       }
     }
 
-    const result = await aiService.coachReply({
+    const aiPayload = {
       user_id: user.id,
       domain_map: slimDomainMapForCoach(map),
       active_goal_context: buildActiveGoalContext(map, domain),
@@ -726,7 +726,58 @@ const coachCheckin = async (req, res) => {
       messages: aiMessages,
       user_message: userMessage,
       prompts,
-    });
+    };
+
+    const wantsStream =
+      Boolean(req.body?.stream) ||
+      String(req.headers.accept || "").includes("text/event-stream");
+
+    const writeSse = (event) => {
+      if (!res.headersSent) {
+        res.status(200);
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        if (typeof res.flushHeaders === "function") res.flushHeaders();
+      }
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (typeof res.flush === "function") res.flush();
+    };
+
+    let result = null;
+    if (wantsStream) {
+      writeSse({ type: "status", phase: "preparing" });
+      try {
+        for await (const event of aiService.coachReplyStream(aiPayload)) {
+          // Do not forward worker deltas yet — backend sanitize/guard may still
+          // change the committed text. We stream the final text after post-process.
+          if (event?.type === "status") {
+            writeSse({ type: "status", phase: event.phase || "generating" });
+          } else if (event?.type === "result") {
+            result = event.data || null;
+          } else if (event?.type === "error") {
+            writeSse({
+              type: "error",
+              message: event.message || "Coach stream failed",
+            });
+            return res.end();
+          }
+        }
+      } catch (streamErr) {
+        writeSse({
+          type: "error",
+          message: streamErr.message || "Coach stream failed",
+        });
+        return res.end();
+      }
+      if (!result) {
+        writeSse({ type: "error", message: "Empty coach stream result" });
+        return res.end();
+      }
+    } else {
+      result = await aiService.coachReply(aiPayload);
+    }
 
     let rawAssistant = result.assistant_message;
     let rawGreenRep = result.green_rep;
@@ -903,7 +954,7 @@ const coachCheckin = async (req, res) => {
     }
     await persistStage1ForUser(user.id, nextStage1);
 
-    return successResponse(res, "Coach reply", {
+    const payload = {
       domain,
       session_phase: sessionPhase,
       coach_state: coachState,
@@ -915,9 +966,52 @@ const coachCheckin = async (req, res) => {
         transition.conversation_signals?.suggested_training_pick || null,
       COACH_MEMORY_CONTEXT: coachMemoryContext,
       checkin,
-    });
+    };
+
+    if (wantsStream) {
+      // Stream only the committed (sanitized / guarded) text so the UI never
+      // shows a draft reply that later gets swapped for a different message.
+      const finalText = String(assistantReply || "");
+      const chunkSize = 28;
+      for (let i = 0; i < finalText.length; i += chunkSize) {
+        writeSse({ type: "delta", text: finalText.slice(i, i + chunkSize) });
+      }
+      writeSse({ type: "done", result: payload });
+      return res.end();
+    }
+
+    return successResponse(res, "Coach reply", payload);
   } catch (err) {
     console.error("[coachCheckin]", err);
+    if (
+      !res.headersSent &&
+      (Boolean(req.body?.stream) ||
+        String(req.headers.accept || "").includes("text/event-stream"))
+    ) {
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.write(
+        `data: ${JSON.stringify({
+          type: "error",
+          message: err.message || "Coach check-in failed",
+        })}\n\n`,
+      );
+      return res.end();
+    }
+    if (res.headersSent) {
+      try {
+        res.write(
+          `data: ${JSON.stringify({
+            type: "error",
+            message: err.message || "Coach check-in failed",
+          })}\n\n`,
+        );
+        return res.end();
+      } catch {
+        return undefined;
+      }
+    }
     return errorResponse(res, err.message || "Coach check-in failed", err.status || 502);
   }
 };

@@ -304,6 +304,7 @@ const isCreatorClubMember = (context = {}) => {
   console.log("Is Creator Club Member:", club);
   console.log("Is Bronze:", bronze);
   console.log("Is Silver:", silver);
+  console.log("Is Accelerate:", accelerate);
 
   if (!club) console.log("User is NOT a Creator Club member.");
   else console.log("User IS a Creator Club member.");

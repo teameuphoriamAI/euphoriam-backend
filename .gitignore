@@ -2,3 +2,8 @@
 /node_modules
 # env files
 .env
+
+# Cursor IDE — local only, never commit or push to GitHub
+.cursor/
+.cursorignore
+.cursorrules

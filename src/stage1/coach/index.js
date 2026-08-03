@@ -25,6 +25,8 @@ module.exports = {
 
   // flows
   resolveCoachingTransition: require("./flows/transition").resolveCoachingTransition,
+  resolveCoachTurnMode: require("./flows/turnMode").resolveCoachTurnMode,
+  applyCoachTurnMode: require("./flows/turnMode").applyCoachTurnMode,
   resolveStructuralCoachingFlow: require("./flows/structural").resolveStructuralCoachingFlow,
   resolveProofCycleFlow: require("./flows/proofCycle").resolveProofCycleFlow,
   onGreenRepAssigned: require("./flows/proofCycle").onGreenRepAssigned,

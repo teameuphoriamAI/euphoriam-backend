@@ -141,7 +141,13 @@ const recordCoachCheckin = (stage1, payload) => {
   current.updated_at = now;
   current.state_last = state;
   current.turn_count = (current.turn_count || 0) + 1;
-  if (green_rep) current.green_rep_last = green_rep;
+  if (green_rep) {
+    current.green_rep_last = green_rep;
+    if (green_rep.name) current.session_rep_locked = true;
+  }
+  if (payload.session_rep_locked) {
+    current.session_rep_locked = true;
+  }
   if (gravity_rating != null) current.gravity_rating_last = gravity_rating;
 
   return {

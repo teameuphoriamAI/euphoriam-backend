@@ -16,7 +16,7 @@ const NO_TRUSTED_PERSON_PATTERN =
   /\b(no\s*one|nobody|don'?t\s+have\s+anyone|have\s+no\s+one|no\s+friends?|not\s+anyone|no\s+body\s+to\s+talk|alone|isolated|no\s+one\s+to\s+talk)\b/i;
 
 const WHAT_NEXT_PATTERN =
-  /\b(what\s+should\s+i\s+do|what\s+do\s+i\s+do\s+next|what'?s?\s+next|what\s+now|what\s+should\s+i\s+do\s+next|what\s+next|how\s+(?:do|should|can|will|would)\s+i\s+(?:start|begin|do\s+(?:it|this|that)|get\s+started|actually\s+(?:start|do|begin))|how\s+will\s+i\s+do\s+it|where\s+(?:do|should|can|would)\s+i\s+(?:even\s+)?(?:start|begin)|(?:what'?s?|what\s+is)\s+the\s+first\s+step|first\s+step|(?:what|which)\s+steps|steps\s+(?:do\s+)?i\s+(?:must|need|should|have\s+to)\s+take|what\s+do\s+i\s+need\s+to\s+do|how\s+do\s+i\s+do\s+this)\b/i;
+  /\b(what\s+should\s+i\s+do|what\s+do\s+i\s+do\s+next|what'?s?\s+next|what\s+now|what\s+should\s+i\s+do\s+next|what\s+next|how\s+(?:do|should|can|will|would)\s+i\s+(?:start|begin|do\s+(?:it|this|that)|get\s+started|actually\s+(?:start|do|begin))|how\s+will\s+i\s+do\s+it|where\s+(?:do|should|can|would)\s+i\s+(?:even\s+)?(?:start|begin)|(?:what'?s?|what\s+is)\s+the\s+first\s+step|first\s+step|(?:what|which)\s+steps|steps\s+(?:do\s+)?i\s+(?:must|need|should|have\s+to)\s+take|what\s+do\s+i\s+need\s+to\s+do|how\s+do\s+i\s+do\s+this|(?:knowing|know|leave\s+(?:with|knowing)|want(?:ing)?)\s+(?:the\s+|a\s+)?next\s+step|the\s+next\s+step|next\s+step)\b/i;
 
 const REP_REQUIRES_PERSON_PATTERN =
   /\b(someone|person|trust|send\s+it|send\s+to|reach\s+out|friend|family|tell\s+them|text\s+them|safest\s+relevant\s+person)\b/i;
@@ -35,7 +35,12 @@ const {
   detectRepeatedAssistantAdvice: detectRepeatedAssistantAdviceStrict,
   detectCoachingRepeatComplaintExpanded,
   shouldDefaultExploreFirst,
+  detectSessionWantsNextStep,
+  isMechanismReady,
+  assistantAlreadyAssignedRep,
   EXPLORE_FIRST_DIRECTIVE,
+  MECHANISM_EXIT_DIRECTIVE,
+  USER_WANTS_ACTION_PATTERN,
 } = require("./antiRepeat");
 
 const OUTREACH_INVESTIGATION_LOOP_PATTERN =
@@ -341,17 +346,40 @@ const buildCoachConversationSignals = ({
   const no_trusted_person = Boolean(
     persistentBarriers?.no_trusted_person || detectNoTrustedPerson(userTexts),
   );
-  const antiRepeat = buildAntiRepeatState({ messages, userMessage });
-  let user_asked_what_next = detectWhatNextQuestion(userMessage);
+  const mechanism_ready = isMechanismReady({ messages, userMessage, map });
+  const antiRepeat = buildAntiRepeatState({
+    messages,
+    userMessage,
+    map,
+    mechanism_ready,
+  });
+  const session_wants_next_step = Boolean(
+    antiRepeat.session_wants_next_step ||
+      detectSessionWantsNextStep(userTexts) ||
+      USER_WANTS_ACTION_PATTERN.test(String(userMessage || "")),
+  );
+  let user_asked_what_next =
+    detectWhatNextQuestion(userMessage) ||
+    (session_wants_next_step && mechanism_ready);
   const exploreFirstEarly = shouldDefaultExploreFirst({
     domain: map?.domain || goalContext?.domain || null,
     userMessage,
+    messages,
     user_asked_what_next,
     user_wants_discovery: antiRepeat.user_wants_discovery,
     user_rejects_prescription: antiRepeat.user_rejects_prescription,
     proofCycleFlow,
+    mechanism_ready,
+    session_wants_next_step,
+    map,
   });
-  if (antiRepeat.user_wants_discovery || antiRepeat.user_rejects_prescription || exploreFirstEarly) {
+  // Hard reject / soft discovery before mechanism is clear still suppress what-next.
+  // Once mechanism is clear (or session asked for a next step), keep what-next alive.
+  if (
+    (antiRepeat.user_rejects_prescription ||
+      (!mechanism_ready && (antiRepeat.user_wants_discovery || exploreFirstEarly))) &&
+    !(mechanism_ready && session_wants_next_step)
+  ) {
     user_asked_what_next = false;
   }
   const { detectEstablishedExecutionClarity } = require("./clarity");
@@ -460,7 +488,11 @@ const buildCoachConversationSignals = ({
     (needs_solo_rep_adaptation ||
       (hasActiveSessionRep && user_completed_current_rep) ||
       (user_asked_what_next && hasActiveSessionRep && user_completed_current_rep) ||
-      (user_asked_what_next && no_trusted_person && !active_solo_rep && !lastRep));
+      (user_asked_what_next && no_trusted_person && !active_solo_rep && !lastRep) ||
+      (mechanism_ready &&
+        session_wants_next_step &&
+        !hasActiveSessionRep &&
+        !antiRepeat.user_rejects_prescription));
 
   if (!assign_new_rep && !user_completed_current_rep && !needs_solo_rep_adaptation) {
     suggested_green_rep = null;
@@ -563,20 +595,31 @@ const buildCoachConversationSignals = ({
   const exploreFirst = shouldDefaultExploreFirst({
     domain: map?.domain || goalContext?.domain || null,
     userMessage,
+    messages,
     user_asked_what_next,
     user_wants_discovery: antiRepeat.user_wants_discovery,
     user_rejects_prescription: antiRepeat.user_rejects_prescription,
     user_completed_current_rep,
     has_active_session_rep: hasActiveSessionRep,
     execution_confirmed: Boolean(claritySignals?.execution_confirmed),
-    stop_discovery: Boolean(claritySignals?.stop_discovery || establishedExecutionClarity.established),
+    stop_discovery: Boolean(
+      claritySignals?.stop_discovery ||
+        establishedExecutionClarity.established ||
+        mechanism_ready,
+    ),
     proofCycleFlow,
+    mechanism_ready,
+    session_wants_next_step,
+    map,
   });
-  const inDiscoveryMode = Boolean(antiRepeat.discovery_only_mode || exploreFirst);
+  const inDiscoveryMode = Boolean(
+    antiRepeat.discovery_only_mode || (exploreFirst && !mechanism_ready),
+  );
 
   if (inDiscoveryMode) {
     const hardPushback =
       antiRepeat.coaching_repeat_complaint ||
+      antiRepeat.user_rejects_prescription ||
       /\b(don'?t want (?:an? )?(?:exercise|homework|action|step)|stop giving (?:me )?(?:exercises|homework|steps|advice)|stay with (?:the )?(?:feeling|emotion)|not another exercise|please stop)\b/i.test(
         String(userMessage || ""),
       );
@@ -591,6 +634,21 @@ const buildCoachConversationSignals = ({
       exploreDirective || antiRepeat.coaching_directive || coaching_directive;
     assign_new_rep = false;
     suggested_green_rep = null;
+  } else if (mechanism_ready && !antiRepeat.user_rejects_prescription) {
+    const alreadyAssigned =
+      hasActiveSessionRep || assistantAlreadyAssignedRep(messages);
+    if (alreadyAssigned) {
+      coaching_directive =
+        "Green Rep already assigned this session. Do NOT repeat the same pattern speech or re-assign a new rep. " +
+        "Respond briefly to what they said — help them execute the current step or answer their question.";
+      assign_new_rep = false;
+      suggested_green_rep = null;
+    } else {
+      coaching_directive = MECHANISM_EXIT_DIRECTIVE;
+      if (!user_completed_current_rep && !block_rep_reassign) {
+        assign_new_rep = true;
+      }
+    }
   }
 
   const block_clarity_rep =
@@ -642,7 +700,14 @@ const buildCoachConversationSignals = ({
     clarity_saturation: Boolean(claritySignals?.clarity_saturation),
     agreement_loop_detected: Boolean(claritySignals?.agreement_loop_detected),
     strategy_context_clear: Boolean(claritySignals?.strategy_context_clear),
-    stop_discovery: Boolean(claritySignals?.stop_discovery || establishedExecutionClarity.established),
+    stop_discovery: Boolean(
+      !antiRepeat.user_rejects_prescription &&
+        !antiRepeat.coaching_repeat_complaint &&
+        (mechanism_ready ||
+          claritySignals?.stop_discovery ||
+          establishedExecutionClarity.established) &&
+        !inDiscoveryMode,
+    ),
     execution_clarity_established: Boolean(
       establishedExecutionClarity.established ||
         claritySignals?.coaching_context?.execution_clarity_established,
@@ -666,12 +731,16 @@ const buildCoachConversationSignals = ({
     coaching_directive,
     user_rejects_prescription: antiRepeat.user_rejects_prescription,
     user_wants_discovery: antiRepeat.user_wants_discovery,
-    explore_first_mode: exploreFirst,
+    session_wants_next_step,
+    mechanism_ready,
+    user_turns: antiRepeat.user_turns,
+    explore_first_mode: exploreFirst && !mechanism_ready,
     discovery_only_mode: inDiscoveryMode,
-    anti_repeat_active: antiRepeat.anti_repeat_active || exploreFirst,
+    anti_repeat_active: Boolean(
+      antiRepeat.anti_repeat_active || (exploreFirst && !mechanism_ready),
+    ),
     thematic_assistant_repeat: antiRepeat.thematic_assistant_repeat,
     max_assistant_overlap: antiRepeat.max_assistant_overlap,
-    stop_discovery: inDiscoveryMode ? false : undefined,
   };
 };
 

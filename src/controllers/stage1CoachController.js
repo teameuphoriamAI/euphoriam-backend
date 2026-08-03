@@ -44,7 +44,27 @@ const { indexCoachSession } = require("../stage1/coach/persistence/vectorMemory"
 const { DOMAIN_LABELS } = require("../constants/domains");
 const { sanitizeCoachUserFacingText, unwrapCoachAssistantMessage } = require("../stage1/coach/context/naturalLanguage");
 const { mergeBarriersIntoMemory } = require("../stage1/coach/signals/barriers");
-const { guardAssistantReplyAgainstRepeat } = require("../stage1/coach/signals/antiRepeat");
+const {
+  guardAssistantReplyAgainstRepeat,
+  isDiscoveryOnlyQuestion,
+} = require("../stage1/coach/signals/antiRepeat");
+const {
+  resolveCoachTurnMode,
+  applyCoachTurnMode,
+  COACH_TURN_MODES,
+} = require("../stage1/coach/flows/turnMode");
+const {
+  extractSessionRepFromMessages,
+  isSessionRepLocked,
+  stripUnauthorizedRepFromReply,
+  stripEarlyPrescriptiveDiagnosis,
+  fixDomainDiscoveryReply,
+  stripDoubleRepFromReply,
+  buildHoldReplyForUserMessage,
+  buildRepFromParsedName,
+  parseRepNamesFromText,
+} = require("../stage1/coach/utils/repLatch");
+const { countUserTurns } = require("../stage1/coach/signals/antiRepeat");
 const { resolveCoachingTransition, applyCertTurnDirectives } = require("../stage1/coach/flows/transition");
 const { buildCoachConversationSignals } = require("../stage1/coach/signals/conversation");
 const {
@@ -98,6 +118,7 @@ const persistCoachTurn = ({
   assistantMessage,
   sessionId: existingSessionId,
   greenRep = null,
+  sessionRepLocked = false,
   writebackHints = {},
   proofCycle = null,
   sessionPhase = "coaching",
@@ -115,6 +136,7 @@ const persistCoachTurn = ({
     user_message: userMessage,
     assistant_message: assistantMessage,
     green_rep: greenRep,
+    session_rep_locked: Boolean(sessionRepLocked && greenRep?.name),
     phase: sessionPhase === "coaching" ? "coaching" : sessionPhase,
     coach_state: checkinState,
     proof_cycle: proofCycle,
@@ -538,11 +560,6 @@ const coachCheckin = async (req, res) => {
       proofCycleFlow,
     });
 
-    if (activationMomentFlow.block_green_rep && transition.coaching_brief) {
-      transition.coaching_brief.assign_green_rep = false;
-      transition.coaching_brief.must_assign_green_rep = false;
-    }
-
     const structuralFlow = resolveStructuralCoachingFlow({
       messages,
       userMessage,
@@ -555,18 +572,6 @@ const coachCheckin = async (req, res) => {
       investigationFlow,
       transitionBrief: transition.coaching_brief,
     });
-
-    if (structuralFlow.block_green_rep && transition.coaching_brief) {
-      transition.coaching_brief.assign_green_rep = false;
-      transition.coaching_brief.must_assign_green_rep = false;
-    }
-    if (structuralFlow.suggested_milestone_rep && transition.coaching_brief) {
-      transition.coaching_brief.suggested_milestone_rep = structuralFlow.suggested_milestone_rep;
-    }
-    if (structuralFlow.coaching_directive && transition.coaching_brief) {
-      transition.coaching_brief.instruction =
-        `${transition.coaching_brief.instruction || ""} ${structuralFlow.coaching_directive}`.trim();
-    }
 
     const mergedConversationSignals = mergeFlowSignals(
       transition.conversation_signals ||
@@ -582,47 +587,43 @@ const coachCheckin = async (req, res) => {
       },
     );
     transition.conversation_signals = mergedConversationSignals;
-    if (mergedConversationSignals.stop_discovery) {
-      transition.stop_discovery = true;
-      transition.discovery_complete = true;
-      if (transition.coaching_mode === "discovery") {
-        transition.coaching_mode = "coaching";
-      }
-    }
-    if (sessionIntakeFlow.stop_discovery === false && sessionIntakeFlow.awaiting_session_intention) {
-      transition.stop_discovery = false;
-      transition.discovery_complete = false;
-      if (transition.coaching_brief) {
-        transition.coaching_brief.assign_green_rep = false;
-        transition.coaching_brief.must_assign_green_rep = false;
-      }
-    }
+
+    // Single arbiter — last writer for assign + instruction (DISCOVER/ASSIGN/HOLD/INTEGRATE).
+    const intakeStillGating =
+      !mergedConversationSignals.mechanism_ready &&
+      (Boolean(sessionIntakeFlow.awaiting_session_intention) ||
+        Boolean(sessionIntakeFlow.awaiting_emotional_checkin) ||
+        sessionIntakeFlow.session_phase === SESSION_PHASES.RESISTANCE_PROBE ||
+        sessionIntakeFlow.session_phase === SESSION_PHASES.DEEP_PROBE);
+    const blockGreenRep = Boolean(
+      activationMomentFlow.block_green_rep ||
+        structuralFlow.block_green_rep ||
+        investigationFlow?.active ||
+        firstSessionFlow?.block_green_rep ||
+        intakeStillGating,
+    );
+    const turnMode = resolveCoachTurnMode({
+      messages,
+      userMessage,
+      map,
+      openSession: rawOpenSession,
+      domain,
+      conversationSignals: mergedConversationSignals,
+      proofCycleFlow,
+      sessionIntakeFlow,
+      blockGreenRep,
+      goalContext: activeGoalContext,
+      memoryCtx: coachMemoryContext,
+    });
     if (
-      sessionIntakeFlow.awaiting_emotional_checkin ||
-      sessionIntakeFlow.session_phase === SESSION_PHASES.RESISTANCE_PROBE ||
-      sessionIntakeFlow.session_phase === SESSION_PHASES.DEEP_PROBE
+      turnMode.mode === "ASSIGN" &&
+      !turnMode.suggested_milestone_rep &&
+      (structuralFlow.suggested_milestone_rep || activationMomentFlow?.green_rep)
     ) {
-      if (transition.coaching_brief) {
-        transition.coaching_brief.assign_green_rep = false;
-        transition.coaching_brief.must_assign_green_rep = false;
-      }
+      turnMode.suggested_milestone_rep =
+        structuralFlow.suggested_milestone_rep || activationMomentFlow.green_rep;
     }
-    if (transition.coaching_brief) {
-      transition.coaching_brief.conversation_signals = mergedConversationSignals;
-      if (mergedConversationSignals.coaching_directive) {
-        transition.coaching_brief.instruction =
-          `${transition.coaching_brief.instruction || ""} ${mergedConversationSignals.coaching_directive}`.trim();
-      }
-      if (proofProgressionFlow?.green_rep && mergedConversationSignals.assign_green_rep) {
-        transition.coaching_brief.assign_green_rep = true;
-        transition.coaching_brief.must_assign_green_rep = true;
-      }
-      if (activationMomentFlow?.assign_green_rep && activationMomentFlow?.green_rep) {
-        transition.coaching_brief.assign_green_rep = true;
-        transition.coaching_brief.must_assign_green_rep = true;
-        transition.coaching_brief.suggested_milestone_rep = activationMomentFlow.green_rep;
-      }
-    }
+    transition = applyCoachTurnMode(transition, turnMode);
 
     coachMemoryContext.coaching_transition = {
       coaching_phase: transition.coaching_phase,
@@ -686,9 +687,8 @@ const coachCheckin = async (req, res) => {
       reports_setback: Boolean(firstSessionFlow.is_first_turn && firstSessionFlow.active),
       reports_stagnation: transition.conversation_signals?.reports_stagnation || false,
       solo_ladder_complete: transition.conversation_signals?.solo_ladder_complete || false,
-      assign_green_rep:
-        Boolean(transition.coaching_brief?.assign_green_rep) &&
-        !transition.conversation_signals?.block_clarity_rep,
+      coach_turn_mode: transition.coach_turn_mode || null,
+      assign_green_rep: Boolean(transition.coaching_brief?.assign_green_rep),
       awaiting_proof_log: Boolean(proofCycleFlow.awaiting_proof_log),
       proof_integration_mode: Boolean(proofCycleFlow.proof_integration_mode),
       suggest_session_end: Boolean(proofCycleFlow.suggest_session_end),
@@ -838,8 +838,9 @@ const coachCheckin = async (req, res) => {
           map,
           goalContext: activeGoalContext,
           allowSoloFallback: Boolean(
-            transition.conversation_signals?.no_trusted_person &&
-              !["income", "wealth", "money"].includes(String(domain || "").toLowerCase()),
+            transition.conversation_signals?.allow_solo_fallback ??
+              (transition.conversation_signals?.no_trusted_person &&
+                !["income", "wealth", "money"].includes(String(domain || "").toLowerCase())),
           ),
           assignRequested: Boolean(transition.coaching_brief?.assign_green_rep),
         });
@@ -850,17 +851,97 @@ const coachCheckin = async (req, res) => {
       greenRep: safeGreenRep,
     });
 
-    const clientAssistants = clientMessages
-      .filter((m) => m?.role === "assistant")
-      .map((m) => String(m.content || "").trim())
-      .filter(Boolean);
+    const assignMode = transition.coach_turn_mode === COACH_TURN_MODES.ASSIGN;
+    const holdMode = transition.coach_turn_mode === COACH_TURN_MODES.HOLD;
+    const discoverMode = transition.coach_turn_mode === COACH_TURN_MODES.DISCOVER;
+    const userTurnCount = countUserTurns(messages, userMessage);
+
+    if (discoverMode && !transition.coaching_brief?.assign_green_rep) {
+      assistantReply = stripUnauthorizedRepFromReply(assistantReply);
+      assistantReply = stripEarlyPrescriptiveDiagnosis(assistantReply, userTurnCount);
+    }
+    assistantReply = fixDomainDiscoveryReply(assistantReply, domain);
+    if (assignMode || holdMode) {
+      assistantReply = stripDoubleRepFromReply(assistantReply);
+    }
+
+    let effectiveGreenRep = safeGreenRep;
+    if (!effectiveGreenRep?.name && assignMode && transition.coaching_brief?.suggested_milestone_rep) {
+      effectiveGreenRep = transition.coaching_brief.suggested_milestone_rep;
+    }
+    if (!effectiveGreenRep?.name && assignMode) {
+      const parsedNames = parseRepNamesFromText(assistantReply);
+      if (parsedNames[0]) {
+        effectiveGreenRep = buildRepFromParsedName(parsedNames[0], assistantReply);
+      }
+    }
+    const sessionRepFromHistory = extractSessionRepFromMessages(messages, rawOpenSession);
+    if (!effectiveGreenRep?.name && transition.coaching_brief?.suggested_milestone_rep?.name) {
+      effectiveGreenRep = transition.coaching_brief.suggested_milestone_rep;
+    }
+    if (!effectiveGreenRep?.name && sessionRepFromHistory?.rep) {
+      effectiveGreenRep = sessionRepFromHistory.rep;
+    }
+    if (!effectiveGreenRep?.name && rawOpenSession?.green_rep_last?.name) {
+      effectiveGreenRep = rawOpenSession.green_rep_last;
+    }
+
+    const sessionRepLocked = isSessionRepLocked(rawOpenSession, messages);
 
     assistantReply = guardAssistantReplyAgainstRepeat({
       assistant: assistantReply,
-      messages: clientMessages.length ? clientMessages : messages,
+      messages,
       userMessage,
-      extraPriorAssistants: clientAssistants,
+      extraPriorAssistants: [],
+      domain,
+      sessionRepLocked: sessionRepLocked || holdMode || assignMode,
+      allowDiscoveryFallback: !(
+        effectiveGreenRep?.name ||
+        checkin.assign_green_rep ||
+        transition.coaching_brief?.assign_green_rep ||
+        transition.coaching_brief?.must_assign_green_rep ||
+        assignMode ||
+        holdMode ||
+        sessionRepLocked
+      ),
     });
+
+    if (
+      assignMode &&
+      effectiveGreenRep?.name &&
+      !isSessionRepLocked(null, [{ role: "assistant", content: assistantReply }])
+    ) {
+      const rep = effectiveGreenRep;
+      const stepLine =
+        Array.isArray(rep.steps) && rep.steps[0]
+          ? rep.steps[0]
+          : rep.win_condition || "Take one visible step today.";
+      const lead = isDiscoveryOnlyQuestion(assistantReply)
+        ? "You've named the pattern — avoidance protects you from rejection, but it caps momentum."
+        : String(assistantReply || "").trim();
+      assistantReply =
+        `${lead} Today's rep is "${rep.name}": ${stepLine}`.trim();
+    }
+
+    const holdRep = effectiveGreenRep || sessionRepFromHistory?.rep || rawOpenSession?.green_rep_last;
+    const holdReply = buildHoldReplyForUserMessage(userMessage, holdRep);
+    if ((holdMode || sessionRepLocked) && holdRep?.name && holdReply) {
+      assistantReply = holdReply;
+    } else if (
+      (holdMode || sessionRepLocked) &&
+      holdRep?.name &&
+      isDiscoveryOnlyQuestion(assistantReply)
+    ) {
+      assistantReply = buildHoldReplyForUserMessage(userMessage, holdRep) ||
+        `Your rep for today is "${holdRep.name}" — stay with that one step.`;
+    }
+
+    const greenRepToPersist =
+      assignMode && effectiveGreenRep?.name
+        ? effectiveGreenRep
+        : safeGreenRep?.name
+          ? safeGreenRep
+          : null;
 
     const writebackHints = { ...(result.writeback_hints || {}) };
     Object.assign(
@@ -884,6 +965,8 @@ const coachCheckin = async (req, res) => {
     }
     if (!transition.coaching_brief?.assign_green_rep || proofCycleFlow.suggest_session_end) {
       delete writebackHints.assign_new_green_rep;
+    } else if (assignMode && greenRepToPersist?.name) {
+      writebackHints.assign_new_green_rep = true;
     }
     const resolvedGravity =
       gravityRating ??
@@ -918,12 +1001,12 @@ const coachCheckin = async (req, res) => {
       structuralFlow.structural_coaching_flow ||
       proofProgressionFlow?.structural_coaching_flow ||
       activationMomentFlow?.structural_coaching_flow;
-    if (safeGreenRep?.name) {
+    if (greenRepToPersist?.name) {
       nextStructuralFlow = {
         ...(nextStructuralFlow || {}),
         disruption_complete: false,
         disruption_asked: false,
-        last_rep_name: safeGreenRep.name,
+        last_rep_name: greenRepToPersist.name,
         last_rep_assigned_at: new Date().toISOString(),
       };
     }
@@ -932,10 +1015,10 @@ const coachCheckin = async (req, res) => {
     }
 
     let nextProofCycle = proofCycleFlow.proof_cycle;
-    if (safeGreenRep?.name) {
+    if (greenRepToPersist?.name) {
       nextProofCycle = onGreenRepAssigned(
         proofCycleFlow.proof_cycle,
-        safeGreenRep.name,
+        greenRepToPersist.name,
         proofCycleFlow.proof_cycle?.known_proof_ids || [],
       );
     }
@@ -969,7 +1052,8 @@ const coachCheckin = async (req, res) => {
       userMessage,
       assistantMessage: assistantReply,
       writebackHints,
-      greenRep: safeGreenRep,
+      greenRep: greenRepToPersist,
+      sessionRepLocked: Boolean(greenRepToPersist?.name),
       proofCycle: nextProofCycle,
       sessionPhase,
       firstSessionFlow: firstSessionFlow.first_session_flow,
@@ -994,7 +1078,7 @@ const coachCheckin = async (req, res) => {
       session_phase: sessionPhase,
       coach_state: coachState,
       assistant_message: assistantReply,
-      green_rep: safeGreenRep,
+      green_rep: greenRepToPersist || effectiveGreenRep || null,
       detected_failure_strategy: result.detected_failure_strategy || null,
       writeback_hints: writebackHints,
       suggested_training_pick:

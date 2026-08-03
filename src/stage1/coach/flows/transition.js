@@ -172,6 +172,14 @@ const buildCoachingBrief = (map, memoryCtx, userMessage, { messages = [], stage1
     !repCompletedThisTurn;
   if (explicitWhatNextNoRep) {
     assign_green_rep = true;
+  } else if (
+    conversation.mechanism_ready &&
+    !conversation.user_rejects_prescription &&
+    !conversation.has_active_session_rep &&
+    !repCompletedThisTurn &&
+    !conversation.user_showing_hope_depletion
+  ) {
+    assign_green_rep = true;
   } else if (conversation.discovery_only_mode || conversation.anti_repeat_active || conversation.explore_first_mode) {
     assign_green_rep = false;
   } else if (
@@ -247,6 +255,7 @@ const buildCoachingBrief = (map, memoryCtx, userMessage, { messages = [], stage1
     "MEMBER SHOULD FEEL REMEMBERED: do not re-explain protector, pattern, hidden prediction, or flip every turn — assume known unless evidence says revisit. " +
     "After proof integration, ask what the NEXT obstacle is — not 'what happened this week' or a full re-diagnosis. " +
     "When assign_green_rep is true, use a DIFFERENT rep than last_green_rep. " +
+    "When MECHANISM CLEAR / assign_green_rep is true: do NOT ask another discovery-only question — name the pattern briefly then assign the Green Rep. " +
     "SELF-GENERATED CLARITY: if user already named bottleneck + next action, synthesize with 'Agreed', assign Green Rep — do NOT ask what the next obstacle is. " +
     "EXECUTION MODE: if user confirmed bottleneck + rep + proof, do NOT restate — reinforce focus, completion criteria, review threshold, sample-size rules. " +
     "EXECUTION SUSTAINABILITY: if user knows strategy but reports discouragement/delayed results, acknowledge transition — coach adherence and scoreboard, do NOT reassign rep. " +
@@ -458,7 +467,12 @@ const resolveCoachingTransition = ({
     patternEstablished;
 
   const discoveryOnly = Boolean(
-    conversation.discovery_only_mode || conversation.anti_repeat_active || conversation.explore_first_mode,
+    (conversation.discovery_only_mode || conversation.anti_repeat_active || conversation.explore_first_mode) &&
+      !(
+        conversation.mechanism_ready &&
+        !conversation.user_rejects_prescription &&
+        !conversation.coaching_repeat_complaint
+      ),
   );
 
   if (discoveryOnly) {
@@ -476,6 +490,31 @@ const resolveCoachingTransition = ({
       stop_discovery: false,
       reasons: reasons.length ? reasons : ["discovery_only"],
       coaching_brief: null,
+    });
+  }
+
+  if (
+    conversation.mechanism_ready &&
+    !conversation.user_rejects_prescription &&
+    known
+  ) {
+    reasons.push("mechanism_ready_exit_discovery");
+    return withSignals({
+      coaching_phase: "execute",
+      coaching_mode: "coaching",
+      discovery_complete: true,
+      stop_discovery: true,
+      reasons,
+      coaching_brief: buildCoachingBrief(map, coachMemoryContext, userMessage, {
+        messages,
+        stage1,
+        domain,
+        proofCycleFlow,
+        openSession,
+        firstSessionFlow,
+        investigationFlow,
+        goalContext,
+      }),
     });
   }
 
@@ -613,12 +652,11 @@ const applyCertTurnDirectives = ({
     next.stop_discovery = false;
     next.discovery_complete = false;
     next.coaching_phase = "explore";
+    // Assign decision is owned by resolveCoachTurnMode (applied after this).
+    // Keep discovery directive as a candidate instruction only.
     if (next.coaching_brief) {
-      next.coaching_brief.assign_green_rep = false;
-      next.coaching_brief.must_assign_green_rep = false;
-      next.coaching_brief.suggested_milestone_rep = null;
       next.coaching_brief.instruction =
-        `${signals.coaching_directive || ""} Do NOT assign Green Rep or numbered homework while anti-repeat is active.`.trim();
+        `${signals.coaching_directive || next.coaching_brief.instruction || ""}`.trim();
     } else {
       next.coaching_brief = {
         instruction: signals.coaching_directive,
@@ -661,7 +699,13 @@ const applyCertTurnDirectives = ({
     !sessionIntakeFlow.session_intake_update?.edge_inquiry_complete &&
     !proofIntegrationActive;
 
-  if ((edgeFromProof || exploreEdgeNeeded || signals.reports_stagnation) && !signals.discovery_only_mode && !signals.explore_first_mode) {
+  if (
+    (edgeFromProof || exploreEdgeNeeded || signals.reports_stagnation) &&
+    !signals.discovery_only_mode &&
+    !signals.explore_first_mode &&
+    !signals.mechanism_ready &&
+    !next.coaching_brief?.assign_green_rep
+  ) {
     signals.edge_inquiry_required = true;
     if (next.coaching_brief) {
       next.coaching_brief.instruction =
@@ -688,11 +732,10 @@ const applyCertTurnDirectives = ({
 
   if (phase === INTAKE_PHASES.INSIGHT_INTEGRATION && !proofIntegrationActive && !signals.discovery_only_mode && !signals.explore_first_mode) {
     signals.insight_integration = true;
+    // Assign is decided by resolveCoachTurnMode — only mark insight context here.
     if (next.coaching_brief) {
-      next.coaching_brief.assign_green_rep = true;
-      next.coaching_brief.must_assign_green_rep = true;
       next.coaching_brief.instruction =
-        `${next.coaching_brief.instruction || ""} INSIGHT INTEGRATION: summarize insight in member's words → assign ONE Green Rep → surface proof criteria.`.trim();
+        `${next.coaching_brief.instruction || ""} INSIGHT INTEGRATION: summarize insight in member's words; if turn mode is ASSIGN, give ONE Green Rep and proof criteria.`.trim();
     }
     next.stop_discovery = true;
     next.discovery_complete = true;

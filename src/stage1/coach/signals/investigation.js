@@ -177,6 +177,16 @@ const resolveInvestigationTurnFlow = ({
     return base;
   }
 
+  const userTexts = (messages || [])
+    .filter((m) => m?.role === "user")
+    .map((m) => String(m.content || "").trim())
+    .filter(Boolean);
+  if (userMessage) userTexts.push(String(userMessage).trim());
+  const { detectSessionWantsNextStep } = require("./antiRepeat");
+  if (detectSessionWantsNextStep(userTexts)) {
+    return base;
+  }
+
   const priorFlow = openSession?.investigation_flow || {};
   const uncertain = detectUncertaintySignal(userMessage);
   const substantive = isSubstantiveBottleneckAnswer(userMessage);

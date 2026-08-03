@@ -12,12 +12,24 @@ const MAX_MESSAGE_CHARS = 600;
 const MAX_PROOF_ACTION_CHARS = 400;
 const MAX_USER_SESSIONS_1ON1 = 3;
 
+const excerptMessageForAi = (message, maxChars = MAX_MESSAGE_CHARS) => {
+  const role = message?.role;
+  const content = String(message?.content || "");
+  if (content.length <= maxChars) return { role, content };
+  if (role === "assistant") {
+    const head = Math.floor(maxChars * 0.55);
+    const tail = maxChars - head - 18;
+    return {
+      role,
+      content: `${content.slice(0, head)}\n…[continued]…\n${content.slice(-tail)}`,
+    };
+  }
+  return { role, content: content.slice(0, maxChars) };
+};
+
 const excerptTranscript = (transcript, maxMessages = MAX_TRANSCRIPT_MESSAGES) => {
   if (!Array.isArray(transcript)) return [];
-  return transcript.slice(-maxMessages).map((m) => ({
-    role: m?.role,
-    content: String(m?.content || "").slice(0, MAX_MESSAGE_CHARS),
-  }));
+  return transcript.slice(-maxMessages).map((m) => excerptMessageForAi(m, MAX_MESSAGE_CHARS));
 };
 
 /** Cap live coach thread sent to Python — full history stays in DB. */
@@ -38,18 +50,21 @@ const normalizeCoachTranscript = (messages = []) =>
     .map(normalizeCoachMessage)
     .filter(Boolean);
 
-/** Prefer the longer transcript; fall back to stored open-session history when client sends none. */
+/** Prefer stored session transcript when it has richer content than the client payload. */
 const reconcileCoachTranscript = (clientMessages = [], openSession = null, userMessage = "") => {
   const client = normalizeCoachTranscript(clientMessages);
   const stored = normalizeCoachTranscript(openSession?.messages);
   const trimmedUser = String(userMessage || "").trim();
+  const contentLen = (arr) => arr.reduce((n, m) => n + String(m.content || "").length, 0);
 
-  let base =
-    client.length >= stored.length && client.length > 0
-      ? client
-      : stored.length > 0
-        ? stored
-        : client;
+  let base = client;
+  if (stored.length > 0) {
+    if (stored.length > client.length || contentLen(stored) > contentLen(client)) {
+      base = stored;
+    } else if (client.length === 0) {
+      base = stored;
+    }
+  }
 
   if (!trimmedUser) return base;
 

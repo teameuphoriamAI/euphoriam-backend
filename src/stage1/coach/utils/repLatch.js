@@ -190,6 +190,18 @@ const stripDoubleRepFromReply = (text = "") => {
   return s.trim();
 };
 
+/** Multi-line Green Rep block for assistant replies (client-visible formatting). */
+const formatGreenRepBlock = (repName, stepLine, { label = "Today's action", winCondition = null } = {}) => {
+  const name = String(repName || "").trim();
+  const step = String(stepLine || "").trim();
+  if (!name) return step || "";
+  const lines = ["", label, `"${name}"`, ""];
+  if (step) lines.push(step);
+  const win = String(winCondition || "").trim();
+  if (win) lines.push("", `You win if ${win.replace(/^you win if\s+/i, "")}`);
+  return lines.join("\n");
+};
+
 const buildHoldReplyForUserMessage = (userMessage = "", rep = null) => {
   const repName = rep?.name || "your rep";
   const step =
@@ -208,7 +220,7 @@ const buildHoldReplyForUserMessage = (userMessage = "", rep = null) => {
     return `While doing "${repName}", watch for chest tightness, stomach knot, or urge to close the laptop — that's the protector. Stay with the send anyway; you don't need a perfect reply.`;
   }
   if (/\b(next step|want the next step)\b/i.test(msg)) {
-    return `Your rep for today is "${repName}": ${step}`;
+    return formatGreenRepBlock(repName, step, { label: "Today's action" });
   }
   if (/\b(try the follow-up|i'll try)\b/i.test(msg)) {
     return `Good — when the protector shows up during "${repName}", notice the pull-back without obeying it. One message sent beats perfect timing.`;
@@ -227,5 +239,6 @@ module.exports = {
   stripEarlyPrescriptiveDiagnosis,
   fixDomainDiscoveryReply,
   stripDoubleRepFromReply,
+  formatGreenRepBlock,
   buildHoldReplyForUserMessage,
 };

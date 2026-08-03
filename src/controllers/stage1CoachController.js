@@ -61,6 +61,7 @@ const {
   fixDomainDiscoveryReply,
   stripDoubleRepFromReply,
   buildHoldReplyForUserMessage,
+  formatGreenRepBlock,
   buildRepFromParsedName,
   parseRepNamesFromText,
 } = require("../stage1/coach/utils/repLatch");
@@ -920,7 +921,10 @@ const coachCheckin = async (req, res) => {
         ? "You've named the pattern — avoidance protects you from rejection, but it caps momentum."
         : String(assistantReply || "").trim();
       assistantReply =
-        `${lead} Today's rep is "${rep.name}": ${stepLine}`.trim();
+        `${lead}${formatGreenRepBlock(rep.name, stepLine, {
+          label: "Today's action",
+          winCondition: rep.win_condition,
+        })}`.trim();
     }
 
     const holdRep = effectiveGreenRep || sessionRepFromHistory?.rep || rawOpenSession?.green_rep_last;
@@ -933,7 +937,10 @@ const coachCheckin = async (req, res) => {
       isDiscoveryOnlyQuestion(assistantReply)
     ) {
       assistantReply = buildHoldReplyForUserMessage(userMessage, holdRep) ||
-        `Your rep for today is "${holdRep.name}" — stay with that one step.`;
+        formatGreenRepBlock(holdRep.name, holdRep.steps?.[0] || "Take one visible step today.", {
+          label: "Today's action",
+          winCondition: holdRep.win_condition,
+        });
     }
 
     const greenRepToPersist =

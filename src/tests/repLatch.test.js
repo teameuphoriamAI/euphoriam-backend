@@ -6,6 +6,7 @@ const {
   stripEarlyPrescriptiveDiagnosis,
   fixDomainDiscoveryReply,
   stripDoubleRepFromReply,
+  formatGreenRepBlock,
   buildHoldReplyForUserMessage,
   isSessionRepLocked,
 } = require("../stage1/coach/utils/repLatch");
@@ -91,5 +92,17 @@ describe("repLatch", () => {
 
   test("isSessionRepLocked from transcript", () => {
     expect(isSessionRepLocked(null, [{ role: "assistant", content: assignText }])).toBe(true);
+  });
+
+  test("formatGreenRepBlock uses separate lines for label, name, and step", () => {
+    const block = formatGreenRepBlock("Outbound Client Touch", "Pick one channel and send one follow-up.", {
+      label: "Today's action",
+      winCondition: "you get one reply.",
+    });
+    expect(block).toContain("Today's action");
+    expect(block).toContain('"Outbound Client Touch"');
+    expect(block).toContain("Pick one channel");
+    expect(block).toContain("You win if you get one reply.");
+    expect(block.indexOf("Today's action")).toBeLessThan(block.indexOf('"Outbound Client Touch"'));
   });
 });

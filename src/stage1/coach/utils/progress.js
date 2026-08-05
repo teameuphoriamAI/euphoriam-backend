@@ -792,6 +792,7 @@ const maybeAutoLogProof = (stage1, domain, userMessage, signals, lastRepName) =>
     action: String(userMessage).trim().slice(0, 500),
     type: "action",
     green_rep_name: lastRepName || null,
+    source: "coach",
   });
   if (!result.ok) return { stage1, proof: null };
   return { stage1: result.stage1, proof: result.proof };

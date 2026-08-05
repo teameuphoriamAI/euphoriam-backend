@@ -147,6 +147,10 @@ const recordProof = (stage1, payload) => {
     type: normalizeProofType(payload.type),
     green_rep_name: payload.green_rep_name?.trim() || null,
     created_at: new Date().toISOString(),
+    source:
+      payload.source === "coach" || payload.source === "coaching"
+        ? "coach"
+        : "user",
   };
 
   logs.unshift(entry);

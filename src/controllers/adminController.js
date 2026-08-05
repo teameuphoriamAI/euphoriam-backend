@@ -1,4 +1,4 @@
-const { Op } = require("sequelize");
+const { Op, fn, col, literal } = require("sequelize");
 const crypto = require("crypto");
 const { User } = require("../models/userModel");
 const { Diagnostic } = require("../models/diagnosticModel");
@@ -22,8 +22,8 @@ const {
   userDiagnosticWhere,
   formatDiagnosticForAdmin,
   loadAdminUserStage1,
-  countDiagnosticsByCategory,
-  mapResistanceCountForUser,
+  loadAdminFunnelData,
+  batchDiagnosticCountsForUsers,
   formatMembershipForAdmin,
   resolveAdminMembershipTier,
   computeUserProgress,
@@ -71,104 +71,153 @@ const adminLogin = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.findAll({
-       where: {
-    role: {
-      [Op.ne]: "admin",
-    },
-  },
+      where: {
+        role: {
+          [Op.ne]: "admin",
+        },
+      },
       order: [["createdAt", "DESC"]],
-      attributes: { exclude: ["password"] },
+      attributes: [
+        "id",
+        "email",
+        "name",
+        "status",
+        "role",
+        "membership",
+        "createdAt",
+        "updatedAt",
+      ],
     });
 
     const userIds = users.map((u) => u.id);
+    if (userIds.length === 0) {
+      return successResponse(res, "Users fetched", []);
+    }
 
-    const [mapResistanceRows, coachMetaRows, goalRows] = await Promise.all([
+    const [
+      mapResistanceRows,
+      coachMetaRows,
+      goalRows,
+      diagnosticCountsByUser,
+    ] = await Promise.all([
       DomainGoal.findAll({
         where: { userId: { [Op.in]: userIds }, mapResistanceComplete: true },
-        attributes: ["userId"],
+        attributes: ["userId", [fn("COUNT", col("DomainGoal.id")), "count"]],
+        group: ["userId"],
         raw: true,
-      }).catch(() => []),
+      }).catch((err) => {
+        console.error("[admin] mapResistance aggregate failed:", err.message);
+        return [];
+      }),
+      // Length-only aggregates — avoid pulling large coach/proof JSON blobs
       UserStage1Meta.findAll({
         where: { userId: { [Op.in]: userIds } },
-        attributes: ["userId", "coachSessionLog", "activeDomains", "primaryDomain", "proofLogs"],
+        attributes: [
+          "userId",
+          [literal("COALESCE(jsonb_array_length(coach_session_log), 0)"), "coachSessionCount"],
+          [literal("COALESCE(jsonb_array_length(proof_logs), 0)"), "proofLogCount"],
+          [literal("COALESCE(jsonb_array_length(active_domains), 0)"), "activeDomainCount"],
+        ],
         raw: true,
-      }).catch(() => []),
+      }).catch((err) => {
+        console.error("[admin] stage1 meta aggregate failed:", err.message);
+        return [];
+      }),
       DomainGoal.findAll({
         where: {
           userId: { [Op.in]: userIds },
+          status: { [Op.ne]: "draft" },
           [Op.or]: [
             { goalTitle: { [Op.ne]: null } },
             { desiredOutcome: { [Op.ne]: null } },
           ],
         },
-        attributes: ["userId", "goalsComplete", "status"],
+        attributes: [
+          "userId",
+          [fn("COUNT", col("DomainGoal.id")), "goalsCount"],
+          [
+            fn(
+              "SUM",
+              literal("CASE WHEN goals_complete THEN 1 ELSE 0 END"),
+            ),
+            "goalsCompleteCount",
+          ],
+        ],
+        group: ["userId"],
         raw: true,
-      }).catch(() => []),
+      }).catch((err) => {
+        console.error("[admin] goals aggregate failed:", err.message);
+        return [];
+      }),
+      batchDiagnosticCountsForUsers(users),
     ]);
 
     const mapResistanceCountMap = {};
     for (const row of mapResistanceRows) {
-      mapResistanceCountMap[row.userId] = (mapResistanceCountMap[row.userId] || 0) + 1;
+      mapResistanceCountMap[row.userId] = Number(row.count) || 0;
     }
 
     const coachCountMap = {};
     const activeDomainCountMap = {};
     const proofCountMap = {};
     for (const row of coachMetaRows) {
-      const sessions = Array.isArray(row.coachSessionLog) ? row.coachSessionLog : [];
-      coachCountMap[row.userId] = sessions.length;
-      const active = Array.isArray(row.activeDomains) ? row.activeDomains : [];
-      activeDomainCountMap[row.userId] = active.length;
-      proofCountMap[row.userId] = Array.isArray(row.proofLogs) ? row.proofLogs.length : 0;
+      coachCountMap[row.userId] = Number(row.coachSessionCount) || 0;
+      activeDomainCountMap[row.userId] = Number(row.activeDomainCount) || 0;
+      proofCountMap[row.userId] = Number(row.proofLogCount) || 0;
     }
 
     const goalsCountMap = {};
     const goalsCompleteMap = {};
     for (const row of goalRows) {
-      if (row.status === "draft") continue;
-      goalsCountMap[row.userId] = (goalsCountMap[row.userId] || 0) + 1;
-      if (row.goalsComplete) {
-        goalsCompleteMap[row.userId] = (goalsCompleteMap[row.userId] || 0) + 1;
-      }
+      goalsCountMap[row.userId] = Number(row.goalsCount) || 0;
+      goalsCompleteMap[row.userId] = Number(row.goalsCompleteCount) || 0;
     }
 
-    const usersWithReports = await Promise.all(
-      users.map(async (user) => {
-        const reportCounts = await countDiagnosticsByCategory(user);
-        const membership = formatMembershipForAdmin(user);
-        const progress = computeUserProgress({
-          membership,
-          stage1: {
-            mapResistanceCompleteCount: mapResistanceCountMap[user.id] ?? reportCounts.mapResistance,
-            coachSessionCount: coachCountMap[user.id] || 0,
-            proofLogCount: proofCountMap[user.id] || 0,
-            activeDomains: Array.from({ length: activeDomainCountMap[user.id] || 0 }),
-          },
-          redlineCount: reportCounts.redline,
-          goalsSetOverride: goalsCountMap[user.id] || 0,
-          goalsCompleteOverride: goalsCompleteMap[user.id] || 0,
-        });
-
-        return {
-          ...user.toJSON(),
-          membership,
-          membershipTier: membership.tier,
-          membershipLabel: membership.label,
-          reportCount: reportCounts.totalReports,
-          totalReportCount: reportCounts.totalReports,
-          redlineCount: reportCounts.redline,
-          mapResistanceCount:
-            mapResistanceCountMap[user.id] ?? reportCounts.mapResistance,
+    const usersWithReports = users.map((user) => {
+      const diag = diagnosticCountsByUser[user.id] || {
+        redline: 0,
+        mapResistance: 0,
+      };
+      const mapResistanceCount = Math.max(
+        mapResistanceCountMap[user.id] || 0,
+        diag.mapResistance || 0,
+      );
+      const membership = formatMembershipForAdmin(user);
+      const progress = computeUserProgress({
+        membership,
+        stage1: {
+          mapResistanceCompleteCount: mapResistanceCount,
           coachSessionCount: coachCountMap[user.id] || 0,
           proofLogCount: proofCountMap[user.id] || 0,
-          goalsCount: goalsCountMap[user.id] || 0,
-          goalsCompleteCount: goalsCompleteMap[user.id] || 0,
-          activeDomainCount: activeDomainCountMap[user.id] || 0,
-          progressPhase: progress.phase,
-          progressScore: progress.progressScore,
-        };
-      }),
-    );
+          activeDomains: Array.from({
+            length: activeDomainCountMap[user.id] || 0,
+          }),
+        },
+        redlineCount: diag.redline,
+        goalsSetOverride: goalsCountMap[user.id] || 0,
+        goalsCompleteOverride: goalsCompleteMap[user.id] || 0,
+      });
+
+      const totalReports = diag.redline + mapResistanceCount;
+
+      return {
+        ...user.toJSON(),
+        membership,
+        membershipTier: membership.tier,
+        membershipLabel: membership.label,
+        reportCount: totalReports,
+        totalReportCount: totalReports,
+        redlineCount: diag.redline,
+        mapResistanceCount,
+        coachSessionCount: coachCountMap[user.id] || 0,
+        proofLogCount: proofCountMap[user.id] || 0,
+        goalsCount: goalsCountMap[user.id] || 0,
+        goalsCompleteCount: goalsCompleteMap[user.id] || 0,
+        activeDomainCount: activeDomainCountMap[user.id] || 0,
+        progressPhase: progress.phase,
+        progressScore: progress.progressScore,
+      };
+    });
 
     return successResponse(res, "Users fetched", usersWithReports);
   } catch (error) {
@@ -275,12 +324,13 @@ const getUserReports = async (req, res) => {
 
     const userIdNum = user.id;
 
-    const [diagnostics, stage1] = await Promise.all([
+    const [diagnostics, stage1, funnelData] = await Promise.all([
       Diagnostic.findAll({
         where: userDiagnosticWhere(user),
         order: [["createdAt", "DESC"]],
       }),
       loadAdminUserStage1(userIdNum),
+      loadAdminFunnelData(user),
     ]);
 
     const membership = formatMembershipForAdmin(user);
@@ -291,6 +341,26 @@ const getUserReports = async (req, res) => {
     const mapResistanceReports = formattedDiagnostics.filter(
       (d) => d.category === "map_resistance",
     );
+
+    // Attach chat transcript to redline reports when diagnostic snapshot is empty
+    const chatsByDiagnosticId = new Map();
+    for (const session of funnelData.diagnosisSessions || []) {
+      if (session.diagnosticId) {
+        chatsByDiagnosticId.set(Number(session.diagnosticId), session);
+      }
+    }
+    for (const report of redlineReports) {
+      const linked = chatsByDiagnosticId.get(Number(report.id));
+      if (linked) {
+        report.chatId = linked.chatId;
+        report.chatStatus = linked.status;
+        if ((!report.transcript || report.transcript.length === 0) && linked.transcript?.length) {
+          report.transcript = linked.transcript;
+          report.transcriptTurns = linked.transcript.length;
+        }
+      }
+    }
+
     const progress = computeUserProgress({
       membership,
       stage1,
@@ -303,6 +373,8 @@ const getUserReports = async (req, res) => {
       progress,
       redlineReports,
       mapResistanceReports,
+      funnelAccess: funnelData.funnelAccess,
+      diagnosisSessions: funnelData.diagnosisSessions,
       stage1,
       totalReports: redlineReports.length + stage1.mapResistanceCompleteCount,
       counts: {
@@ -311,6 +383,7 @@ const getUserReports = async (req, res) => {
           mapResistanceReports.length,
           stage1.mapResistanceCompleteCount,
         ),
+        diagnosisSessions: (funnelData.diagnosisSessions || []).length,
         coachSessions: stage1.coachSessionCount,
         proofLogs: stage1.proofLogCount,
         goalsSet: stage1.goalsSetCount,
@@ -612,19 +685,26 @@ const getStats = async (req, res) => {
       totalMapResistanceDomains,
       totalGoalsSet,
       stage1MetaRows,
+      mapResistanceRows,
+      goalRows,
       totalPrompts,
       activePrompts,
       recentRedlineReports,
       recentMapResistanceDomains,
       recentGoalsSet,
       recentUsers,
+      recentCoachRows,
     ] = await Promise.all([
       User.findAll({
         where: { role: "user" },
         attributes: ["id", "name", "email", "membership", "createdAt"],
       }).catch(() => []),
-      Diagnostic.count({ where: { report_type: "invisible_red_line" } }).catch(() => 0),
-      DomainGoal.count({ where: { mapResistanceComplete: true } }).catch(() => 0),
+      Diagnostic.count({ where: { report_type: "invisible_red_line" } }).catch(
+        () => 0,
+      ),
+      DomainGoal.count({ where: { mapResistanceComplete: true } }).catch(
+        () => 0,
+      ),
       DomainGoal.count({
         where: {
           [Op.or]: [
@@ -634,8 +714,52 @@ const getStats = async (req, res) => {
           status: { [Op.ne]: "draft" },
         },
       }).catch(() => 0),
+      // Length-only — avoid loading large coach/proof JSON blobs
       UserStage1Meta.findAll({
-        attributes: ["userId", "coachSessionLog", "proofLogs", "activeDomains"],
+        attributes: [
+          "userId",
+          [
+            literal("COALESCE(jsonb_array_length(coach_session_log), 0)"),
+            "coachSessionCount",
+          ],
+          [
+            literal("COALESCE(jsonb_array_length(proof_logs), 0)"),
+            "proofLogCount",
+          ],
+          [
+            literal("COALESCE(jsonb_array_length(active_domains), 0)"),
+            "activeDomainCount",
+          ],
+        ],
+        raw: true,
+      }).catch(() => []),
+      DomainGoal.findAll({
+        where: { mapResistanceComplete: true },
+        attributes: ["userId", [fn("COUNT", col("DomainGoal.id")), "count"]],
+        group: ["userId"],
+        raw: true,
+      }).catch(() => []),
+      DomainGoal.findAll({
+        where: {
+          status: { [Op.ne]: "draft" },
+          [Op.or]: [
+            { goalTitle: { [Op.ne]: null } },
+            { desiredOutcome: { [Op.ne]: null } },
+          ],
+        },
+        attributes: [
+          "userId",
+          [fn("COUNT", col("DomainGoal.id")), "goalsCount"],
+          [
+            fn(
+              "SUM",
+              literal("CASE WHEN goals_complete THEN 1 ELSE 0 END"),
+            ),
+            "goalsCompleteCount",
+          ],
+        ],
+        group: ["userId"],
+        raw: true,
       }).catch(() => []),
       Prompt.count().catch(() => 0),
       Prompt.count({ where: { isActive: true } }).catch(() => 0),
@@ -663,96 +787,113 @@ const getStats = async (req, res) => {
       User.count({
         where: { createdAt: { [Op.gte]: thirtyDaysAgo }, role: "user" },
       }).catch(() => 0),
+      sequelize
+        .query(
+          `
+          SELECT COUNT(*)::int AS count
+          FROM user_stage1_meta m
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(m.coach_session_log) = 'array'
+              THEN m.coach_session_log
+              ELSE '[]'::jsonb
+            END
+          ) AS s
+          WHERE COALESCE(
+            NULLIF(s->>'started_at', '')::timestamptz,
+            NULLIF(s->>'created_at', '')::timestamptz
+          ) >= :since
+          `,
+          {
+            replacements: { since: thirtyDaysAgo },
+            type: sequelize.QueryTypes.SELECT,
+          },
+        )
+        .catch(() => [{ count: 0 }]),
     ]);
 
-    const usersByTier = { free: 0, bronze: 0, silver: 0, accelerate: 0 };
-    for (const user of allUsers) {
-      const tier = resolveAdminMembershipTier(user);
-      usersByTier[tier] = (usersByTier[tier] || 0) + 1;
+    const diagnosticCountsByUser = await batchDiagnosticCountsForUsers(allUsers);
+
+    const mapResistanceCountMap = {};
+    for (const row of mapResistanceRows) {
+      mapResistanceCountMap[row.userId] = Number(row.count) || 0;
     }
 
+    const goalsCountMap = {};
+    const goalsCompleteMap = {};
+    for (const row of goalRows) {
+      goalsCountMap[row.userId] = Number(row.goalsCount) || 0;
+      goalsCompleteMap[row.userId] = Number(row.goalsCompleteCount) || 0;
+    }
+
+    const coachCountMap = {};
+    const proofCountMap = {};
+    const activeDomainCountMap = {};
     let totalCoachSessions = 0;
     let totalProofLogs = 0;
     let totalActiveDomainSlots = 0;
-    let recentCoachSessions = 0;
     for (const row of stage1MetaRows) {
-      const sessions = Array.isArray(row.coachSessionLog) ? row.coachSessionLog : [];
-      totalCoachSessions += sessions.length;
-      totalProofLogs += Array.isArray(row.proofLogs) ? row.proofLogs.length : 0;
-      totalActiveDomainSlots += Array.isArray(row.activeDomains)
-        ? row.activeDomains.length
-        : 0;
-      for (const session of sessions) {
-        const started = session?.started_at || session?.created_at;
-        if (started && new Date(started) >= thirtyDaysAgo) recentCoachSessions += 1;
-      }
+      const coach = Number(row.coachSessionCount) || 0;
+      const proof = Number(row.proofLogCount) || 0;
+      const active = Number(row.activeDomainCount) || 0;
+      coachCountMap[row.userId] = coach;
+      proofCountMap[row.userId] = proof;
+      activeDomainCountMap[row.userId] = active;
+      totalCoachSessions += coach;
+      totalProofLogs += proof;
+      totalActiveDomainSlots += active;
     }
 
+    const recentCoachSessions = Number(recentCoachRows?.[0]?.count) || 0;
+
+    const usersByTier = { free: 0, bronze: 0, silver: 0, accelerate: 0 };
     const topUsers = [];
+
     for (const user of allUsers) {
-      try {
-        const membership = formatMembershipForAdmin(user);
-        const [reportCounts, mapResistanceCount, stage1Meta, goalsCount, goalsCompleteCount] =
-          await Promise.all([
-          countDiagnosticsByCategory(user),
-          mapResistanceCountForUser(user.id).catch(() => 0),
-          UserStage1Meta.findOne({
-            where: { userId: user.id },
-            attributes: ["coachSessionLog", "proofLogs", "activeDomains"],
-          }).catch(() => null),
-          DomainGoal.count({
-            where: {
-              userId: user.id,
-              status: { [Op.ne]: "draft" },
-              [Op.or]: [
-                { goalTitle: { [Op.ne]: null } },
-                { desiredOutcome: { [Op.ne]: null } },
-              ],
-            },
-          }).catch(() => 0),
-          DomainGoal.count({
-            where: { userId: user.id, goalsComplete: true },
-          }).catch(() => 0),
-        ]);
+      const tier = resolveAdminMembershipTier(user);
+      usersByTier[tier] = (usersByTier[tier] || 0) + 1;
 
-        const stage1 = {
+      const membership = formatMembershipForAdmin(user);
+      const diag = diagnosticCountsByUser[user.id] || {
+        redline: 0,
+        mapResistance: 0,
+      };
+      const mapResistanceCount = Math.max(
+        mapResistanceCountMap[user.id] || 0,
+        diag.mapResistance || 0,
+      );
+      const coachSessionCount = coachCountMap[user.id] || 0;
+      const proofLogCount = proofCountMap[user.id] || 0;
+      const activeDomainCount = activeDomainCountMap[user.id] || 0;
+
+      const progress = computeUserProgress({
+        membership,
+        stage1: {
           mapResistanceCompleteCount: mapResistanceCount,
-          coachSessionCount: Array.isArray(stage1Meta?.coachSessionLog)
-            ? stage1Meta.coachSessionLog.length
-            : 0,
-          proofLogCount: Array.isArray(stage1Meta?.proofLogs)
-            ? stage1Meta.proofLogs.length
-            : 0,
-          activeDomains: Array.isArray(stage1Meta?.activeDomains)
-            ? stage1Meta.activeDomains
-            : [],
-        };
-        const progress = computeUserProgress({
-          membership,
-          stage1,
-          redlineCount: reportCounts.redline,
-          goalsSetOverride: goalsCount,
-          goalsCompleteOverride: goalsCompleteCount,
-        });
+          coachSessionCount,
+          proofLogCount,
+          activeDomains: Array.from({ length: activeDomainCount }),
+        },
+        redlineCount: diag.redline,
+        goalsSetOverride: goalsCountMap[user.id] || 0,
+        goalsCompleteOverride: goalsCompleteMap[user.id] || 0,
+      });
 
-        topUsers.push({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          membershipTier: membership.tier,
-          membershipLabel: membership.label,
-          progressPhase: progress.phase,
-          progressScore: progress.progressScore,
-          redlineReports: reportCounts.redline,
-          mapResistanceReports: mapResistanceCount,
-          coachSessions: stage1.coachSessionCount,
-          proofLogs: stage1.proofLogCount,
-          activeDomains: stage1.activeDomains.length,
-          goalsSet: progress.goalsSet,
-        });
-      } catch (err) {
-        console.error(`[admin] Error processing user ${user.id}:`, err);
-      }
+      topUsers.push({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        membershipTier: membership.tier,
+        membershipLabel: membership.label,
+        progressPhase: progress.phase,
+        progressScore: progress.progressScore,
+        redlineReports: diag.redline,
+        mapResistanceReports: mapResistanceCount,
+        coachSessions: coachSessionCount,
+        proofLogs: proofLogCount,
+        activeDomains: activeDomainCount,
+        goalsSet: progress.goalsSet,
+      });
     }
 
     topUsers.sort((a, b) => b.progressScore - a.progressScore);
@@ -816,7 +957,7 @@ const getMonthlystats = async (req, res) => {
         break;
     }
 
-    const [redlineDiagnostics, mapResistanceGoals, goalsCreated, coachMetaForTrends] =
+    const [redlineDiagnostics, mapResistanceGoals, goalsCreated, coachSessionRows] =
       await Promise.all([
       Diagnostic.findAll({
         where: {
@@ -842,21 +983,33 @@ const getMonthlystats = async (req, res) => {
         raw: true,
       }).catch(() => []),
 
-      UserStage1Meta.findAll({
-        attributes: ["coachSessionLog"],
-      }).catch(() => []),
+      sequelize
+        .query(
+          `
+          SELECT COALESCE(
+            NULLIF(s->>'started_at', '')::timestamptz,
+            NULLIF(s->>'created_at', '')::timestamptz
+          ) AS "createdAt"
+          FROM user_stage1_meta m
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(m.coach_session_log) = 'array'
+              THEN m.coach_session_log
+              ELSE '[]'::jsonb
+            END
+          ) AS s
+          WHERE COALESCE(
+            NULLIF(s->>'started_at', '')::timestamptz,
+            NULLIF(s->>'created_at', '')::timestamptz
+          ) >= :since
+          `,
+          {
+            replacements: { since: startDate },
+            type: sequelize.QueryTypes.SELECT,
+          },
+        )
+        .catch(() => []),
     ]);
-
-    const coachSessionRows = [];
-    for (const row of coachMetaForTrends) {
-      const sessions = Array.isArray(row.coachSessionLog) ? row.coachSessionLog : [];
-      for (const session of sessions) {
-        const started = session?.started_at || session?.created_at;
-        if (!started) continue;
-        const ts = new Date(started);
-        if (ts >= startDate) coachSessionRows.push({ createdAt: ts });
-      }
-    }
 
     const getKey = (date) => {
       const d = new Date(date);
@@ -1200,8 +1353,23 @@ const attachUserSessionToUser = async (req, res) => {
 // Get all user sessions
 const getAllUserSessions = async (req, res) => {
   try {
+    // List view: skip heavy transcript + embeddings JSON; include message count only
     const sessions = await UserSession.findAll({
       order: [["createdAt", "DESC"]],
+      attributes: [
+        "id",
+        "userId",
+        "email",
+        "sessionDate",
+        "summery",
+        "metadata",
+        "createdAt",
+        "updatedAt",
+        [
+          literal("COALESCE(jsonb_array_length(transcript), 0)"),
+          "messageCount",
+        ],
+      ],
       include: [
         {
           model: User,
@@ -1211,7 +1379,18 @@ const getAllUserSessions = async (req, res) => {
       ],
     });
 
-    return successResponse(res, "User sessions retrieved", sessions);
+    const result = sessions.map((session) => {
+      const json = session.toJSON();
+      const messageCount = Number(json.messageCount) || 0;
+      return {
+        ...json,
+        messageCount,
+        // Keep a lightweight shape the list UI can use without shipping full transcripts
+        transcript: undefined,
+      };
+    });
+
+    return successResponse(res, "User sessions retrieved", result);
   } catch (error) {
     console.error("[admin] Error fetching user sessions:", error);
     return errorResponse(res, "Failed to fetch user sessions", 500);

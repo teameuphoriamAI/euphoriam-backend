@@ -243,27 +243,34 @@ const findOrCreateCreatorUser = async (req, res) => {
           400,
         );
       }
-      const LINK_VALIDITY_DAYS = parseInt(process.env.FUNNEL_LINK_VALIDITY_DAYS || "10", 10);
-      const frontendUrl = (process.env.FRONTEND_URL || "").replace(/\/$/, "");
+      const LINK_VALIDITY_DAYS = parseInt(
+        process.env.FUNNEL_LINK_VALIDITY_DAYS || "10",
+        10,
+      );
       const now = new Date();
 
-      // One direct-signup row per email (DB unique index). Reuse + refresh token instead of inserting duplicates.
+      // One direct-signup row per email (DB unique index). Create or refresh token.
       let funnelRecord = await withDbSlot(() =>
         FunnelAccess.findOne({
           where: { email, kajabi_offer_source: "direct-signup" },
           order: [["createdAt", "DESC"]],
-        })
+        }),
       );
 
-      const signupName = name && String(name).trim() ? String(name).trim() : null;
-      const linkExpiry = new Date(now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
+      const signupName =
+        name && String(name).trim() ? String(name).trim() : null;
+      const linkExpiry = new Date(
+        now.getTime() + LINK_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
+      );
+      const nonce = crypto.randomUUID();
+      const token = generateFunnelToken({
+        email,
+        kajabi_offer_source: "direct-signup",
+        nonce,
+      });
 
       if (!funnelRecord) {
-        // First direct-signup row for this email.
-        const nonce = crypto.randomUUID();
-        const token = generateFunnelToken({ email, kajabi_offer_source: "direct-signup", nonce });
         const metadata = signupName ? { signup_name: signupName } : {};
-
         funnelRecord = await withDbSlot(() =>
           FunnelAccess.create({
             email,
@@ -272,15 +279,31 @@ const findOrCreateCreatorUser = async (req, res) => {
             link_expiry: linkExpiry,
             kajabi_offer_source: "direct-signup",
             metadata,
-          })
+          }),
         );
       } else {
-        return errorResponse(
-          res,
-          "Unable to verify membership right now. Please try again in a moment.",
-          503,
+        // Returning free user — refresh link so they can continue to redline
+        const nextMeta = {
+          ...(funnelRecord.metadata &&
+          typeof funnelRecord.metadata === "object"
+            ? funnelRecord.metadata
+            : {}),
+        };
+        if (signupName) nextMeta.signup_name = signupName;
+
+        await withDbSlot(() =>
+          funnelRecord.update({
+            link_token: token,
+            link_created_at: now,
+            link_expiry: linkExpiry,
+            metadata: nextMeta,
+          }),
         );
       }
+
+      const { buildFreeFunnelCheckUserResult } = require("./funnelController");
+      const funnelPayload = await buildFreeFunnelCheckUserResult(email);
+      return successResponse(res, "Free funnel access", funnelPayload);
     }
 
     const isPaid = hasPaidMembership(clubStatus);
